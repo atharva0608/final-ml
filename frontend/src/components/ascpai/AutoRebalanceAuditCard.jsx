@@ -1,10 +1,12 @@
 import React, { useEffect, useState } from 'react';
 import { Card } from '../shared';
-import { FiSliders, FiCheckCircle, FiAlertTriangle, FiArrowUpRight, FiActivity, FiInbox, FiShield, FiClock, FiThumbsUp, FiThumbsDown } from 'react-icons/fi';
+import { FiSliders, FiCheckCircle, FiAlertTriangle, FiArrowUpRight, FiActivity, FiInbox, FiShield, FiClock, FiThumbsUp, FiThumbsDown, FiZap } from 'react-icons/fi';
 import api, { clusterAPI, adminAPI, ascpaiAPI } from '../../services/api';
 import AutoRebalanceAuditModal from './AutoRebalanceAuditModal';
 
-const AutoRebalanceAuditCard = ({ clusterId, initialEnabled = false }) => {
+const AutoRebalanceAuditCard = ({ clusterId, initialEnabled = false, karpenterMode = null }) => {
+    // karpenterMode: null = not installed, 'dry_run' = observe only, 'auto' = full manage
+    const isKarpenterActive = karpenterMode != null;
     const [decisions, setDecisions] = useState([]);
     const [loading, setLoading] = useState(true);
     const [isEnabled, setIsEnabled] = useState(initialEnabled);
@@ -83,11 +85,19 @@ const AutoRebalanceAuditCard = ({ clusterId, initialEnabled = false }) => {
     };
 
     const getReasonText = (action) => {
+        const isKarpenterAction = action.provisioner_type === 'karpenter' || isKarpenterActive;
         if (action.trigger === 'emergency') {
-            return 'Termination notice received — emergency rebalancing';
+            return isKarpenterAction
+                ? 'Interruption notice — Karpenter reprovisioning spot node'
+                : 'Termination notice received — emergency rebalancing';
         }
-        return 'Proactive optimization to safer pool';
+        return isKarpenterAction
+            ? 'Karpenter-managed node consolidation — CORDON → DRAIN → TERMINATE'
+            : 'Proactive optimization to safer pool';
     };
+
+    const isKarpenterProvisioned = (action) =>
+        action.provisioner_type === 'karpenter' || isKarpenterActive;
 
     const handleApprove = async (actionId) => {
         setApproving(actionId);
@@ -184,10 +194,18 @@ const AutoRebalanceAuditCard = ({ clusterId, initialEnabled = false }) => {
 
     return (
         <Card className="flex flex-col h-full bg-gradient-to-br from-white to-gray-50">
-            <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center justify-between mb-1">
                 <div className="flex items-center gap-2">
-                    <div className={`w-2 h-2 rounded-full ${isEnabled ? 'bg-green-500 animate-pulse' : 'bg-gray-300'}`}></div>
-                    <h3 className="font-semibold text-gray-800">Auto-Rebalancer History</h3>
+                    <div className={`w-2 h-2 rounded-full ${isEnabled ? (isKarpenterActive ? 'bg-indigo-500 animate-pulse' : 'bg-green-500 animate-pulse') : 'bg-gray-300'}`}></div>
+                    <h3 className="font-semibold text-gray-800">
+                        {isKarpenterActive ? 'Karpenter Managed Actions' : 'Auto-Rebalancer History'}
+                    </h3>
+                    {isKarpenterActive && (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-semibold rounded-full bg-indigo-100 text-indigo-700">
+                            <FiZap className="w-2.5 h-2.5" />
+                            {karpenterMode === 'auto' ? 'AUTO' : 'DRY RUN'}
+                        </span>
+                    )}
                     {cbState && (
                         <span className={`inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-semibold rounded-full ${cbState === 'NORMAL' ? 'bg-green-100 text-green-700' :
                                 cbState === 'CONSERVATIVE' ? 'bg-yellow-100 text-yellow-700' :
@@ -199,13 +217,24 @@ const AutoRebalanceAuditCard = ({ clusterId, initialEnabled = false }) => {
                     )}
                 </div>
             </div>
+            {isKarpenterActive && (
+                <p className="text-[10px] text-indigo-500 mb-3 ml-4">
+                    Karpenter handles spot provisioning · rebalancer manages CORDON/DRAIN lifecycle
+                </p>
+            )}
 
             <div className="space-y-3 flex-1">
                 {decisions.length === 0 ? (
                     <div className="flex flex-col items-center justify-center py-8 text-gray-400">
                         <FiInbox className="w-8 h-8 mb-2 text-gray-300" />
-                        <p className="text-sm font-medium">No rebalancing events yet</p>
-                        <p className="text-xs mt-1">Events will appear here when auto-rebalancing triggers</p>
+                        <p className="text-sm font-medium">
+                            {isKarpenterActive ? 'No Karpenter actions yet' : 'No rebalancing events yet'}
+                        </p>
+                        <p className="text-xs mt-1">
+                            {isKarpenterActive
+                                ? 'Actions appear here when Karpenter triggers node consolidation'
+                                : 'Events will appear here when auto-rebalancing triggers'}
+                        </p>
                     </div>
                 ) : (
                     decisions.map((action, idx) => (
@@ -240,6 +269,11 @@ const AutoRebalanceAuditCard = ({ clusterId, initialEnabled = false }) => {
                                 <div className="flex items-center gap-1.5">
                                     {getTriggerBadge(action.trigger)}
                                     {getStatusBadge(action.status)}
+                                    {isKarpenterProvisioned(action) && (
+                                        <span className="px-1.5 py-0.5 bg-indigo-50 text-indigo-700 text-[10px] rounded border border-indigo-200 flex items-center gap-1">
+                                            <FiZap className="w-2 h-2" /> Karpenter
+                                        </span>
+                                    )}
                                 </div>
 
                                 {action.nodes_affected > 0 && (

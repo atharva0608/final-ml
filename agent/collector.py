@@ -194,6 +194,24 @@ class MetricsCollector:
                             container.resources.limits.get('memory', '0')
                         )
 
+                # Extract scheduling constraints for simulation
+                _node_sel = dict(pod.spec.node_selector) if pod.spec.node_selector else None
+                _tolerations = None
+                if pod.spec.tolerations:
+                    _tolerations = [
+                        {k: v for k, v in {'key': t.key, 'operator': t.operator, 'value': t.value, 'effect': t.effect}.items() if v}
+                        for t in pod.spec.tolerations if t.key
+                    ] or None
+
+                _has_anti_affinity = False
+                _has_affinity = False
+                _has_topo_spread = bool(pod.spec.topology_spread_constraints)
+                if pod.spec.affinity:
+                    if pod.spec.affinity.pod_anti_affinity and pod.spec.affinity.pod_anti_affinity.required_during_scheduling_ignored_during_execution:
+                        _has_anti_affinity = True
+                    if pod.spec.affinity.pod_affinity and pod.spec.affinity.pod_affinity.required_during_scheduling_ignored_during_execution:
+                        _has_affinity = True
+
                 pod_metric = {
                     'cluster_id': self.cluster_id,
                     'namespace': namespace,
@@ -209,7 +227,16 @@ class MetricsCollector:
                     'restart_count': sum(
                         cs.restart_count for cs in pod.status.container_statuses or []
                     ),
-                    'labels': pod.metadata.labels or {},
+                    'labels': {
+                        **(pod.metadata.labels or {}),
+                        '__scheduling': {
+                            'node_selector': _node_sel,
+                            'tolerations': _tolerations,
+                            'has_pod_anti_affinity': _has_anti_affinity,
+                            'has_pod_affinity': _has_affinity,
+                            'has_topology_spread': _has_topo_spread,
+                        },
+                    },
                     'timestamp': datetime.utcnow().isoformat()
                 }
 

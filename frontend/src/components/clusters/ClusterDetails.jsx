@@ -2,11 +2,11 @@
  * Cluster Details Component
  * Detailed view of cluster with metrics, nodes, and configuration
  */
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { clusterAPI, metricsAPI, policyAPI, hibernationAPI, decisionEngineAPI, karpenterAPI, nativeSpotAPI, ascpaiAPI, optimizationAPI } from '../../services/api';
 import { Card, Button, Badge } from '../shared';
-import { FiX, FiRefreshCw, FiSettings, FiClock, FiCpu, FiHardDrive, FiDollarSign, FiActivity, FiSliders } from 'react-icons/fi';
+import { FiX, FiRefreshCw, FiSettings, FiClock, FiCpu, FiHardDrive, FiDollarSign, FiActivity, FiSliders, FiDownload, FiAlertTriangle } from 'react-icons/fi';
 import toast from 'react-hot-toast';
 import { formatCurrency, formatNumber, formatDate, formatDateTime } from '../../utils/formatters';
 
@@ -81,11 +81,13 @@ const ClusterDetails = ({ clusterId, onClose }) => {
   const [workloadType, setWorkloadType] = useState(null);
   const [nodesDetailed, setNodesDetailed] = useState(null);
   const [nodeRecommendations, setNodeRecommendations] = useState([]);
+  const [karpenterSimulation, setKarpenterSimulation] = useState(null);
   const [rebalancingActions, setRebalancingActions] = useState([]);
   const [rightsizing, setRightsizing] = useState([]);
   const [costTrends, setCostTrends] = useState(null);
   const [expandedNodes, setExpandedNodes] = useState(new Set());
   const [optSettings, setOptSettings] = useState(null);
+  const optSettingsRef = useRef(null);
   const [savingOptSettings, setSavingOptSettings] = useState(false);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -97,6 +99,9 @@ const ClusterDetails = ({ clusterId, onClose }) => {
   const [fallbackLoading, setFallbackLoading] = useState(false);
   const [karpenterInstallStatus, setKarpenterInstallStatus] = useState(null);
   const [karpenterActionLoading, setKarpenterActionLoading] = useState(false);
+  const [showKarpenterRequiredModal, setShowKarpenterRequiredModal] = useState(false);
+  const [karpenterRequiredTrigger, setKarpenterRequiredTrigger] = useState(null);
+  const [karpenterModalInstalling, setKarpenterModalInstalling] = useState(false);
   const [nativeSpotStatus, setNativeSpotStatus] = useState(null);
   const [nativeSpotLoading, setNativeSpotLoading] = useState(false);
   const [fetchError, setFetchError] = useState(null);
@@ -127,22 +132,58 @@ const ClusterDetails = ({ clusterId, onClose }) => {
     }
   }, [clusterId]);
 
-  // Lightweight 30s poll: refresh live node state + rebalancing status without
-  // reloading all cluster metadata (avoids UI flicker from full fetchClusterDetails).
+  // Keep ref in sync so polling closures see the latest optSettings
+  useEffect(() => { optSettingsRef.current = optSettings; }, [optSettings]);
+
+  // Light 30s poll: refresh live node state + rebalancing status
+  // Heavy 60s poll: also refresh cluster metrics, cost trends, and savings data
   useEffect(() => {
     if (!clusterId) return;
+    let heavyCounter = 0;
     const pollNodeData = async () => {
       try {
+        heavyCounter++;
+        const _ctl = optSettingsRef.current?.automation_controls;
+        const _useRs = !!(_ctl?.auto_rightsizing_enabled && _ctl?.auto_rebalance_enabled);
         const [nodesRes, rebalRes, recRes] = await Promise.allSettled([
           clusterAPI.getNodesDetailed(clusterId),
           ascpaiAPI.getRebalancingStatus(clusterId),
-          ascpaiAPI.getNodeRecommendations(clusterId),
+          ascpaiAPI.getNodeRecommendations(clusterId, { useRightsized: _useRs }),
         ]);
-        if (nodesRes.status === 'fulfilled') setNodesDetailed(nodesRes.value.data);
-        if (rebalRes.status === 'fulfilled')
-          setRebalancingActions(Array.isArray(rebalRes.value.data) ? rebalRes.value.data : []);
-        if (recRes.status === 'fulfilled')
-          setNodeRecommendations(recRes.value.data?.recommendations || []);
+        // Only update state when new data is valid — keep old data visible during transient failures
+        if (nodesRes.status === 'fulfilled' && nodesRes.value.data) setNodesDetailed(nodesRes.value.data);
+        if (rebalRes.status === 'fulfilled' && Array.isArray(rebalRes.value.data))
+          setRebalancingActions(rebalRes.value.data);
+        if (recRes.status === 'fulfilled' && recRes.value.data) {
+          const _recs = recRes.value.data?.recommendations;
+          if (Array.isArray(_recs) && _recs.length > 0) setNodeRecommendations(_recs);
+          const _sim = recRes.value.data?.karpenter_simulation;
+          if (_sim) setKarpenterSimulation(_sim);
+        }
+
+        // Every 2nd tick (60s): also refresh cluster, metrics, cost trends, and Karpenter status
+        if (heavyCounter % 2 === 0) {
+          const [clusterRes, metricsRes, costTRes, rsizeRes, karpRes] = await Promise.allSettled([
+            clusterAPI.getCluster(clusterId),
+            metricsAPI.getClusterMetrics(clusterId),
+            metricsAPI.getCostTimeSeries({ cluster_id: clusterId }),
+            optimizationAPI.getRightsizing(clusterId),
+            karpenterAPI.getInstallStatus(clusterId),
+          ]);
+          if (clusterRes.status === 'fulfilled' && clusterRes.value.data) setCluster(clusterRes.value.data);
+          if (metricsRes.status === 'fulfilled' && metricsRes.value.data) setMetrics(metricsRes.value.data);
+          if (costTRes.status === 'fulfilled' && costTRes.value.data) setCostTrends(costTRes.value.data);
+          if (rsizeRes.status === 'fulfilled') {
+            const _rs = rsizeRes.value.data?.recommendations || rsizeRes.value.data;
+            if (Array.isArray(_rs) && _rs.length > 0) setRightsizing(_rs);
+          }
+          // Live Karpenter status refresh — detects manual installs/uninstalls
+          if (karpRes.status === 'fulfilled' && karpRes.value?.data) {
+            // The backend install-status endpoint already runs live detection
+            // as a fallback. No second detect call needed from frontend.
+            setKarpenterInstallStatus(karpRes.value.data);
+          }
+        }
       } catch (_) {
         // silent — polling failures don't need user notification
       }
@@ -150,6 +191,33 @@ const ClusterDetails = ({ clusterId, onClose }) => {
     const _pollTimer = setInterval(pollNodeData, 30_000);
     return () => clearInterval(_pollTimer);
   }, [clusterId]);
+
+  // Real-time Karpenter install detection — polls every 5s while the "Karpenter Required" modal is open
+  useEffect(() => {
+    if (!showKarpenterRequiredModal || !clusterId) return;
+    const pollKarpenter = async () => {
+      try {
+        const res = await karpenterAPI.getInstallStatus(clusterId);
+        if (res?.data) {
+          setKarpenterInstallStatus(res.data);
+          if (res.data.karpenter_installed && karpenterRequiredTrigger) {
+            setShowKarpenterRequiredModal(false);
+            setKarpenterModalInstalling(false);
+            setOptSettings(prev => ({
+              ...prev,
+              automation_controls: {
+                ...prev?.automation_controls,
+                [karpenterRequiredTrigger]: true,
+              }
+            }));
+            toast.success('Karpenter detected — toggle enabled!');
+          }
+        }
+      } catch (_) {}
+    };
+    const t = setInterval(pollKarpenter, 5000);
+    return () => clearInterval(t);
+  }, [showKarpenterRequiredModal, clusterId, karpenterRequiredTrigger]);
 
   const fetchClusterDetails = async () => {
     // Only set loading=true if we have no cluster data yet (avoids blanking the UI on refresh)
@@ -172,17 +240,27 @@ const ClusterDetails = ({ clusterId, onClose }) => {
         metricsAPI.getCostTimeSeries({ cluster_id: clusterId }),
       ]);
 
-      if (clusterRes.status === 'fulfilled') setCluster(clusterRes.value.data);
-      if (metricsRes.status === 'fulfilled') setMetrics(metricsRes.value.data);
+      // Only update each piece of state when the new value is valid.
+      // Keeps old data on-screen if an API returns empty/null transiently.
+      if (clusterRes.status === 'fulfilled' && clusterRes.value.data) setCluster(clusterRes.value.data);
+      if (metricsRes.status === 'fulfilled' && metricsRes.value.data) setMetrics(metricsRes.value.data);
       if (policyRes.status === 'fulfilled') setPolicy(policyRes.value.data);
       if (scheduleRes.status === 'fulfilled') setSchedule(scheduleRes.value.data);
-      if (utilRes.status === 'fulfilled') setUtilization(utilRes.value.data);
+      if (utilRes.status === 'fulfilled' && utilRes.value.data) setUtilization(utilRes.value.data);
       if (workloadRes.status === 'fulfilled') setWorkloadType(workloadRes.value.data);
-      if (nodesRes.status === 'fulfilled') setNodesDetailed(nodesRes.value.data);
-      if (recRes.status === 'fulfilled') setNodeRecommendations(recRes.value.data?.recommendations || []);
-      if (rebalRes.status === 'fulfilled') setRebalancingActions(Array.isArray(rebalRes.value.data) ? rebalRes.value.data : []);
-      if (rsizeRes.status === 'fulfilled') setRightsizing(rsizeRes.value.data?.recommendations || rsizeRes.value.data || []);
-      if (costTRes.status === 'fulfilled') setCostTrends(costTRes.value.data);
+      if (nodesRes.status === 'fulfilled' && nodesRes.value.data) setNodesDetailed(nodesRes.value.data);
+      if (recRes.status === 'fulfilled' && recRes.value.data) {
+        const _recs = recRes.value.data?.recommendations;
+        if (Array.isArray(_recs) && _recs.length > 0) setNodeRecommendations(_recs);
+        const _sim = recRes.value.data?.karpenter_simulation;
+        if (_sim) setKarpenterSimulation(_sim);
+      }
+      if (rebalRes.status === 'fulfilled' && Array.isArray(rebalRes.value.data)) setRebalancingActions(rebalRes.value.data);
+      if (rsizeRes.status === 'fulfilled') {
+        const _rs = rsizeRes.value.data?.recommendations || rsizeRes.value.data;
+        if (Array.isArray(_rs) && _rs.length > 0) setRightsizing(_rs);
+      }
+      if (costTRes.status === 'fulfilled' && costTRes.value.data) setCostTrends(costTRes.value.data);
       if (optRes.status === 'fulfilled') {
         const c = optRes.value.data || {
           optimization_strategy: { strategy_type: 'BALANCED', risk_ceiling_percent: 25, min_savings_percent: 15, risk_savings_tradeoff_pct: 20 }
@@ -194,24 +272,9 @@ const ClusterDetails = ({ clusterId, onClose }) => {
       try {
         const karpenterRes = await karpenterAPI.getInstallStatus(clusterId);
         let karpStatus = karpenterRes.data;
-        // If install-status says not installed, run live detection as a fallback.
-        // This catches manually-installed Karpenter where no AgentAction exists.
-        if (!karpStatus?.karpenter_installed) {
-          try {
-            const detectRes = await karpenterAPI.detectKarpenter(clusterId);
-            if (detectRes.data?.detected) {
-              // Live detection found Karpenter — override the install-status result
-              karpStatus = {
-                ...karpStatus,
-                karpenter_installed: true,
-                detected_via: 'live_detection',
-                karpenter_mode: detectRes.data.karpenter_mode,
-                status: 'installed',
-                message: `Karpenter detected in cluster (mode=${detectRes.data.karpenter_mode}).`,
-              };
-            }
-          } catch (_) { /* detection failure is non-critical */ }
-        }
+        // The backend install-status endpoint already runs live detection
+        // as a fallback. No second detect call needed from frontend
+        // (was causing false positives from stale cached data).
         setKarpenterInstallStatus(karpStatus);
         // For non-Karpenter clusters: fetch native ASG spot status
         if (!karpStatus?.karpenter_installed) {
@@ -236,6 +299,22 @@ const ClusterDetails = ({ clusterId, onClose }) => {
     setRefreshing(false);
     toast.success('Cluster details refreshed');
   };
+
+  // When both auto-rightsizing + auto-rebalance become active, re-fetch
+  // node-recommendations with right-sized pod values for a more accurate
+  // Karpenter bin-packing "what-if" simulation.
+  const _bothToggles = !!(optSettings?.automation_controls?.auto_rightsizing_enabled && optSettings?.automation_controls?.auto_rebalance_enabled);
+  useEffect(() => {
+    if (!clusterId || !_bothToggles) return;
+    ascpaiAPI.getNodeRecommendations(clusterId, { useRightsized: true }).then(res => {
+      if (res.data) {
+        const _recs = res.data?.recommendations;
+        if (Array.isArray(_recs) && _recs.length > 0) setNodeRecommendations(_recs);
+        const _sim = res.data?.karpenter_simulation;
+        if (_sim) setKarpenterSimulation(_sim);
+      }
+    }).catch(() => {});
+  }, [clusterId, _bothToggles]);
 
   const handleOptimize = async () => {
     if (!clusterId) return;
@@ -294,12 +373,13 @@ const ClusterDetails = ({ clusterId, onClose }) => {
   const handleRemoveAgent = async () => {
     setAgentActionLoading(true);
     try {
-      const res = await clusterAPI.removeAgent(clusterId);
-      toast.success(`Agent removed. Deleted ${res.data.pod_metrics_deleted} metrics records.`);
+      await clusterAPI.deleteCluster(clusterId);
+      toast.success(`Cluster and all data removed successfully.`);
       setShowRemoveModal(false);
-      fetchClusterDetails();
+      window.dispatchEvent(new Event('refresh-clusters'));
+      if (onClose) onClose();
     } catch (err) {
-      toast.error('Failed to remove agent');
+      toast.error('Failed to remove cluster');
     } finally {
       setAgentActionLoading(false);
     }
@@ -319,6 +399,18 @@ const ClusterDetails = ({ clusterId, onClose }) => {
   };
 
   const handleOptConfigChange = (section, key, value) => {
+    // Guard: auto-rebalance and auto-rightsizing require Karpenter to be installed
+    if (
+      section === 'automation_controls' &&
+      (key === 'auto_rebalance_enabled' || key === 'auto_rightsizing_enabled') &&
+      value === true &&
+      !karpenterInstallStatus?.karpenter_installed
+    ) {
+      setKarpenterRequiredTrigger(key);
+      setKarpenterModalInstalling(false);
+      setShowKarpenterRequiredModal(true);
+      return;
+    }
     setOptSettings(prev => ({
       ...prev,
       [section]: {
@@ -460,9 +552,12 @@ const ClusterDetails = ({ clusterId, onClose }) => {
               schedule={schedule}
               policy={policy}
               nodeRecommendations={nodeRecommendations}
+              karpenterSimulation={karpenterSimulation}
               nodesDetailed={nodesDetailed}
               costTrends={costTrends}
               rightsizing={rightsizing}
+              autoRightsizingEnabled={!!optSettings?.automation_controls?.auto_rightsizing_enabled}
+              autoRebalanceEnabled={!!optSettings?.automation_controls?.auto_rebalance_enabled}
               onInstallKarpenter={() => {
                 toast.loading(`Installing Karpenter on ${cluster?.name}...`, { id: 'karp-install' });
                 karpenterAPI.installKarpenter(clusterId).then(() => { // Changed to installKarpenter
@@ -741,6 +836,86 @@ const ClusterDetails = ({ clusterId, onClose }) => {
                       <div className="w-9 h-5 bg-gray-200 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-gray-800" />
                     </label>
                   </div>
+
+                  {/* ── Batch Size & PDB Controls ── */}
+                  <div className="pt-3 mt-1 border-t border-gray-100">
+                    <div className="text-xs font-semibold text-gray-800 mb-3">Rebalance Batch Size</div>
+
+                    {/* Respect PDB toggle */}
+                    <div className="flex items-center justify-between py-2">
+                      <div>
+                        <div className="text-[12px] font-medium text-gray-700">Respect PodDisruptionBudgets</div>
+                        <div className="text-[10px] text-gray-400 mt-0.5">Cap batch size to PDB-safe limit to prevent service disruption</div>
+                      </div>
+                      <label className="relative inline-flex items-center cursor-pointer ml-4 shrink-0">
+                        <input type="checkbox" className="sr-only peer"
+                          checked={optSettings?.stateless_rules?.respect_pdb_enabled ?? true}
+                          onChange={e => {
+                            handleOptConfigChange("stateless_rules", "respect_pdb_enabled", e.target.checked);
+                            // When PDB respect is re-enabled and current batch exceeds PDB-safe, reset to PDB-safe
+                            if (e.target.checked && optSettings?.pdb_safe_percent != null) {
+                              const currentBatch = optSettings?.automation_controls?.rebalance_batch_percent;
+                              if (currentBatch != null && currentBatch > optSettings.pdb_safe_percent) {
+                                handleOptConfigChange("automation_controls", "rebalance_batch_percent", optSettings.pdb_safe_percent);
+                              }
+                            }
+                          }} />
+                        <div className="w-9 h-5 bg-gray-200 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-orange-500" />
+                      </label>
+                    </div>
+
+                    {/* Batch size slider */}
+                    {(() => {
+                      const respectPdb = optSettings?.stateless_rules?.respect_pdb_enabled ?? true;
+                      const pdbSafe = optSettings?.pdb_safe_percent;
+                      const sliderMax = respectPdb && pdbSafe != null ? pdbSafe : 100;
+                      const defaultVal = pdbSafe != null ? pdbSafe : 0;
+                      const currentVal = optSettings?.automation_controls?.rebalance_batch_percent ?? defaultVal;
+                      const displayVal = respectPdb && pdbSafe != null ? Math.min(currentVal, sliderMax) : currentVal;
+                      return (
+                        <div className="p-3 bg-gradient-to-br from-purple-50 to-indigo-50 rounded-xl border border-purple-200 mt-2">
+                          <div className="flex justify-between items-center mb-2">
+                            <label className="text-xs font-semibold text-gray-800">Max Batch Size (%)</label>
+                            <span className="text-lg font-bold text-purple-700">{displayVal}%</span>
+                          </div>
+                          <input
+                            type="range"
+                            min="0"
+                            max={sliderMax}
+                            step="1"
+                            value={displayVal}
+                            onChange={e => {
+                              const newVal = +e.target.value;
+                              handleOptConfigChange("automation_controls", "rebalance_batch_percent", newVal);
+                              // Auto-disable "Respect PDB" if user drags below the PDB-safe value
+                              if (respectPdb && pdbSafe != null && newVal < pdbSafe) {
+                                handleOptConfigChange("stateless_rules", "respect_pdb_enabled", false);
+                              }
+                            }}
+                            className="w-full h-2 bg-purple-200 rounded-lg appearance-none cursor-pointer accent-purple-600"
+                          />
+                          <div className="flex justify-between text-[10px] text-gray-400 mt-1">
+                            <span>0%</span>
+                            {respectPdb && pdbSafe != null && (
+                              <span className="text-orange-600 font-medium">PDB cap: {pdbSafe}%</span>
+                            )}
+                            <span>{sliderMax}%</span>
+                          </div>
+                          <p className="text-[11px] text-gray-500 mt-2">
+                            {displayVal === 0
+                              ? <span className="text-gray-400">Batch rebalancing disabled (0%). Increase to enable.</span>
+                              : <>Max <strong>{displayVal}%</strong> of on-demand nodes will be rebalanced per cycle.
+                                {respectPdb && pdbSafe != null
+                                  ? <span className="text-orange-600"> Capped to PDB-safe limit ({pdbSafe}%).</span>
+                                  : pdbSafe == null
+                                  ? <span className="text-gray-400"> No PDBs detected — using manual value.</span>
+                                  : <span className="text-amber-600"> PDB respect disabled — no cap applied.</span>}
+                              </>}
+                          </p>
+                        </div>
+                      );
+                    })()}
+                  </div>
                 </div>
               </Card>
 
@@ -890,6 +1065,103 @@ const ClusterDetails = ({ clusterId, onClose }) => {
                 className="px-4 py-2 text-sm bg-yellow-500 text-white rounded hover:bg-yellow-600 disabled:opacity-50"
               >
                 {agentActionLoading ? 'Disconnecting...' : 'Disconnect Agent'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Karpenter Required Modal */}
+      {showKarpenterRequiredModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-[60]">
+          <div className="bg-white rounded-xl p-6 max-w-md w-full mx-4 shadow-xl">
+            <div className="flex items-start gap-3 mb-4">
+              <div className="w-10 h-10 rounded-full bg-amber-100 flex items-center justify-center shrink-0">
+                <FiAlertTriangle className="w-5 h-5 text-amber-600" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-gray-900">Karpenter Required</h3>
+                <p className="text-sm text-gray-500 mt-0.5">
+                  <strong>{karpenterRequiredTrigger === 'auto_rebalance_enabled' ? 'Auto Rebalance (ML Spot Optimization)' : 'Auto Right-Sizing'}</strong> requires Karpenter to be installed on this cluster.
+                </p>
+              </div>
+            </div>
+
+            <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 mb-4">
+              <p className="text-xs font-semibold text-amber-800 mb-1">Why is Karpenter required?</p>
+              <p className="text-xs text-amber-700 leading-relaxed">
+                Karpenter is the node auto-scaler that provisions and manages spot instances on AWS.
+                Without it, the {karpenterRequiredTrigger === 'auto_rebalance_enabled' ? 'rebalancer' : 'right-sizer'} cannot
+                provision replacement nodes — install it to enable this feature.
+              </p>
+            </div>
+
+            {/* Real-time detection status */}
+            <div className={`flex items-center gap-2.5 mb-5 rounded-lg px-3 py-2.5 border ${
+              karpenterInstallStatus?.karpenter_installed
+                ? 'bg-green-50 border-green-200'
+                : karpenterModalInstalling
+                ? 'bg-blue-50 border-blue-200'
+                : 'bg-gray-50 border-gray-200'
+            }`}>
+              <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${
+                karpenterInstallStatus?.karpenter_installed
+                  ? 'bg-green-500'
+                  : karpenterModalInstalling
+                  ? 'bg-blue-400 animate-pulse'
+                  : 'bg-red-400'
+              }`} />
+              <span className={`text-xs flex-1 ${
+                karpenterInstallStatus?.karpenter_installed ? 'text-green-700 font-medium' : 'text-gray-600'
+              }`}>
+                {karpenterInstallStatus?.karpenter_installed
+                  ? 'Karpenter detected — enabling toggle...'
+                  : karpenterModalInstalling
+                  ? 'Installing Karpenter... checking every 5s'
+                  : 'Karpenter not detected on this cluster'}
+              </span>
+              {!karpenterInstallStatus?.karpenter_installed && (
+                <span className="text-[10px] text-gray-400 animate-pulse shrink-0">● live</span>
+              )}
+            </div>
+
+            <div className="flex gap-3 justify-end">
+              <button
+                onClick={() => {
+                  setShowKarpenterRequiredModal(false);
+                  setKarpenterRequiredTrigger(null);
+                  setKarpenterModalInstalling(false);
+                }}
+                className="px-4 py-2 text-sm border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={async () => {
+                  setKarpenterModalInstalling(true);
+                  toast.loading(`Installing Karpenter on ${cluster?.name}...`, { id: 'karp-modal-install' });
+                  try {
+                    await karpenterAPI.installKarpenter(clusterId);
+                    toast.success('Installation triggered — detecting status...', { id: 'karp-modal-install' });
+                  } catch (e) {
+                    toast.error('Failed to install Karpenter', { id: 'karp-modal-install' });
+                    setKarpenterModalInstalling(false);
+                  }
+                }}
+                disabled={karpenterModalInstalling || !!karpenterInstallStatus?.karpenter_installed}
+                className="px-4 py-2 text-sm bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 flex items-center gap-1.5 transition-colors"
+              >
+                {karpenterModalInstalling ? (
+                  <>
+                    <span className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                    Installing...
+                  </>
+                ) : (
+                  <>
+                    <FiDownload className="w-3.5 h-3.5" />
+                    Install Karpenter
+                  </>
+                )}
               </button>
             </div>
           </div>

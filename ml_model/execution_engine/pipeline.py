@@ -316,7 +316,7 @@ class AgentExecutionLoop:
         ACTION_DISPATCH = {
             "CORDON_NODE":             "_execute_cordon",
             "DRAIN_NODE":              "_execute_drain",
-            "PATCH_KARPENTER_NODEPOOL": "_execute_karpenter_patch",
+            # PATCH_KARPENTER_NODEPOOL removed — NodePool patched directly via K8s API
             "INSTALL_KARPENTER":       "_execute_karpenter_install",
             "EVICT_POD":               "_execute_evict_pod",
             "LABEL_NODE":              "_execute_label_node",

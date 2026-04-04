@@ -26,10 +26,16 @@ class KarpenterMode(enum.Enum):
     DRY_RUN = "dry_run"     # Insights only — no EC2 changes
     AUTO = "auto"            # Full autonomous management
 
+def _generate_cluster_uid():
+    """Generate a short 8-char hex unique ID for human-readable cluster identification."""
+    import uuid as _uuid
+    return _uuid.uuid4().hex[:8]
+
 class Cluster(Base):
     __tablename__ = "clusters"
 
     id = Column(String(36), primary_key=True)
+    cluster_uid = Column(String(8), unique=True, index=True, default=_generate_cluster_uid)  # Short unique display ID
     name = Column(String, index=True)
     account_id = Column(String, ForeignKey("accounts.id"), nullable=False)
     arn = Column(String, unique=True, index=True)
@@ -108,6 +114,9 @@ class Cluster(Base):
     # Dismissed flag — prevents re-discovery after user removes the cluster
     is_dismissed = Column(Boolean, default=False, nullable=False, server_default="false")
 
+    # Migration tracking: True when the original managed node group has been deleted
+    managed_node_group_deleted = Column(Boolean, default=False, nullable=False, server_default="false")
+
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -138,7 +147,7 @@ class ClusterOptimizationSettings(Base):
     auto_rightsizing_enabled = Column(Boolean, default=False)
     auto_stateful_rightsizing_enabled = Column(Boolean, default=False)
     cooldown_override_minutes = Column(Integer, nullable=True)
-    spot_join_timeout_minutes = Column(Integer, nullable=True)  # How long to wait for new spot node to join (default 30 min)
+    # spot_join_timeout_minutes removed — Karpenter manages node readiness timing
     manual_approval_required = Column(Boolean, default=False)
     target_spot_exposure_pct = Column(Integer, default=100)
     
@@ -154,9 +163,7 @@ class ClusterOptimizationSettings(Base):
     # if a better spot pool exists (double gate: risk < current AND price < OD).
     instance_aware_rightsizing = Column(Boolean, default=False)
 
-    # Task 4.8: Max instance types to attempt during spot launch cascade.
-    # Replaces hardcoded [:6] slice in auto_rebalancer._launch_spot_instance_direct().
-    max_instance_type_attempts = Column(Integer, default=6, nullable=False)
+    # max_instance_type_attempts removed — Karpenter handles instance type selection
 
     # Dynamic autoscaler settings (mini-CA built into the rebalancer)
     # min_node_count  — hard floor: watchdog never scales below this value.
@@ -194,12 +201,15 @@ class ClusterOptimizationSettings(Base):
     # Set to >1 for clusters that can safely handle parallel node replacements.
     max_concurrent_rebalance_actions = Column(Integer, nullable=True)
 
-    # CAST-like attach-to-ASG mode: when True, the replacement Spot instance is
-    # attached to the source ASG after joining Kubernetes, and the source OD node
-    # is terminated with ShouldDecrementDesiredCapacity=False so the ASG desired
-    # capacity stays constant.  When False (default), the existing external-node
-    # mode is used (replacement lives outside the ASG).
-    attach_to_asg_enabled = Column(Boolean, default=False, nullable=False, server_default='false')
+    # Batch rebalance percentage: max % of target nodes to rebalance in one cycle.
+    # NULL = auto (use PDB-safe value when respect_pdb_enabled, else 15%).
+    # When set, value is still capped to PDB-safe limit if respect_pdb_enabled is True.
+    rebalance_batch_percent = Column(Integer, nullable=True, default=None)
+
+    # attach_to_asg_enabled removed — Karpenter manages all nodes, ASG handling no longer relevant
+
+    # When True, the rebalancer skips all ASG code paths (pure Karpenter provisioning)
+    karpenter_only_mode = Column(Boolean, default=False, nullable=False, server_default="false")
 
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     

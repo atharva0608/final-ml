@@ -97,6 +97,16 @@ async def register_agent(
     cluster.last_heartbeat = datetime.utcnow()
     
     db.commit()
+
+    # Invalidate cluster list cache so UI shows agent-connected status immediately
+    try:
+        from backend.core.redis_client import get_redis_client
+        _r = get_redis_client()
+        if _r:
+            for _key in _r.scan_iter("clusters:*"):
+                _r.delete(_key)
+    except Exception:
+        pass
     
     return AgentResponse(
         success=True,
@@ -242,7 +252,7 @@ async def submit_action_result(
     """
     Agent reports the result of a command it executed.
 
-    Called after the agent finishes CORDON_NODE / DRAIN_NODE / PATCH_KARPENTER_NODEPOOL.
+    Called after the agent finishes CORDON_NODE / DRAIN_NODE / TERMINATE_NODE.
     Updates the AgentAction record and logs the outcome.
 
     Protocol:

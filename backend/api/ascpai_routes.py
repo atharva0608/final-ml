@@ -1366,6 +1366,7 @@ async def get_volatility_status(db: Session = Depends(get_db)):
 @router.get("/clusters/{cluster_id}/node-recommendations")
 async def get_node_recommendations(
     cluster_id: str,
+    use_rightsized: bool = Query(False, description="When true, substitute right-sizing recommended values into the bin-packing simulation"),
     db: Session = Depends(get_db),
 ):
     """
@@ -1382,6 +1383,7 @@ async def get_node_recommendations(
     from backend.services.workload_inspector import WorkloadInspector, NodeStatus
     from backend.core.redis_client import get_redis_client
     from backend.services.dynamic_instance_helpers import bulk_get_hourly_prices, bulk_get_vcpu_counts, bulk_get_memory_gb
+    from sqlalchemy import or_
 
     cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
     if not cluster:
@@ -1393,6 +1395,8 @@ async def get_node_recommendations(
     # real EC2 records (i-xxxx) and daemon-set placeholders (ip-xxx-xxx)
     # for the same physical node are collapsed to one entry.
     # Exclude instances with no instance_type (orphan/ghost records that never joined EKS).
+    # NOTE: notin_() excludes NULL rows in SQL, so we use or_(..., is_(None))
+    # to keep instances whose status hasn't been set yet (nullable column).
     _all_instances = db.query(Instance).filter(
         Instance.cluster_id == cluster_id,
         Instance.state == 'running',
@@ -1401,7 +1405,7 @@ async def get_node_recommendations(
         Instance.instance_type != 'unknown',
         Instance.instance_id.isnot(None),
         Instance.instance_id != '',
-        Instance.status.notin_(['UNKNOWN']),  # exclude orphaned: EC2 alive but K8s node gone
+        or_(Instance.status.notin_(['UNKNOWN']), Instance.status.is_(None)),
     ).all()
     _seen: dict = {}
     for _inst in _all_instances:
@@ -1910,12 +1914,332 @@ async def get_node_recommendations(
         _r["s2s_candidate"] = _s2s_trigger is not None
         _r["s2s_trigger"] = _s2s_trigger
 
+    # ── Build summary block for the UI ──────────────────────────────────
+    _total_current_hourly = sum(r.get("current_cost", 0) for r in recommendations)
+    _total_target_hourly = sum(r.get("target_spot_price", 0) or 0 for r in recommendations)
+    _total_od_hourly = sum(r.get("od_cost", 0) for r in recommendations)
+    _total_monthly_cost = round(_total_current_hourly * 730, 2)
+    _total_potential = round(max(0, _total_current_hourly - _total_target_hourly) * 730, 2)
+
+    # ── Karpenter multi-cycle convergence simulation (v2) ───────────────
+    # Replaces single-pass FFD with production-grade simulation that mirrors
+    # real Karpenter + auto-rebalancer behavior:
+    #   - Consistent snapshot (frozen timestamp)
+    #   - Virtual cluster state with node/pod transitions
+    #   - Multi-cycle convergence loop (max 10 cycles)
+    #   - Greedy scheduler (not globally-optimal FFD)
+    #   - Redis constraint replay (launch_blocked, blacklist, risky_pools)
+    #   - Per-cluster pool view (not shared regional cache)
+    #   - Stateless/stateful two-pool separation
+    #   - Fragmentation modeling (8% default correction)
+    #   - Confidence scoring
+    _karpenter_simulation = None
+    _karp_mode = getattr(cluster, 'karpenter_mode', None)
+    if _karp_mode is not None:
+        try:
+            from backend.models.pod_metric import PodMetric as _PM_karp
+            from sqlalchemy import func as _func_karp
+            from datetime import datetime as _dt_karp, timedelta as _td_karp
+            from backend.services.simulation_engine import (
+                SimNode, SimPod, SimPool, SimRedisState, SimClusterSettings,
+                SimulationSnapshot, run_simulation, build_simulation_output,
+                SYSTEM_NAMESPACES, DAEMONSET_KINDS, KUBELET_CPU_M, KUBELET_MEM_BYTES,
+            )
+
+            _snapshot_frozen_at = _dt_karp.utcnow()
+
+            # ── 1) Gather pod resource demands (latest metric per pod) ────────
+            _karp_cutoff = _snapshot_frozen_at - _td_karp(minutes=10)
+            _karp_latest_subq = db.query(
+                _PM_karp.pod_name,
+                _PM_karp.node_name,
+                _func_karp.max(_PM_karp.timestamp).label('max_ts')
+            ).filter(
+                _PM_karp.cluster_id == cluster_id,
+                _PM_karp.timestamp >= _karp_cutoff
+            ).group_by(_PM_karp.pod_name, _PM_karp.node_name).subquery()
+
+            _karp_pods = db.query(_PM_karp).join(
+                _karp_latest_subq,
+                (_PM_karp.pod_name == _karp_latest_subq.c.pod_name) &
+                (_PM_karp.node_name == _karp_latest_subq.c.node_name) &
+                (_PM_karp.timestamp == _karp_latest_subq.c.max_ts)
+            ).all()
+
+            # ── Separate DaemonSet pods from user workloads ───────────────────
+            _user_pod_demands = []
+            _daemonset_demands = []
+            _ds_seen = set()
+
+            for _kp in _karp_pods:
+                _meta = _kp.pod_metadata or {}
+                _ctrl_kind = _kp.controller_kind or _meta.get('owner_kind', '')
+                _ns = _kp.namespace or ''
+                _is_ds = _ctrl_kind in DAEMONSET_KINDS
+                _is_sys = _ns in SYSTEM_NAMESPACES
+                _is_stateful = (
+                    _ctrl_kind == 'StatefulSet' or
+                    any('persistentVolumeClaim' in v
+                        for v in (_meta.get('volumes') or [])
+                        if isinstance(v, dict))
+                )
+
+                _cpu_req = _kp.cpu_request_millicores
+                _mem_req = _kp.memory_request_bytes
+                _cpu_use = _kp.cpu_usage_millicores or 0
+                _mem_use = _kp.memory_usage_bytes or 0
+
+                if _cpu_req and _cpu_req > 0:
+                    _cpu_m = _cpu_req
+                else:
+                    _cpu_m = max(int(_cpu_use * 1.5), 50)
+
+                if _mem_req and _mem_req > 0:
+                    _mem_b = _mem_req
+                else:
+                    _mem_b = max(int(_mem_use * 1.5), 64 * 1024 * 1024)
+
+                _pod_entry = SimPod(
+                    pod_name=_kp.pod_name,
+                    namespace=_ns,
+                    controller_name=_kp.controller_name or '',
+                    controller_kind=_ctrl_kind,
+                    cpu_millicores=_cpu_m,
+                    memory_bytes=_mem_b,
+                    is_stateful=_is_stateful,
+                    is_daemonset=_is_ds,
+                    is_system=_is_sys,
+                    node_name=(_kp.node_name or '').split('.')[0],
+                    node_selector=_meta.get('node_selector') or None,
+                    tolerations=_meta.get('tolerations') or None,
+                    has_pod_anti_affinity=bool((_meta.get('affinity') or {}).get('pod_anti_affinity_required')),
+                    has_pod_affinity=bool((_meta.get('affinity') or {}).get('pod_affinity_required')),
+                    topology_spread_constraints=_meta.get('topology_spread_constraints') or None,
+                    cpu_limit_millicores=getattr(_kp, 'cpu_limit_millicores', None),
+                    memory_limit_bytes=getattr(_kp, 'memory_limit_bytes', None),
+                )
+
+                if _is_ds or _is_sys:
+                    _ds_key = (_kp.controller_name or _kp.pod_name.rsplit('-', 1)[0])
+                    if _ds_key not in _ds_seen:
+                        _ds_seen.add(_ds_key)
+                        _daemonset_demands.append(_pod_entry)
+                else:
+                    _user_pod_demands.append(_pod_entry)
+
+            # Fallback: if no pod metrics, estimate from node-level utilization
+            if not _user_pod_demands and not _daemonset_demands and _node_list:
+                for _nd in _node_list:
+                    _nd_vcpu = VCPU_COUNT.get(_nd['instance_type'], 2)
+                    _nd_mem = MEM_GB_MAP.get(_nd['instance_type'], 4.0)
+                    _cpu_used = int(_nd_vcpu * 1000 * max(10, _nd.get('cpu_util', 50)) / 100)
+                    _mem_used = int(_nd_mem * 1024 * 1024 * 1024 * max(10, _nd.get('memory_util', 50)) / 100)
+                    _user_pod_demands.append(SimPod(
+                        pod_name=f"node-workload-{_nd['node_name']}",
+                        namespace='default',
+                        controller_name='',
+                        controller_kind='',
+                        cpu_millicores=_cpu_used,
+                        memory_bytes=_mem_used,
+                        is_stateful=False,
+                        is_daemonset=False,
+                        is_system=False,
+                        node_name=_nd['node_name'],
+                    ))
+
+            # ── DaemonSet per-node overhead ───────────────────────────────────
+            _ds_cpu_overhead = sum(d.cpu_millicores for d in _daemonset_demands)
+            _ds_mem_overhead = sum(d.memory_bytes for d in _daemonset_demands)
+
+            # ── Right-sizing substitution ─────────────────────────────────────
+            if use_rightsized:
+                try:
+                    from backend.services.rightsizing_service import RightSizingService as _RSsvc
+                    _rs_svc = _RSsvc(db)
+                    _rs_recs = _rs_svc.generate_recommendations(cluster_id=cluster_id)
+                    _rs_lookup = {}
+                    for _rr in _rs_recs:
+                        _key = (_rr.namespace, _rr.controller_name)
+                        _rs_lookup[_key] = (
+                            _rr.recommended_cpu_request_millicores,
+                            int(_rr.recommended_memory_request_mb * 1024 * 1024),
+                        )
+                    _rs_applied = 0
+                    for _up in _user_pod_demands:
+                        _ctrl = _up.controller_name
+                        if not _ctrl:
+                            _parts = _up.pod_name.rsplit('-', 2)
+                            _ctrl = '-'.join(_parts[:-2]) if len(_parts) >= 3 else '-'.join(_parts[:-1]) if len(_parts) >= 2 else _up.pod_name
+                        _key = (_up.namespace, _ctrl)
+                        if _key in _rs_lookup:
+                            _up.cpu_millicores = _rs_lookup[_key][0]
+                            _up.memory_bytes = _rs_lookup[_key][1]
+                            _rs_applied += 1
+                    logger.info(f"karp-sim: right-sized {_rs_applied}/{len(_user_pod_demands)} pods using {len(_rs_lookup)} recommendations")
+                except Exception as _rs_err:
+                    logger.warning(f"karp-sim: right-sizing substitution failed: {_rs_err}")
+
+            # ── Build SimNode list from _node_list ────────────────────────────
+            import re as _karp_arch_re
+            _sim_nodes_list = []
+            for _nd in _node_list:
+                _nd_family = (_nd['instance_type'] or 'm5.large').split('.')[0]
+                _nd_arch = 'arm64' if (bool(_karp_arch_re.search(r'\dg', _nd_family)) or _nd_family == 'a1') else 'amd64'
+                _nd_vcpu_v = VCPU_COUNT.get(_nd['instance_type'], 2)
+                _nd_mem_v = MEM_GB_MAP.get(_nd['instance_type'], 4.0)
+                _nd_price = float(INSTANCE_HOURLY.get(_nd['instance_type'], 0.096) or 0.096)
+                # If spot, use spot price from market view
+                if _nd['lifecycle'] == 'spot':
+                    _sp_key = (_nd['instance_type'], _nd['az'])
+                    _nd_price = _mv_spot_prices.get(_sp_key, _nd_price)
+
+                # Workload class from WorkloadInspector classification
+                _cached_cls = node_classification.get(_nd['node_name'])
+                if _cached_cls == 'STATEFUL_PROTECTED':
+                    _wl_class = 'stateful'
+                elif _cached_cls == 'SYSTEM_PROTECTED':
+                    _wl_class = 'system'
+                else:
+                    _wl_class = 'stateless'
+
+                _sim_nodes_list.append(SimNode(
+                    instance_id=_nd['instance_id'],
+                    instance_type=_nd['instance_type'],
+                    lifecycle=_nd['lifecycle'],
+                    az=_nd['az'],
+                    architecture=_nd_arch,
+                    vcpu=_nd_vcpu_v,
+                    memory_gb=_nd_mem_v,
+                    price_hourly=_nd_price,
+                    workload_class=_wl_class,
+                    status=_nd.get('node_health_status', 'READY'),
+                    is_standby=False,
+                    node_name=_nd['node_name'],
+                ))
+
+            # ── Build candidate SimPool list from top_pools ───────────────────
+            _sim_pools = []
+            _seen_pool_types = set()
+            for _tp in top_pools:
+                _it = _tp.pool.instance_type
+                if _it in _seen_pool_types:
+                    continue
+                _tp_arch = (_tp.pool.architecture or 'amd64').replace('x86_64', 'amd64')
+                if _tp.pool.vcpu < 2 or _tp.pool.memory_gb < 2.0:
+                    continue
+                _sp = _tp.pool.spot_price
+                _od_ref = getattr(_tp.pool, 'ondemand_price', 0) or INSTANCE_HOURLY.get(_it, 0)
+                if _sp <= 0:
+                    continue
+                if _od_ref > 0:
+                    _discount = (_od_ref - _sp) / _od_ref
+                    if _discount < 0.05 or _discount > 0.90:
+                        continue
+
+                _seen_pool_types.add(_it)
+                _risk = _tp.risk_probability
+                _savings = _tp.predicted_savings
+                _ml_score = round(_savings * max(0.0, 1.0 - _risk), 6)
+
+                _sim_pools.append(SimPool(
+                    instance_type=_it,
+                    az=_tp.pool.az,
+                    architecture=_tp_arch,
+                    vcpu=_tp.pool.vcpu,
+                    memory_gb=_tp.pool.memory_gb,
+                    spot_price=_sp,
+                    od_price=_od_ref,
+                    risk_probability=_risk,
+                    ml_score=_ml_score,
+                ))
+
+            # ── Build Redis constraint state snapshot ─────────────────────────
+            _sim_redis = SimRedisState()
+            try:
+                # Launch blocked keys: spot:launch_blocked:{cid}:{type}:{az}
+                _lb_pattern = f"spot:launch_blocked:{cluster_id}:*"
+                _lb_keys = redis.keys(_lb_pattern)
+                for _lbk in (_lb_keys or []):
+                    _lbk_str = _lbk.decode() if isinstance(_lbk, bytes) else _lbk
+                    # Extract {cid}:{type}:{az} part
+                    _parts = _lbk_str.replace(f"spot:launch_blocked:", "")
+                    _sim_redis.launch_blocked.add(_parts)
+
+                # Global blacklist
+                _bl_members = redis.smembers("risky_pools") or set()
+                for _bl in _bl_members:
+                    _bl_str = _bl.decode() if isinstance(_bl, bytes) else _bl
+                    _sim_redis.risky_pools.add(_bl_str)
+
+                # PDB safe percent
+                _pdb_raw = redis.get(f"pdb:safe_percent:{cluster_id}")
+                if _pdb_raw:
+                    _sim_redis.pdb_safe_percent = int(_pdb_raw)
+            except Exception as _redis_err:
+                logger.debug(f"karp-sim: redis snapshot partial: {_redis_err}")
+
+            # ── Build cluster settings ────────────────────────────────────────
+            _opt = cluster.optimization_settings
+            _strat = cluster.optimization_strategy_profile
+            _sim_settings = SimClusterSettings(
+                target_spot_exposure_pct=int(getattr(_opt, 'target_spot_exposure_pct', 100) or 100) if _opt else 100,
+                diversify_pools=bool(getattr(_opt, 'diversify_pools', False)) if _opt else False,
+                max_family_diversification_cap_pct=int(getattr(_opt, 'max_family_diversification_cap_pct', 40) or 40) if _opt else 40,
+                architecture_preference=getattr(_opt, 'architecture_preference', 'both') or 'both' if _opt else 'both',
+                min_node_count=int(getattr(_opt, 'min_node_count', 1) or 1) if _opt else 1,
+                rebalance_batch_percent=getattr(_opt, 'rebalance_batch_percent', None) if _opt else None,
+                risk_ceiling_percent=int(getattr(_strat, 'risk_ceiling_percent', 25) or 25) if _strat else 25,
+                risk_savings_tradeoff_pct=int(getattr(_strat, 'risk_savings_tradeoff_pct', 20) or 20) if _strat else 20,
+            )
+
+            # ── Assemble the frozen snapshot ──────────────────────────────────
+            import uuid
+            _all_pods = _user_pod_demands + _daemonset_demands
+            _snapshot = SimulationSnapshot(
+                snapshot_id=str(uuid.uuid4()),
+                frozen_at=_snapshot_frozen_at,
+                cluster_id=cluster_id,
+                nodes=_sim_nodes_list,
+                pods=_all_pods,
+                redis_state=_sim_redis,
+                cluster_settings=_sim_settings,
+                karpenter_mode=str(_karp_mode.value) if hasattr(_karp_mode, 'value') else str(_karp_mode),
+                use_rightsized=use_rightsized,
+                candidate_pools=_sim_pools,
+                ds_cpu_overhead=_ds_cpu_overhead,
+                ds_mem_overhead=_ds_mem_overhead,
+            )
+
+            # ── Run multi-cycle convergence simulation ────────────────────────
+            _sim_result = run_simulation(_snapshot)
+
+            # ── Build enhanced output ─────────────────────────────────────────
+            _karpenter_simulation = build_simulation_output(
+                result=_sim_result,
+                snapshot=_snapshot,
+                current_node_count=len(_node_list),
+                current_monthly_cost=_total_monthly_cost,
+            )
+
+        except Exception as _karp_sim_err:
+            logger.warning(f"node-recommendations: karpenter simulation failed: {_karp_sim_err}")
+            import traceback; logger.warning(traceback.format_exc())
+            _karpenter_simulation = None
+
     return {
         "recommendations": recommendations,
+        "summary": {
+            "total_nodes": len(recommendations),
+            "total_monthly_cost": _total_monthly_cost,
+            "total_od_baseline": round(_total_od_hourly * 730, 2),
+            "potential_additional_monthly_savings": _total_potential,
+            "eligible_pools_count": eligible_pools_count,
+        },
         "eligible_pools_count": eligible_pools_count,
         "pool_distribution": _pool_shares,
         "family_distribution": _pool_shares,  # kept for backward compat — same data
         "diversify_enabled": _diversify_enabled,
+        "karpenter_simulation": _karpenter_simulation,
     }
 
 

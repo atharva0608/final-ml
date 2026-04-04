@@ -44,6 +44,8 @@ services:
       context: ..
       dockerfile: docker/Dockerfile.backend
     container_name: spot-optimizer-backend
+    init: true
+    command: uvicorn backend.core.api_gateway:app --host 0.0.0.0 --port 8000
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-password}@postgres:5432/${POSTGRES_DB:-spot_optimizer}
       REDIS_URL: redis://redis:6379/0

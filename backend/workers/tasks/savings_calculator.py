@@ -159,7 +159,17 @@ def calculate_real_savings(self: Task):
                 cluster.realized_savings_monthly = round(realized_savings, 2)
                 cluster.on_demand_node_count = len(on_demand_instances)
                 cluster.spot_count = len(spot_instances)
+                cluster.node_count = len(instances)
                 cluster.last_assessed = datetime.utcnow()
+
+                # ── Also update estimated_savings (alias for potential_savings) ─
+                cluster.estimated_savings = round(potential_savings, 2)
+
+                # ── Recompute monthly_cost from live instance prices × 730 ───────
+                priced_instances = [i for i in instances if i.price and float(i.price) > 0]
+                if priced_instances:
+                    live_monthly_cost = sum(float(i.price) for i in priced_instances) * HOURS_PER_MONTH
+                    cluster.monthly_cost = round(live_monthly_cost, 2)
 
                 if (abs(old_potential - potential_savings) > 0.01 or
                         abs(old_realized - realized_savings) > 0.01):

@@ -240,7 +240,27 @@ def delete_cluster(
         # Use INACTIVE for soft-delete marker; some deployed DBs don't include
         # TERMINATED in the clusterstatus enum yet.
         cluster.status = _CS.INACTIVE
+        # Reset Karpenter mode so re-created clusters don't inherit stale state
+        cluster.karpenter_mode = None
+        cluster.agent_installed = "N"
         db.commit()
+
+        # Hard-delete child rows that reference this cluster (cascade may not fire
+        # on soft-delete). Best-effort — failures won't block cluster removal.
+        try:
+            from backend.models.pod_metric import PodMetric
+            from backend.models.instance import Instance
+            from backend.models.agent_action import AgentAction
+            from backend.models.rebalancing import RebalancingAction
+            db.query(PodMetric).filter(PodMetric.cluster_id == cluster_id).delete(synchronize_session=False)
+            db.query(Instance).filter(Instance.cluster_id == cluster_id).delete(synchronize_session=False)
+            db.query(AgentAction).filter(AgentAction.cluster_id == cluster_id).delete(synchronize_session=False)
+            db.query(RebalancingAction).filter(RebalancingAction.cluster_id == cluster_id).delete(synchronize_session=False)
+            db.commit()
+            logger.info(f"Hard-deleted child rows for cluster {cluster_id}")
+        except Exception as _child_err:
+            logger.warning(f"Child row cleanup for {cluster_id} partial failure: {_child_err}")
+            db.rollback()
 
         # BUG-5 fix: Clean up Redis keys scoped to this cluster.
         # Keys with short TTLs self-expire; only clean long-lived / no-TTL keys.
@@ -255,6 +275,26 @@ def delete_cluster(
                 f"spot:last_check:{cluster_id}",
                 f"rebalance:active_count:{cluster_id}",
                 f"karpenter_config:{cluster_id}",
+                # Karpenter detection keys (prevent stale status on re-created clusters)
+                f"karpenter:live_status:{cluster_id}",
+                f"karpenter:detected:{cluster_id}",
+                f"spot:karpenter:installed:{cluster_id}",
+                # Additional cluster state keys
+                f"spot:cluster_state:{cluster_id}",
+                f"spot:cluster_mode:{cluster_id}",
+                f"spot:execution_plan:{cluster_id}",
+                f"spot:node_classification:{cluster_id}",
+                f"spot:node_arch_constraints:{cluster_id}",
+                f"spot:ondemand_fallback:{cluster_id}",
+                f"spot:execution_failures:{cluster_id}",
+                f"spot:substitute:state:{cluster_id}",
+                f"spot:substitute:meta:{cluster_id}",
+                f"obs:decisions:{cluster_id}",
+                f"cb:state:{cluster_id}",
+                f"cb:rollbacks:{cluster_id}",
+                f"cb:last_failure:{cluster_id}",
+                f"cb:state_entered:{cluster_id}",
+                f"metrics:cluster:{cluster_id}:summary",
             ]
             for _dk in _direct_keys:
                 try:
@@ -266,6 +306,10 @@ def delete_cluster(
                 f"spot:launch_blocked:{cluster_id}:*",
                 f"spot:cooldown:*:{cluster_id}",
                 f"lock:node_action:{cluster_id}:*",
+                f"spot:rejection_counter:{cluster_id}:*",
+                f"hibernation:lock:*:{cluster_id}",
+                f"spot:karpenter:nodepool_updated:{cluster_id}",
+                f"spot:warm_spare:*:{cluster_id}",
             ]:
                 try:
                     _cursor = 0
@@ -755,6 +799,14 @@ def get_cluster_optimization_settings(
     strategy = cluster.optimization_strategy_profile
     stateless = cluster.stateless_rules
     stateful = cluster.stateful_rules
+
+    # Compute PDB-safe batch percentage (cached in Redis, 5-min TTL)
+    pdb_safe_percent = None
+    try:
+        from backend.services.pdb_service import get_pdb_safe_percent_for_cluster
+        pdb_safe_percent = get_pdb_safe_percent_for_cluster(cluster, db)
+    except Exception:
+        pass  # Non-critical — UI will use default
     
     return {
         "automation_controls": {
@@ -762,7 +814,6 @@ def get_cluster_optimization_settings(
             "auto_rightsizing_enabled": automation.auto_rightsizing_enabled if automation else False,
             "instance_aware_rightsizing": automation.instance_aware_rightsizing if automation else False,
             "cooldown_override_minutes": automation.cooldown_override_minutes if automation else None,
-            "spot_join_timeout_minutes": automation.spot_join_timeout_minutes if automation else None,
             "manual_approval_required": automation.manual_approval_required if automation else False,
             "target_spot_exposure_pct": automation.target_spot_exposure_pct if automation else 100,
             # Sub-toggles — required so the frontend doesn't overwrite them with stale defaults on save
@@ -777,6 +828,8 @@ def get_cluster_optimization_settings(
             "enable_ascp_auto_scaler": automation.enable_ascp_auto_scaler if automation else False,
             "check_interval_seconds": automation.check_interval_seconds if automation else 15,
             "architecture_preference": automation.architecture_preference if automation else "both",
+            "rebalance_batch_percent": automation.rebalance_batch_percent if automation else None,
+            "karpenter_only_mode": automation.karpenter_only_mode if automation else False,
         },
         "optimization_strategy": {
             "strategy_type": strategy.strategy_type if strategy else "BALANCED",
@@ -803,7 +856,8 @@ def get_cluster_optimization_settings(
             "require_approval": stateful.require_approval if stateful else True,
             "block_spot_for_stateful": stateful.block_spot_for_stateful if stateful else True,
             "max_downscale_percent": stateful.max_downscale_percent if stateful else 25
-        }
+        },
+        "pdb_safe_percent": pdb_safe_percent,
     }
 
 @router.put("/{cluster_id}/optimization-settings", response_model=UnifiedOptimizationSettings)
@@ -952,4 +1006,191 @@ def get_cluster_summary(
         },
         "spend_velocity": spend_velocity,
         "is_hibernating": getattr(cluster, 'is_hibernating', False),
+    }
+
+
+# ── Migration Endpoints ────────────────────────────────────────────────────────
+
+@router.post("/{cluster_id}/start-migration")
+def start_full_migration(
+    cluster_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Start full migration from managed node groups to Karpenter.
+
+    Pre-checks:
+    - Karpenter must be installed (karpenter_mode is not NULL).
+    - Agent must be healthy.
+
+    Actions:
+    - Sets auto_rebalance_enabled = True
+    - Sets target_spot_exposure_pct = 100
+    - Sets karpenter_mode = 'auto'
+    """
+    from backend.models.cluster import Cluster, ClusterOptimizationSettings, KarpenterMode
+
+    cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
+    if not cluster:
+        raise HTTPException(status_code=404, detail="Cluster not found")
+
+    # Check Karpenter is installed
+    if cluster.karpenter_mode is None:
+        # Also try Redis detection
+        try:
+            from backend.core.redis_client import get_redis_client
+            redis = get_redis_client()
+            karpenter_key = redis.get(f"spot:karpenter:installed:{cluster_id}")
+            if not karpenter_key:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Karpenter is not installed on this cluster. Install Karpenter first."
+                )
+        except HTTPException:
+            raise
+        except Exception:
+            raise HTTPException(
+                status_code=400,
+                detail="Karpenter is not installed on this cluster. Install Karpenter first."
+            )
+
+    # Already migrated?
+    if getattr(cluster, 'managed_node_group_deleted', False):
+        raise HTTPException(
+            status_code=400,
+            detail="Migration already completed — managed node group has been deleted."
+        )
+
+    # Enable auto-rebalancing with full migration settings
+    opt = db.query(ClusterOptimizationSettings).filter(
+        ClusterOptimizationSettings.cluster_id == cluster_id
+    ).first()
+    if not opt:
+        opt = ClusterOptimizationSettings(cluster_id=cluster_id)
+        db.add(opt)
+
+    opt.auto_rebalance_enabled = True
+    opt.target_spot_exposure_pct = 100
+    cluster.auto_rebalance_enabled = True
+    cluster.karpenter_mode = KarpenterMode.AUTO
+
+    db.commit()
+
+    return {
+        "status": "migration_started",
+        "cluster_id": cluster_id,
+        "cluster_name": cluster.name,
+        "settings": {
+            "auto_rebalance_enabled": True,
+            "target_spot_exposure_pct": 100,
+            "karpenter_mode": "auto",
+        },
+        "message": f"Full migration started for cluster {cluster.name}. "
+                   f"The rebalancer will replace all On-Demand nodes with Spot instances."
+    }
+
+
+@router.get("/{cluster_id}/migration-status")
+def get_migration_status(
+    cluster_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Get migration progress for a cluster."""
+    from backend.models.cluster import Cluster, ClusterOptimizationSettings
+    from backend.models.instance import Instance, InstanceLifecycle
+
+    cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
+    if not cluster:
+        raise HTTPException(status_code=404, detail="Cluster not found")
+
+    # Count running instances by lifecycle
+    total_running = db.query(Instance).filter(
+        Instance.cluster_id == cluster_id,
+        Instance.state == 'running',
+    ).count()
+    od_running = db.query(Instance).filter(
+        Instance.cluster_id == cluster_id,
+        Instance.state == 'running',
+        Instance.lifecycle == InstanceLifecycle.ON_DEMAND,
+    ).count()
+    spot_running = db.query(Instance).filter(
+        Instance.cluster_id == cluster_id,
+        Instance.state == 'running',
+        Instance.lifecycle == InstanceLifecycle.SPOT,
+    ).count()
+
+    opt = cluster.optimization_settings
+    karpenter_only = getattr(opt, 'karpenter_only_mode', False) if opt else False
+    managed_ng_deleted = getattr(cluster, 'managed_node_group_deleted', False)
+
+    # Compute progress
+    if total_running > 0:
+        spot_pct = round(spot_running / total_running * 100, 1)
+    else:
+        spot_pct = 0.0
+
+    # Determine phase
+    if managed_ng_deleted and karpenter_only:
+        phase = "completed"
+    elif od_running == 0 and spot_running > 0:
+        phase = "completing"  # Awaiting node group deletion
+    elif getattr(opt, 'auto_rebalance_enabled', False):
+        phase = "in_progress"
+    else:
+        phase = "not_started"
+
+    return {
+        "cluster_id": cluster_id,
+        "cluster_name": cluster.name,
+        "phase": phase,
+        "total_nodes": total_running,
+        "on_demand_remaining": od_running,
+        "spot_nodes": spot_running,
+        "spot_percentage": spot_pct,
+        "managed_node_group_deleted": managed_ng_deleted,
+        "karpenter_only_mode": karpenter_only,
+    }
+
+
+@router.post("/{cluster_id}/force-complete-migration")
+def force_complete_migration(
+    cluster_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Force-complete migration: set karpenter_only_mode=True.
+
+    Safety hatch for when migration is stuck (e.g., PDB-blocked nodes).
+    Does NOT delete the managed node group — that must be done manually.
+    """
+    from backend.models.cluster import Cluster, ClusterOptimizationSettings
+    from datetime import datetime
+
+    cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
+    if not cluster:
+        raise HTTPException(status_code=404, detail="Cluster not found")
+
+    opt = db.query(ClusterOptimizationSettings).filter(
+        ClusterOptimizationSettings.cluster_id == cluster_id
+    ).first()
+    if not opt:
+        opt = ClusterOptimizationSettings(cluster_id=cluster_id)
+        db.add(opt)
+
+    opt.karpenter_only_mode = True
+    opt.updated_at = datetime.utcnow()
+    cluster.managed_node_group_deleted = True
+    cluster.updated_at = datetime.utcnow()
+
+    db.commit()
+
+    return {
+        "status": "force_completed",
+        "cluster_id": cluster_id,
+        "cluster_name": cluster.name,
+        "karpenter_only_mode": True,
+        "managed_node_group_deleted": True,
+        "message": f"Migration force-completed for cluster {cluster.name}. "
+                   f"All ASG code paths will be skipped."
     }

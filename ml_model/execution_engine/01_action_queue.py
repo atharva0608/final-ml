@@ -23,9 +23,10 @@ This queue-based architecture:
   - Allows retry and deduplication logic
   - Enables one-at-a-time serialization (no concurrent drains)
 
-THREE ACTIONS PER REBALANCE CYCLE
------------------------------------
-For each on-demand → spot migration, 3 AgentActions are created in sequence:
+TWO ACTIONS PER REBALANCE CYCLE + DIRECT K8S PATCH
+----------------------------------------------------
+For each on-demand → spot migration, 2 AgentActions are created in sequence,
+and the Karpenter NodePool is patched directly via the K8s API:
 
   1. CORDON_NODE
      Payload: { instance_id, instance_type, az, rebalancing_action_id }
@@ -39,11 +40,10 @@ For each on-demand → spot migration, 3 AgentActions are created in sequence:
               Pods reschedule on remaining on-demand nodes.
               After drain: node is empty but still EC2-running.
 
-  3. PATCH_KARPENTER_NODEPOOL
-     Payload: { nodepool_name="default", instance_types=[target_type],
-                capacity_type=["spot"], az=target_az, rebalancing_action_id }
-     Effect:  Updates Karpenter's NodePool CRD to prefer the target spot pool.
-              If the old node is terminated after drain (causing pods to be PENDING),
+  Direct K8s API call (KarpenterService.add_allowed_instance_type):
+     Effect:  Patches the Karpenter NodePool CRD directly via the K8s API
+              to add the target instance type. No agent action needed.
+              When the old node is terminated (causing pods to be PENDING),
               Karpenter will provision a new node matching these requirements.
 
 SAFETY GATES BEFORE QUEUE
@@ -82,7 +82,6 @@ from typing import Optional
 # AgentAction types (must match backend/models/agent_action.py AgentActionType enum)
 CORDON_NODE = "CORDON_NODE"
 DRAIN_NODE = "DRAIN_NODE"
-PATCH_KARPENTER_NODEPOOL = "PATCH_KARPENTER_NODEPOOL"
 EVICT_POD = "EVICT_POD"
 LABEL_NODE = "LABEL_NODE"
 UPDATE_DEPLOYMENT = "UPDATE_DEPLOYMENT"
@@ -102,10 +101,12 @@ def create_pool_switch_actions(
     nodepool_name: str = "default"
 ) -> list:
     """
-    Create the 3 AgentAction records needed for a pool switch.
+    Create the 2 AgentAction records needed for a pool switch and patch
+    the Karpenter NodePool directly via the K8s API.
 
     Called by execute_rebalancing_action() after all safety gates pass.
-    The agent executes these actions in DB-creation order.
+    The agent executes CORDON + DRAIN in DB-creation order. The NodePool
+    is patched directly via KarpenterService (no agent action needed).
 
     Args:
         db_session:           SQLAlchemy DB session
@@ -154,26 +155,21 @@ def create_pool_switch_actions(
         }
     )
 
-    # Action 3: Patch Karpenter NodePool to target the desired spot pool
+    # Step 3: Patch Karpenter NodePool directly via K8s API
     # This tells Karpenter: when you need to provision a new node, use THIS instance type+AZ
     # Karpenter will only actually create the node when pods are PENDING (after termination)
-    nodepool_action = AgentAction(
+    # No agent action needed — we call the K8s API directly from the backend
+    from backend.services.karpenter_service import KarpenterService
+    KarpenterService.add_allowed_instance_type(
         cluster_id=cluster_id,
-        action_type=AgentActionType.PATCH_KARPENTER_NODEPOOL,
-        payload={
-            "nodepool_name": nodepool_name,
-            "instance_types": [target_instance_type],  # Karpenter will use this type
-            "capacity_type": ["spot"],                 # Spot only (not on-demand)
-            "az": target_az,                           # Preferred AZ for new node
-            "rebalancing_action_id": rebalancing_action_id,
-        }
+        nodepool_name=nodepool_name,
+        instance_type=target_instance_type,
     )
 
     db_session.add(cordon_action)
     db_session.add(drain_action)
-    db_session.add(nodepool_action)
 
-    return [cordon_action, drain_action, nodepool_action]
+    return [cordon_action, drain_action]
 
 
 def check_safety_gates(db_session, cluster_id: str, action_id: str) -> tuple:

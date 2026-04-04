@@ -209,95 +209,6 @@ const PoolRankings = ({ clusterId, initialTemplateId = null }) => {
             const rankings = response.data.rankings || response.data.pools || response.data;
             const primaryInstancePrice = response.data.current_node_context?.price || null;
 
-            try {
-                const configResponse = await ascpaiAPI.getEffectiveConfiguration(clusterId);
-                setEffectiveConfig(configResponse.data);
-            } catch (cfgErr) {
-                console.debug('Effective configuration fetch failed (non-fatal):', cfgErr?.message);
-            }
-
-            // Fetch Node-Specific Recommendations (Non-blocking)
-            try {
-                setNodeViewLoading(true);
-                const nodeRes = await ascpaiAPI.getNodeRecommendations(clusterId);
-                const nodeData = nodeRes.data || {};
-                // Backend now returns { recommendations: [...], eligible_pools_count: N }
-                const recs = Array.isArray(nodeData) ? nodeData : (nodeData.recommendations || []);
-                setNodeRecommendations(recs);
-                setEligiblePoolsCount(nodeData.eligible_pools_count ?? recs.length);
-                // Build distribution from recs grouped by lifecycle + instance_type
-                // (ignore target AZ — we want "what types are running", not "what pools are targeted")
-                const _distMap = {};
-                recs.forEach(rec => {
-                    const _lc = rec.lifecycle === 'spot' ? 'SPOT' : 'OD';
-                    const _key = `${rec.current_type} (${_lc})`;
-                    if (!_distMap[_key]) _distMap[_key] = { count: 0, pct: 0 };
-                    _distMap[_key].count++;
-                });
-                const _distTotal = Object.values(_distMap).reduce((s, v) => s + v.count, 0);
-                Object.keys(_distMap).forEach(k => {
-                    _distMap[k].pct = _distTotal > 0 ? Math.round((_distMap[k].count / _distTotal) * 100) : 0;
-                });
-                setFamilyDistribution(_distMap);
-                setDiversifyEnabled(nodeData.diversify_enabled || false);
-
-                // Fetch live rebalancing actions to drive real STATUS column
-                try {
-                    const rebRes = await ascpaiAPI.getRebalancingStatus(clusterId, 20);
-                    setRebalancingActions(Array.isArray(rebRes.data) ? rebRes.data : []);
-                } catch (_rebErr) {
-                    // non-fatal — status column falls back to lifecycle-based logic
-                }
-            } catch (err) {
-                console.debug('Node recommendations endpoint pending:', err.message);
-                // Keep stale data — do not blank the table on transient errors
-            } finally {
-                setNodeViewLoading(false);
-            }
-
-            // Fetch Cluster Impact Measurements (Non-blocking)
-            try {
-                setClusterViewLoading(true);
-                const impactRes = await ascpaiAPI.getClusterImpact(clusterId);
-                setClusterImpact(impactRes.data || null);
-            } catch (err) {
-                console.debug('Cluster impact endpoint pending:', err.message);
-                setClusterImpact(null);
-            } finally {
-                setClusterViewLoading(false);
-            }
-
-            // Fetch Per-Node Coverage Report (changes.md Part 8)
-            try {
-                setCoverageLoading(true);
-                const covRes = await ascpaiAPI.getClusterCoverage(clusterId);
-                setCoverageData(covRes.data || null);
-                // Pre-select first node if none selected, or reset if selected node is gone
-                const nodes = covRes.data?.per_node_summary || [];
-                if (nodes.length > 0) {
-                    if (!selectedNodeId || !nodes.some(n => n.node_id === selectedNodeId)) {
-                        setSelectedNodeId(nodes[0].node_id);
-                    }
-                }
-            } catch (err) {
-                console.debug('Coverage endpoint pending:', err.message);
-                setCoverageData(null);
-            } finally {
-                setCoverageLoading(false);
-            }
-
-            // Fetch Savings Velocity (Non-blocking)
-            try {
-                setSavingsVelocityLoading(true);
-                const svRes = await ascpaiAPI.getSavingsVelocity(clusterId, 30);
-                setSavingsVelocityData(svRes.data || null);
-            } catch (err) {
-                console.debug('Savings velocity endpoint pending or failed:', err.message);
-                setSavingsVelocityData(null);
-            } finally {
-                setSavingsVelocityLoading(false);
-            }
-
             setClusterInfo(prev => ({ ...prev, primaryInstancePrice }));
             setPools(Array.isArray(rankings) ? rankings : []);
             setError(null);
@@ -306,6 +217,96 @@ const PoolRankings = ({ clusterId, initialTemplateId = null }) => {
             console.error('Error fetching pool rankings:', err);
         } finally {
             setLoading(false);
+        }
+
+        // ── Step 5: Independent fetches (run even if rankings failed) ───
+        try {
+            const configResponse = await ascpaiAPI.getEffectiveConfiguration(clusterId);
+            setEffectiveConfig(configResponse.data);
+        } catch (cfgErr) {
+            console.debug('Effective configuration fetch failed (non-fatal):', cfgErr?.message);
+        }
+
+        // Fetch Node-Specific Recommendations (Fleet View data)
+        try {
+            setNodeViewLoading(true);
+            const nodeRes = await ascpaiAPI.getNodeRecommendations(clusterId);
+            const nodeData = nodeRes.data || {};
+            // Backend now returns { recommendations: [...], eligible_pools_count: N }
+            const recs = Array.isArray(nodeData) ? nodeData : (nodeData.recommendations || []);
+            setNodeRecommendations(recs);
+            setEligiblePoolsCount(nodeData.eligible_pools_count ?? recs.length);
+            // Build distribution from recs grouped by lifecycle + instance_type
+            // (ignore target AZ — we want "what types are running", not "what pools are targeted")
+            const _distMap = {};
+            recs.forEach(rec => {
+                const _lc = rec.lifecycle === 'spot' ? 'SPOT' : 'OD';
+                const _key = `${rec.current_type} (${_lc})`;
+                if (!_distMap[_key]) _distMap[_key] = { count: 0, pct: 0 };
+                _distMap[_key].count++;
+            });
+            const _distTotal = Object.values(_distMap).reduce((s, v) => s + v.count, 0);
+            Object.keys(_distMap).forEach(k => {
+                _distMap[k].pct = _distTotal > 0 ? Math.round((_distMap[k].count / _distTotal) * 100) : 0;
+            });
+            setFamilyDistribution(_distMap);
+            setDiversifyEnabled(nodeData.diversify_enabled || false);
+
+            // Fetch live rebalancing actions to drive real STATUS column
+            try {
+                const rebRes = await ascpaiAPI.getRebalancingStatus(clusterId, 20);
+                setRebalancingActions(Array.isArray(rebRes.data) ? rebRes.data : []);
+            } catch (_rebErr) {
+                // non-fatal — status column falls back to lifecycle-based logic
+            }
+        } catch (err) {
+            console.debug('Node recommendations endpoint pending:', err.message);
+            // Keep stale data — do not blank the table on transient errors
+        } finally {
+            setNodeViewLoading(false);
+        }
+
+        // Fetch Cluster Impact Measurements
+        try {
+            setClusterViewLoading(true);
+            const impactRes = await ascpaiAPI.getClusterImpact(clusterId);
+            setClusterImpact(impactRes.data || null);
+        } catch (err) {
+            console.debug('Cluster impact endpoint pending:', err.message);
+            setClusterImpact(null);
+        } finally {
+            setClusterViewLoading(false);
+        }
+
+        // Fetch Per-Node Coverage Report (changes.md Part 8)
+        try {
+            setCoverageLoading(true);
+            const covRes = await ascpaiAPI.getClusterCoverage(clusterId);
+            setCoverageData(covRes.data || null);
+            // Pre-select first node if none selected, or reset if selected node is gone
+            const nodes = covRes.data?.per_node_summary || [];
+            if (nodes.length > 0) {
+                if (!selectedNodeId || !nodes.some(n => n.node_id === selectedNodeId)) {
+                    setSelectedNodeId(nodes[0].node_id);
+                }
+            }
+        } catch (err) {
+            console.debug('Coverage endpoint pending:', err.message);
+            setCoverageData(null);
+        } finally {
+            setCoverageLoading(false);
+        }
+
+        // Fetch Savings Velocity
+        try {
+            setSavingsVelocityLoading(true);
+            const svRes = await ascpaiAPI.getSavingsVelocity(clusterId, 30);
+            setSavingsVelocityData(svRes.data || null);
+        } catch (err) {
+            console.debug('Savings velocity endpoint pending or failed:', err.message);
+            setSavingsVelocityData(null);
+        } finally {
+            setSavingsVelocityLoading(false);
         }
     };
 
@@ -704,6 +705,14 @@ const PoolRankings = ({ clusterId, initialTemplateId = null }) => {
 
                     {/* Table */}
                     <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+                        {/* Fleet View header */}
+                        <div className="flex items-center justify-between px-6 py-3 border-b border-slate-100 bg-slate-50">
+                            <div className="flex items-center gap-2">
+                                <span className="text-xs font-bold text-slate-700 uppercase tracking-widest">Fleet View</span>
+                                <span className="text-[10px] text-slate-400 font-medium">— Node-Specific Pool Rankings</span>
+                            </div>
+                            <span className="text-[10px] text-slate-400">{nodeRecommendations.length} node{nodeRecommendations.length !== 1 ? 's' : ''}</span>
+                        </div>
                         <table className="w-full text-left">
                             <thead className="bg-white border-b border-slate-100">
                                 <tr>

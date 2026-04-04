@@ -160,7 +160,131 @@ class HeartbeatSender:
         }
         self._health_lock = threading.Lock()
 
+        # Karpenter live detection state
+        self._karpenter_status = {
+            'detected': False,
+            'pods_running': 0,
+            'controller_healthy': False,
+            'webhook_healthy': False,
+            'last_check': None,
+            'error': None,
+        }
+        self._k8s_initialized = False
+        self._k8s_core_v1 = None
+        self._k8s_apps_v1 = None
+
         logger.info(f"HeartbeatSender initialized for agent: {agent_id}")
+
+    def _ensure_k8s_client(self):
+        """Lazy-initialize K8s clients for Karpenter detection."""
+        if self._k8s_initialized:
+            return
+        try:
+            from kubernetes import client as k8s_client, config as k8s_config
+            try:
+                k8s_config.load_incluster_config()
+            except k8s_config.ConfigException:
+                k8s_config.load_kube_config()
+            self._k8s_core_v1 = k8s_client.CoreV1Api()
+            self._k8s_apps_v1 = k8s_client.AppsV1Api()
+            self._k8s_initialized = True
+        except Exception as e:
+            logger.warning(f"K8s client init for karpenter detection failed: {e}")
+
+    def detect_karpenter_live(self) -> Dict[str, Any]:
+        """
+        Live detection: check if Karpenter controller pods are actually running.
+        Checks both 'karpenter' and 'kube-system' namespaces.
+        """
+        self._ensure_k8s_client()
+        if not self._k8s_core_v1:
+            return {
+                'detected': False,
+                'pods_running': 0,
+                'controller_healthy': False,
+                'webhook_healthy': False,
+                'last_check': datetime.utcnow().isoformat(),
+                'error': 'k8s_client_unavailable',
+            }
+
+        try:
+            karpenter_pods = []
+            controller_healthy = False
+            webhook_healthy = False
+
+            # Check 'karpenter' namespace first (standard), then 'kube-system' (legacy)
+            for ns in ('karpenter', 'kube-system'):
+                try:
+                    pods = self._k8s_core_v1.list_namespaced_pod(
+                        namespace=ns,
+                        label_selector='app.kubernetes.io/name=karpenter',
+                        timeout_seconds=5,
+                    )
+                    karpenter_pods.extend(pods.items)
+                except Exception:
+                    pass
+
+            # If label selector didn't find anything, try name-based search
+            if not karpenter_pods:
+                for ns in ('karpenter', 'kube-system'):
+                    try:
+                        pods = self._k8s_core_v1.list_namespaced_pod(
+                            namespace=ns,
+                            timeout_seconds=5,
+                        )
+                        for pod in pods.items:
+                            if 'karpenter' in (pod.metadata.name or '').lower():
+                                karpenter_pods.append(pod)
+                    except Exception:
+                        pass
+
+            running_pods = 0
+            for pod in karpenter_pods:
+                phase = (pod.status.phase or '').lower() if pod.status else ''
+                name = (pod.metadata.name or '').lower()
+                if phase == 'running':
+                    running_pods += 1
+                    if 'controller' in name or 'karpenter' in name:
+                        # Check container statuses
+                        if pod.status.container_statuses:
+                            all_ready = all(
+                                cs.ready for cs in pod.status.container_statuses
+                            )
+                            if all_ready:
+                                controller_healthy = True
+                    if 'webhook' in name:
+                        if pod.status.container_statuses:
+                            all_ready = all(
+                                cs.ready for cs in pod.status.container_statuses
+                            )
+                            if all_ready:
+                                webhook_healthy = True
+
+            detected = running_pods > 0 and controller_healthy
+
+            result = {
+                'detected': detected,
+                'pods_running': running_pods,
+                'controller_healthy': controller_healthy,
+                'webhook_healthy': webhook_healthy,
+                'last_check': datetime.utcnow().isoformat(),
+                'error': None,
+            }
+            self._karpenter_status = result
+            return result
+
+        except Exception as e:
+            logger.warning(f"Karpenter live detection error: {e}")
+            result = {
+                'detected': False,
+                'pods_running': 0,
+                'controller_healthy': False,
+                'webhook_healthy': False,
+                'last_check': datetime.utcnow().isoformat(),
+                'error': str(e),
+            }
+            self._karpenter_status = result
+            return result
 
     def start_health_server(self, port: int = 8080):
         """
@@ -307,12 +431,16 @@ class HeartbeatSender:
         # Collect metrics
         metrics = self.collect_agent_metrics()
 
+        # Live Karpenter detection — runs every heartbeat cycle
+        karpenter_live = self.detect_karpenter_live()
+
         payload = {
             'cluster_id': self.cluster_id,
             'agent_id': self.agent_id,
             'timestamp': datetime.utcnow().isoformat(),
             'status': 'healthy',
             'metrics': metrics,
+            'karpenter_status': karpenter_live,
         }
         # BUG-14 fix: thread-safe snapshot
         with self._health_lock:

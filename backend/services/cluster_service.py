@@ -220,7 +220,8 @@ class ClusterService:
 
                     cluster = self.db.query(Cluster).filter(
                         Cluster.name == cluster_name,
-                        Cluster.account_id == account.id
+                        Cluster.account_id == account.id,
+                        Cluster.is_dismissed == False,
                     ).first()
 
                     if not cluster:
@@ -313,11 +314,12 @@ class ClusterService:
         if not account:
             raise ResourceNotFoundError("Account", cluster_data.account_id)
 
-        # Check for duplicate cluster name in account
+        # Check for duplicate cluster name in account (exclude dismissed/deleted clusters)
         existing = self.db.query(Cluster).filter(
             and_(
                 Cluster.account_id == cluster_data.account_id,
-                Cluster.name == cluster_data.name
+                Cluster.name == cluster_data.name,
+                Cluster.is_dismissed == False,
             )
         ).first()
 
@@ -378,11 +380,12 @@ class ClusterService:
         if not user or not user.organization_id:
              raise ResourceNotFoundError("User or Organization", user_id)
 
-        # Check for existing cluster with same name within org
+        # Check for existing cluster with same name within org (exclude dismissed/deleted)
         existing = self.db.query(Cluster).join(Account).filter(
             and_(
                 Account.organization_id == user.organization_id,
-                Cluster.name == connect_data.name
+                Cluster.name == connect_data.name,
+                Cluster.is_dismissed == False,
             )
         ).first()
 
@@ -525,7 +528,8 @@ class ClusterService:
             query = query.filter(
                 or_(
                     Cluster.name.ilike(search_pattern),
-                    Cluster.arn.ilike(search_pattern)
+                    Cluster.arn.ilike(search_pattern),
+                    Cluster.cluster_uid.ilike(search_pattern)
                 )
             )
 
@@ -574,6 +578,7 @@ class ClusterService:
 
             cluster_list_items.append(ClusterListItem(
                 id=cluster.id,
+                cluster_uid=cluster.cluster_uid,
                 name=cluster.name,
                 region=cluster.region,
                 status=cluster.status.value,
@@ -1156,6 +1161,7 @@ echo "✅ Agent successfully deployed!"
         """
         return ClusterResponse(
             id=cluster.id,
+            cluster_uid=cluster.cluster_uid,
             account_id=cluster.account_id,
             name=cluster.name,
             arn=cluster.arn,
@@ -1168,7 +1174,13 @@ echo "✅ Agent successfully deployed!"
             tags=cluster.tags,
             created_at=cluster.created_at,
             updated_at=cluster.updated_at,
-            auto_rebalance_enabled=cluster.auto_rebalance_enabled or False
+            auto_rebalance_enabled=cluster.auto_rebalance_enabled or False,
+            monthly_cost=float(cluster.monthly_cost or 0),
+            estimated_savings=float(cluster.estimated_savings or 0),
+            realized_savings_monthly=float(getattr(cluster, 'realized_savings_monthly', 0) or 0),
+            node_count=cluster.node_count or 0,
+            spot_count=cluster.spot_count or 0,
+            on_demand_node_count=cluster.on_demand_node_count or 0,
         )
 
     def get_cluster_nodes(self, cluster_id: str, user_id: str) -> dict:
@@ -1471,10 +1483,15 @@ echo "✅ Agent successfully deployed!"
                 "pod_name": pod.pod_name,
                 "namespace": pod.namespace,
                 "cpu_usage_millicores": pod.cpu_usage_millicores,
+                "cpu_request_millicores": pod.cpu_request_millicores,
                 "memory_usage_bytes": pod.memory_usage_bytes,
+                "memory_request_bytes": pod.memory_request_bytes,
                 "memory_usage_mb": round(
                     pod.memory_usage_bytes / (1024 * 1024), 2
                 ) if pod.memory_usage_bytes else 0,
+                "memory_request_mb": round(
+                    pod.memory_request_bytes / (1024 * 1024), 2
+                ) if pod.memory_request_bytes else 0,
                 "has_pvc": has_pvc,
                 "controller_type": owner_kind,
                 "is_stateful": has_pvc or owner_kind == 'StatefulSet',
@@ -1647,6 +1664,13 @@ echo "✅ Agent successfully deployed!"
                 except Exception:
                     pass  # condition enrichment is best-effort; never blocks node display
 
+                # Compute request-based allocation % (CPU/MEM reserved by pod requests vs capacity)
+                # This matches what AWS EKS console shows and is useful for over-provisioning analysis
+                _total_cpu_req_m = sum(p.get('cpu_request_millicores') or 0 for p in node_pods) if node_pods else 0
+                _total_mem_req_mb = sum(p.get('memory_request_mb') or 0 for p in node_pods) if node_pods else 0
+                _cpu_alloc_pct = round((_total_cpu_req_m / (node_cpu_capacity_cores * 1000)) * 100, 2) if node_cpu_capacity_cores > 0 else 0
+                _mem_alloc_pct = round((_total_mem_req_mb / (node_memory_capacity_gb * 1024)) * 100, 2) if node_memory_capacity_gb > 0 else 0
+
                 nodes_detailed.append({
                     "instance_id": inst.instance_id,
                     "node_name": node_name,
@@ -1657,10 +1681,14 @@ echo "✅ Agent successfully deployed!"
                     "classification": node_classification,
                     "cpu_utilization_pct": round(node_cpu_util_pct, 2),
                     "memory_utilization_pct": round(node_mem_util_pct, 2),
+                    "cpu_request_pct": _cpu_alloc_pct,
+                    "memory_request_pct": _mem_alloc_pct,
                     "cpu_capacity_cores": node_cpu_capacity_cores,
                     "memory_capacity_gb": node_memory_capacity_gb,
                     "total_cpu_usage_millicores": sum(p['cpu_usage_millicores'] for p in node_pods if p['cpu_usage_millicores']) if node_pods else 0,
+                    "total_cpu_request_millicores": _total_cpu_req_m,
                     "total_memory_usage_mb": round(sum(p['memory_usage_mb'] for p in node_pods), 2) if node_pods else 0,
+                    "total_memory_request_mb": round(_total_mem_req_mb, 2),
                     "pod_count": len(node_pods),
                     "stateful_pod_count": len(stateful_pods),
                     "pods": node_pods,
@@ -1686,10 +1714,18 @@ echo "✅ Agent successfully deployed!"
             f"from pod_metrics ({'enriched with instances' if instances else 'pod_metrics_only'})"
         )
 
+        _total_pods = sum(n["pod_count"] for n in nodes_detailed)
+        _spot_friendly_pods = sum(
+            len([p for p in n["pods"] if not p.get("is_stateful", False)])
+            for n in nodes_detailed
+        )
+
         return {
             "cluster_id": cluster_id,
             "cluster_name": cluster.name,
             "total_nodes": len(nodes_detailed),
+            "total_pods": _total_pods,
+            "spot_friendly_pods": _spot_friendly_pods,
             "nodes": nodes_detailed,
             "timestamp": datetime.utcnow().isoformat(),
             "data_source": "instances_primary" if instances else "pod_metrics_only"

@@ -297,25 +297,85 @@ class MetricsService:
         filters: MetricFilter
     ) -> TimeSeriesData:
         """
-        Get cost metrics over time
+        Get cost metrics over time.
 
-        Args:
-            user_id: User UUID
-            filters: Time range and cluster filters
-
-        Returns:
-            TimeSeriesData with daily cost data
+        When a cluster_id is provided, computes the daily cost from live instance
+        hourly prices (price × 24h per day) so the chart reflects actual cluster
+        compute cost rather than noisy AWS billing export data.
         """
         start_date = filters.start_date or (datetime.now(timezone.utc) - timedelta(days=30))
         end_date = filters.end_date or datetime.now(timezone.utc)
 
-        # Generate daily time series
-        # This is a simplified version - in production, you'd query actual cost data
         data_points: List[TimeSeriesPoint] = []
 
+        # ── Cluster-specific: derive daily cost from instance hourly prices ──
+        if filters.cluster_id:
+            from backend.models.instance import Instance as _Inst
+            running_instances = self.db.query(_Inst).filter(
+                _Inst.cluster_id == filters.cluster_id,
+                _Inst.state == 'running',
+                _Inst.price.isnot(None),
+                _Inst.price > 0,
+            ).all()
+
+            daily_cost = 0.0
+
+            if running_instances:
+                # daily cost = sum of hourly prices × 24 h/day
+                daily_cost = float(sum(float(i.price) for i in running_instances)) * 24.0
+            else:
+                # Running instances may exist but lack prices (e.g. K8s-discovered
+                # nodes before EC2 pricing sync).  Look up OD rates for their
+                # instance types so the chart isn't blank or inflated by the
+                # account-wide DailyCost fallback.
+                all_running = self.db.query(_Inst).filter(
+                    _Inst.cluster_id == filters.cluster_id,
+                    _Inst.state == 'running',
+                ).all()
+                if all_running:
+                    try:
+                        from backend.utils.pricing_helper import get_pricing_helper
+                        ph = get_pricing_helper()
+                        cluster = self.db.query(Cluster).filter(
+                            Cluster.id == filters.cluster_id
+                        ).first()
+                        region = cluster.region if cluster else 'us-east-1'
+                        hourly_sum = 0.0
+                        for inst in all_running:
+                            monthly = ph.get_ec2_price(region, inst.instance_type or 't3.medium')
+                            hourly_sum += monthly / 730.0
+                        daily_cost = hourly_sum * 24.0
+                    except Exception:
+                        pass  # fall through to cluster.monthly_cost
+
+                # Last resort: cluster.monthly_cost from DB
+                if daily_cost <= 0:
+                    cluster = self.db.query(Cluster).filter(
+                        Cluster.id == filters.cluster_id
+                    ).first()
+                    if cluster and cluster.monthly_cost and float(cluster.monthly_cost) > 0:
+                        daily_cost = float(cluster.monthly_cost) / 30.0
+
+            if daily_cost > 0:
+                current_date = start_date
+                while current_date <= end_date:
+                    data_points.append(
+                        TimeSeriesPoint(
+                            timestamp=current_date,
+                            value=round(daily_cost, 4)
+                        )
+                    )
+                    current_date += timedelta(days=1)
+
+                return TimeSeriesData(
+                    metric_name="daily_cost",
+                    data_points=data_points,
+                    unit="USD"
+                )
+
+        # ── Fallback: original per-day cost calculation (DailyCost / EC2) ───
         current_date = start_date
         while current_date <= end_date:
-            # Calculate cost for this day
             day_cost = self._calculate_daily_cost(
                 user_id,
                 current_date,
@@ -337,6 +397,7 @@ class MetricsService:
             data_points=data_points,
             unit="USD"
         )
+
 
     def get_cluster_metrics(
         self,
@@ -698,10 +759,14 @@ class MetricsService:
 
         total_if_on_demand = on_demand_float + spot_equivalent_on_demand
 
-        # Calculate savings
-        total_savings = total_if_on_demand - total_cost_float
+        # Calculate savings: EC2 scope only.
+        # total_cost_float (from Cost Explorer) includes S3, RDS, VPC, etc.
+        # Comparing EC2-only OD baseline against all-AWS spend produces negative savings.
+        # Correct: savings = what spot EC2 would cost on OD - actual spot EC2 spend.
+        ec2_spot_savings = spot_equivalent_on_demand - spot_cost_float
+        total_savings = max(0.0, ec2_spot_savings)
 
-        # Calculate percentage
+        # Calculate percentage vs EC2-only all-OD baseline
         if total_if_on_demand > 0:
             savings_percentage = (total_savings / total_if_on_demand) * 100
         else:

@@ -767,97 +767,8 @@ class ActionActuator:
             logger.warning(f"Failed to find node for {instance_type}/{az}: {e}")
         return None
 
-    def patch_karpenter_nodepool(self, nodepool_name: str, instance_types: List[str],
-                                  capacity_type: List[str], az: str = None,
-                                  architecture: List[str] = None) -> Dict[str, Any]:
-        """
-        Patch a Karpenter NodePool to target specific instance types and capacity type (spot/on-demand).
-        Uses the Kubernetes CustomObjectsApi to patch the NodePool CRD.
-        """
-        from kubernetes import client as _k8s
-        custom_api = _k8s.CustomObjectsApi()
-
-        requirements = [
-            {"key": "karpenter.sh/capacity-type", "operator": "In", "values": capacity_type},
-            {"key": "node.kubernetes.io/instance-type", "operator": "In", "values": instance_types},
-        ]
-        if az:
-            requirements.append({"key": "topology.kubernetes.io/zone", "operator": "In", "values": [az]})
-        if architecture:
-            requirements.append({"key": "kubernetes.io/arch", "operator": "In", "values": architecture})
-
-        # NodePool v1 schema: requirements live at spec.template.spec.requirements
-        # NOT at spec.requirements — patching the wrong path is silently ignored by Karpenter.
-        patch_body = {"spec": {"template": {"spec": {"requirements": requirements}}}}
-
-        try:
-            result = custom_api.patch_cluster_custom_object(
-                group="karpenter.sh",
-                version="v1",
-                plural="nodepools",
-                name=nodepool_name,
-                body=patch_body
-            )
-            logger.info(f"Patched Karpenter NodePool {nodepool_name}: types={instance_types}, capacity={capacity_type}")
-            return {"success": True, "message": f"NodePool {nodepool_name} patched successfully", "nodepool": nodepool_name}
-        except Exception as e:
-            err_str = str(e)
-            # 404: NodePool doesn't exist — create it on the fly
-            if '404' in err_str or 'Not Found' in err_str:
-                logger.warning(f"NodePool '{nodepool_name}' not found — creating it now")
-                try:
-                    # ISSUE-11 FIX: Use CLUSTER_NAME env var as the reliable source of truth.
-                    # ConfigMap inference and node label lookup are unreliable fallbacks.
-                    cluster_name = os.getenv('CLUSTER_NAME', '').strip()
-                    if cluster_name:
-                        logger.info(f"[nodepool_autocreate] Using CLUSTER_NAME env var: {cluster_name}")
-                    else:
-                        # Fallback 1: Karpenter ConfigMap
-                        try:
-                            cm = self.core_v1.read_namespaced_config_map('karpenter-global-settings', 'karpenter')
-                            cluster_name = (cm.data or {}).get('clusterName', '')
-                            if cluster_name:
-                                logger.info(f"[nodepool_autocreate] Got cluster name from ConfigMap: {cluster_name}")
-                        except Exception:
-                            cluster_name = ''
-                    if not cluster_name:
-                        # Fallback 2: infer from any node's cluster tag label
-                        try:
-                            all_nodes = self.core_v1.list_node(limit=1)
-                            for _n in all_nodes.items:
-                                _labels = _n.metadata.labels or {}
-                                cluster_name = (_labels.get('alpha.eksctl.io/cluster-name') or
-                                                _labels.get('eks.amazonaws.com/cluster-name') or '')
-                                if cluster_name:
-                                    logger.info(f"[nodepool_autocreate] Inferred cluster name from node labels: {cluster_name}")
-                                    break
-                        except Exception:
-                            pass
-                    if cluster_name:
-                        self._create_default_karpenter_resources(cluster_name, nodepool_name)
-                        # Now patch the newly created NodePool
-                        try:
-                            result = custom_api.patch_cluster_custom_object(
-                                group="karpenter.sh", version="v1", plural="nodepools",
-                                name=nodepool_name, body=patch_body
-                            )
-                            logger.info(f"Created+patched NodePool '{nodepool_name}'")
-                            return {"success": True, "message": f"NodePool '{nodepool_name}' created and patched", "nodepool": nodepool_name}
-                        except Exception as _patch_err:
-                            logger.warning(f"Patch after create failed: {_patch_err} — using newly created NodePool as-is")
-                            return {"success": True, "message": f"NodePool '{nodepool_name}' created with requested requirements", "nodepool": nodepool_name}
-                    else:
-                        logger.warning(f"Cannot create NodePool — cluster name unknown. Karpenter may not be installed.")
-                        return {"success": False, "message": f"NodePool '{nodepool_name}' not found and cluster name could not be determined — ensure Karpenter is installed"}
-                except Exception as _create_err:
-                    logger.error(f"Failed to create NodePool '{nodepool_name}': {_create_err}")
-                    return {"success": False, "message": f"NodePool not found and auto-creation failed: {_create_err}"}
-            # Karpenter CRD itself not installed (no matches for kind)
-            if 'No matches for kind' in err_str:
-                return {"success": False, "message": "Karpenter CRDs not found — install Karpenter first"}
-            error_msg = f"Failed to patch NodePool {nodepool_name}: {e}"
-            logger.error(error_msg)
-            return {"success": False, "message": error_msg, "error": str(e)}
+    # patch_karpenter_nodepool() removed — auto-rebalancer now patches NodePool
+    # directly via K8s API instead of queuing an agent action.
 
     def install_karpenter(self, cluster_name: str, region: str,
                           karpenter_version: str = "1.0.8",
@@ -926,7 +837,7 @@ class ActionActuator:
             except Exception as ae_err:
                 logger.warning(f"KarpenterNodeRole access entry setup failed (manual step may be needed): {ae_err}")
 
-            # Create a basic EC2NodeClass + NodePool after install
+            # Create EC2NodeClass + dual NodePools (stateless-spot + stateful-od) after install
             try:
                 self._create_default_karpenter_resources(cluster_name, nodepool_name)
             except Exception as np_err:
@@ -948,17 +859,20 @@ class ActionActuator:
             return {"success": False, "message": str(e)}
 
     def _create_default_karpenter_resources(self, cluster_name: str, nodepool_name: str):
-        """Create a minimal EC2NodeClass and NodePool after Karpenter install.
+        """Create EC2NodeClass and dual NodePools after Karpenter install.
+
+        Creates:
+        - EC2NodeClass 'default' with AL2023 amiFamily (dual-arch)
+        - NodePool 'stateless-spot' for stateless workloads (spot capacity)
+        - NodePool 'stateful-od' for stateful workloads (on-demand capacity)
+        - NodePool 'default' as catch-all (spot + on-demand, backward compat)
 
         Uses AL2023 amiFamily with alias: al2023@latest — Karpenter resolves the correct
-        architecture-specific AMI from SSM at provisioning time (amd64 AMI for x86_64 nodes,
-        arm64 AMI for Graviton nodes). This is the canonical Karpenter v1.x approach and
-        eliminates the need for hardcoded AMI IDs or per-arch AMI selectors.
+        architecture-specific AMI from SSM at provisioning time.
         """
         custom_api = client.CustomObjectsApi()
 
         # EC2NodeClass — AL2023 amiFamily with alias supports BOTH amd64 AND arm64 automatically.
-        # Karpenter resolves the correct AMI via SSM Parameter Store at launch time.
         node_class = {
             "apiVersion": "karpenter.k8s.aws/v1",
             "kind": "EC2NodeClass",
@@ -982,7 +896,6 @@ class ActionActuator:
             logger.info("Created default EC2NodeClass (AL2023, dual-arch)")
         except Exception as e:
             if "already exists" in str(e).lower():
-                # Patch the existing EC2NodeClass to use the alias (idempotent upgrade)
                 try:
                     custom_api.patch_cluster_custom_object(
                         group="karpenter.k8s.aws", version="v1", plural="ec2nodeclasses",
@@ -995,10 +908,73 @@ class ActionActuator:
             else:
                 logger.warning(f"EC2NodeClass creation failed: {e}")
 
-        # NodePool — allows BOTH amd64 and arm64.
-        # EC2NodeClass (AL2023) handles architecture-specific AMI selection automatically.
-        # Instance types are overwritten at rebalance time by the ML ranker.
-        node_pool = {
+        # Common instance types for initial NodePool setup
+        _default_types = [
+            "m5.large", "m5.xlarge", "m6i.large", "m6i.xlarge",
+            "m6g.large", "m6g.xlarge", "c5.large", "c5.xlarge",
+            "c6g.large", "c6g.xlarge",
+        ]
+
+        # ── NodePool: stateless-spot (spot capacity for stateless workloads) ──
+        _stateless_spot = {
+            "apiVersion": "karpenter.sh/v1",
+            "kind": "NodePool",
+            "metadata": {
+                "name": "stateless-spot",
+                "annotations": {"spot-optimizer/managed": "true"},
+            },
+            "spec": {
+                "template": {
+                    "metadata": {
+                        "labels": {"workload": "stateless"},
+                    },
+                    "spec": {
+                        "nodeClassRef": {"group": "karpenter.k8s.aws", "kind": "EC2NodeClass", "name": "default"},
+                        "requirements": [
+                            {"key": "karpenter.sh/capacity-type", "operator": "In", "values": ["spot"]},
+                            {"key": "kubernetes.io/arch", "operator": "In", "values": ["amd64", "arm64"]},
+                            {"key": "node.kubernetes.io/instance-type", "operator": "In",
+                             "values": _default_types},
+                        ],
+                    }
+                },
+                "disruption": {"consolidationPolicy": "WhenEmptyOrUnderutilized", "consolidateAfter": "30s"},
+                "weight": 10,  # Higher weight = preferred for scheduling
+            }
+        }
+        self._create_nodepool_safe(custom_api, _stateless_spot, "stateless-spot")
+
+        # ── NodePool: stateful-od (on-demand for stateful workloads) ──
+        _stateful_od = {
+            "apiVersion": "karpenter.sh/v1",
+            "kind": "NodePool",
+            "metadata": {
+                "name": "stateful-od",
+                "annotations": {"spot-optimizer/managed": "true"},
+            },
+            "spec": {
+                "template": {
+                    "metadata": {
+                        "labels": {"workload": "stateful"},
+                    },
+                    "spec": {
+                        "nodeClassRef": {"group": "karpenter.k8s.aws", "kind": "EC2NodeClass", "name": "default"},
+                        "requirements": [
+                            {"key": "karpenter.sh/capacity-type", "operator": "In", "values": ["on-demand"]},
+                            {"key": "kubernetes.io/arch", "operator": "In", "values": ["amd64", "arm64"]},
+                            {"key": "node.kubernetes.io/instance-type", "operator": "In",
+                             "values": _default_types},
+                        ],
+                    }
+                },
+                "disruption": {"consolidationPolicy": "WhenEmpty", "consolidateAfter": "60s"},
+                "weight": 5,
+            }
+        }
+        self._create_nodepool_safe(custom_api, _stateful_od, "stateful-od")
+
+        # ── NodePool: default (catch-all, backward compat) ──
+        _default_pool = {
             "apiVersion": "karpenter.sh/v1",
             "kind": "NodePool",
             "metadata": {
@@ -1011,35 +987,37 @@ class ActionActuator:
                         "nodeClassRef": {"group": "karpenter.k8s.aws", "kind": "EC2NodeClass", "name": "default"},
                         "requirements": [
                             {"key": "karpenter.sh/capacity-type", "operator": "In", "values": ["spot", "on-demand"]},
-                            # Allow both architectures — AL2023 selects the correct AMI per arch
                             {"key": "kubernetes.io/arch", "operator": "In", "values": ["amd64", "arm64"]},
                             {"key": "node.kubernetes.io/instance-type", "operator": "In",
-                             "values": ["m5.large", "m5.xlarge", "m6i.large", "m6i.xlarge",
-                                        "m6g.large", "m6g.xlarge",  # Graviton3
-                                        "c5.large", "c5.xlarge", "c6g.large", "c6g.xlarge"]},
+                             "values": _default_types},
                         ],
                     }
                 },
                 "disruption": {"consolidationPolicy": "WhenEmptyOrUnderutilized", "consolidateAfter": "30s"},
+                "weight": 1,  # Lowest weight — fallback
             }
         }
+        self._create_nodepool_safe(custom_api, _default_pool, nodepool_name)
+
+    def _create_nodepool_safe(self, custom_api, body: dict, name: str):
+        """Create a NodePool, silently skip if it already exists."""
         try:
             custom_api.create_cluster_custom_object(
-                group="karpenter.sh", version="v1", plural="nodepools", body=node_pool
+                group="karpenter.sh", version="v1", plural="nodepools", body=body
             )
-            logger.info(f"Created default NodePool '{nodepool_name}'")
+            logger.info(f"Created NodePool '{name}'")
         except Exception as e:
             if "already exists" in str(e).lower():
-                logger.info(f"NodePool '{nodepool_name}' already exists, skipping")
+                logger.info(f"NodePool '{name}' already exists, skipping")
             else:
-                logger.warning(f"NodePool creation failed: {e}")
+                logger.warning(f"NodePool '{name}' creation failed: {e}")
 
     def _patch_container_resources(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """
         Patch CPU/memory requests and limits for a specific container in a workload.
 
         Called by PATCH_CONTAINER_RESOURCES AgentAction — the right-sizing execution path.
-        Complements PATCH_KARPENTER_NODEPOOL: that changes the node size, this changes
+        Complements Karpenter NodePool updates: that changes the node size, this changes
         what the container ASKS for (requests/limits inside the pod spec).
 
         Why both are needed:
@@ -1576,7 +1554,7 @@ class ActionActuator:
 
         Backend sends UPPERCASE action_type matching AgentActionType enum values:
           EVICT_POD | CORDON_NODE | DRAIN_NODE | TERMINATE_NODE |
-          LABEL_NODE | UPDATE_DEPLOYMENT | PATCH_KARPENTER_NODEPOOL |
+          LABEL_NODE | UPDATE_DEPLOYMENT |
           INSTALL_KARPENTER | UNINSTALL_KARPENTER | PATCH_CONTAINER_RESOURCES
 
         FIX-ENUM-01: All enum string values are UPPERCASE. Normalization happens
@@ -1657,15 +1635,6 @@ class ActionActuator:
                 payload['deployment_name'],
                 payload.get('replicas'),
                 payload.get('image')
-            )
-
-        elif action_type == 'PATCH_KARPENTER_NODEPOOL':
-            return self.patch_karpenter_nodepool(
-                nodepool_name=payload.get('nodepool_name', 'default'),
-                instance_types=payload.get('instance_types', []),
-                capacity_type=payload.get('capacity_type', ['spot']),
-                az=payload.get('az'),
-                architecture=payload.get('architecture')
             )
 
         elif action_type == 'INSTALL_KARPENTER':

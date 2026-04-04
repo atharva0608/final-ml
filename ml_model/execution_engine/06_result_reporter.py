@@ -177,27 +177,9 @@ def build_cordon_result(node_name: str, success: bool) -> dict:
     }
 
 
-def build_karpenter_patch_result(nodepool_name: str, instance_types: list,
-                                  az: Optional[str], success: bool) -> dict:
-    """
-    Build the result payload for a PATCH_KARPENTER_NODEPOOL action.
-
-    Args:
-        nodepool_name:  Karpenter NodePool name (e.g. "default")
-        instance_types: Instance types set in the requirements
-        az:             AZ set in the requirements (if any)
-        success:        Whether the PATCH CRD call succeeded
-
-    Returns:
-        Result dict to include in the POST body
-    """
-    return {
-        "action_type":   "patch_karpenter_nodepool",
-        "nodepool_name": nodepool_name,
-        "instance_types": instance_types,
-        "az":            az,
-        "patched":       success,
-    }
+# build_karpenter_patch_result() removed — PATCH_KARPENTER_NODEPOOL agent action
+# no longer exists. NodePool is now patched directly via K8s API
+# (KarpenterService.add_allowed_instance_type), so no agent result reporting needed.
 
 
 # ---------------------------------------------------------------------------

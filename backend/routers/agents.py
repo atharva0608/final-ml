@@ -279,6 +279,61 @@ async def agent_heartbeat(
             if cluster.agent_installed != 'Y':
                 cluster.agent_installed = 'Y'
                 cluster.status = ClusterStatus.ACTIVE
+
+            # ── Live Karpenter detection from agent ──
+            # The agent checks for actual Karpenter pods on every heartbeat
+            # and reports the status. We update Redis + DB accordingly.
+            karpenter_status = payload.get("karpenter_status")
+            _karp_live_detected = False
+            _karp_was_installed = cluster.karpenter_mode is not None
+            if karpenter_status and isinstance(karpenter_status, dict):
+                _karp_live_detected = karpenter_status.get("detected", False)
+                try:
+                    from backend.core.redis_client import get_redis_client
+                    import json as _hb_json
+                    _hb_redis = get_redis_client()
+                    if _hb_redis:
+                        # Store live karpenter status from agent (60s TTL — refreshed every heartbeat)
+                        _live_key = f"karpenter:live_status:{cluster_id}"
+                        _hb_redis.setex(_live_key, 60, _hb_json.dumps(karpenter_status))
+
+                        # Update the detection cache to reflect live state
+                        _det_key = f"karpenter:detected:{cluster_id}"
+                        _inst_key = f"spot:karpenter:installed:{cluster_id}"
+
+                        if _karp_live_detected:
+                            # Karpenter is running — refresh installed keys
+                            _mode = cluster.karpenter_mode.value if cluster.karpenter_mode else 'auto'
+                            _det_result = {
+                                'detected': True,
+                                'cluster_id': cluster_id,
+                                'karpenter_mode': _mode,
+                                'source': 'agent_heartbeat',
+                            }
+                            _hb_redis.setex(_det_key, 120, _hb_json.dumps(_det_result))
+                            _hb_redis.setex(_inst_key, 3600, _mode)
+                            # Auto-set karpenter_mode if not already set
+                            if cluster.karpenter_mode is None:
+                                from backend.models.cluster import KarpenterMode
+                                cluster.karpenter_mode = KarpenterMode.AUTO
+                                logger.info(f"Auto-detected Karpenter on cluster {cluster_id}, set mode=AUTO")
+                        else:
+                            # Karpenter NOT running — if it was previously installed,
+                            # mark as missing so UI can show reinstall prompt
+                            if _karp_was_installed:
+                                _det_result = {
+                                    'detected': False,
+                                    'cluster_id': cluster_id,
+                                    'karpenter_mode': 'missing',
+                                    'previously_installed': True,
+                                    'source': 'agent_heartbeat',
+                                    'error': karpenter_status.get('error'),
+                                }
+                                _hb_redis.setex(_det_key, 120, _hb_json.dumps(_det_result))
+                                _hb_redis.delete(_inst_key)
+                except Exception as _karp_err:
+                    logger.debug(f"Karpenter heartbeat status update error: {_karp_err}")
+
             db.commit()
 
         return {

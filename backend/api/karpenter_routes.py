@@ -409,23 +409,18 @@ def update_karpenter_config(
             # (WhenEmptyOrUnderutilized → WhenEmpty) to prevent conflicting provisioning.
             if auto_rebalancing and cluster.karpenter_mode is not None:
                 try:
-                    from backend.models.agent_action import AgentAction, AgentActionType
-                    _disable_consol = AgentAction(
+                    from backend.services.karpenter_service import KarpenterService
+                    _ksvc = KarpenterService(db, None)
+                    _ksvc.patch_node_pool_allowed_types(
                         cluster_id=cluster_id,
-                        action_type=AgentActionType.PATCH_KARPENTER_NODEPOOL,
-                        payload={
-                            "nodepool_name": "default",
-                            "consolidation_policy": "WhenEmpty",
-                            "reason": "ML rebalancing enabled — disabling native consolidation to prevent conflict",
-                        }
+                        consolidation_policy="WhenEmpty",
                     )
-                    db.add(_disable_consol)
                     logger.info(
-                        f"Queued PATCH_NODEPOOL to disable Karpenter consolidation for {cluster_id} "
+                        f"Patched NodePool to disable Karpenter consolidation for {cluster_id} "
                         f"(ML rebalancing ON — consolidationPolicy → WhenEmpty)"
                     )
                 except Exception as _consol_err:
-                    logger.warning(f"Failed to queue consolidation disable: {_consol_err}")
+                    logger.warning(f"Failed to patch consolidation policy: {_consol_err}")
         if auto_rightsizing is not None:
             opt.auto_rightsizing_enabled = bool(auto_rightsizing)
             logger.info(
@@ -1166,10 +1161,9 @@ def apply_karpenter_recommendation(
         }
 
     # ── STATELESS / DEFAULT PATH ─────────────────────────────────────────────
-    # Queue a PATCH_KARPENTER_NODEPOOL action with the recommended type so Karpenter
-    # provisions a replacement node, then rely on the auto_rebalancer for CORDON+DRAIN+TERMINATE.
+    # Directly update Karpenter NodePool with the recommended type via K8s API,
+    # then rely on the auto_rebalancer for CORDON+DRAIN+TERMINATE.
     from backend.models.instance import Instance
-    from backend.models.agent_action import AgentAction, AgentActionType
 
     inst_id = payload.instance_id or recommendation_id.replace("rec-", "")
     inst = db.query(Instance).filter(Instance.instance_id == inst_id).first()
@@ -1182,30 +1176,38 @@ def apply_karpenter_recommendation(
         _karpenter_active = cluster and cluster.karpenter_mode is not None
 
         if _karpenter_active:
-            # Karpenter cluster: patch nodepool with recommended type
-            action = AgentAction(
-                cluster_id=cluster_id,
-                action_type=AgentActionType.PATCH_KARPENTER_NODEPOOL,
-                payload={
-                    "instance_types": [payload.recommended_type],
-                    "spot_pool": payload.spot_pool,
-                    "reason": f"manual_recommendation_apply: {inst.instance_type} → {payload.recommended_type}",
-                    "nodepool_name": "default",
-                },
-            )
-            db.add(action)
-            db.commit()
-            return {
-                "recommendation_id": recommendation_id,
-                "status": "queued",
-                "action": "patch_nodepool",
-                "instance_id": inst_id,
-                "recommended_type": payload.recommended_type,
-                "spot_pool": payload.spot_pool,
-                "message": f"NodePool update queued — Karpenter will provision {payload.recommended_type}.",
-                "applied_by": current_user.email,
-                "applied_at": datetime.utcnow().isoformat(),
-            }
+            # Karpenter cluster: directly update NodePool with recommended type
+            try:
+                from backend.services.karpenter_service import KarpenterService
+                _ksvc = KarpenterService(db, None)
+                _result = _ksvc.add_allowed_instance_type(
+                    cluster_id=cluster_id,
+                    instance_type=payload.recommended_type,
+                )
+                if _result:
+                    return {
+                        "recommendation_id": recommendation_id,
+                        "status": "applied",
+                        "action": "patch_nodepool",
+                        "instance_id": inst_id,
+                        "recommended_type": payload.recommended_type,
+                        "spot_pool": payload.spot_pool,
+                        "message": f"NodePool updated — Karpenter will provision {payload.recommended_type}.",
+                        "applied_by": current_user.email,
+                        "applied_at": datetime.utcnow().isoformat(),
+                    }
+                else:
+                    return {
+                        "recommendation_id": recommendation_id,
+                        "status": "failed",
+                        "message": f"Failed to update NodePool with {payload.recommended_type}.",
+                    }
+            except Exception as _kp_err:
+                return {
+                    "recommendation_id": recommendation_id,
+                    "status": "failed",
+                    "message": f"NodePool update error: {str(_kp_err)[:200]}",
+                }
 
     return {
         "recommendation_id": recommendation_id,
@@ -1835,7 +1837,7 @@ def uninstall_karpenter(
 @router.get(
     "/clusters/{cluster_id}/install-status",
     summary="Get Karpenter install status for a cluster",
-    description="Returns the status of the latest INSTALL_KARPENTER or UNINSTALL_KARPENTER AgentAction"
+    description="Multi-tier detection: (1) Redis live heartbeat, (2) Server-side K8s API check, (3) AgentAction history"
 )
 def get_karpenter_install_status(
     cluster_id: str,
@@ -1844,8 +1846,90 @@ def get_karpenter_install_status(
 ) -> Dict[str, Any]:
     from backend.models.agent_action import AgentAction, AgentActionType, AgentActionStatus
     from backend.models.cluster import Cluster
+    from backend.core.redis_client import get_redis_client
+    import json as _is_json
 
-    # ── 1. Check AgentAction history (authoritative for platform-managed installs) ──
+    _redis = None
+    try:
+        _redis = get_redis_client()
+    except Exception:
+        pass
+
+    cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
+    if not cluster:
+        raise HTTPException(status_code=404, detail="Cluster not found")
+
+    # ── Tier 1: Live agent heartbeat data (karpenter:live_status — 60s TTL) ──
+    _live_karp_status = None
+    if _redis:
+        try:
+            _live_raw = _redis.get(f"karpenter:live_status:{cluster_id}")
+            if _live_raw:
+                _live_karp_status = _is_json.loads(_live_raw)
+        except Exception:
+            pass
+
+    if _live_karp_status:
+        _detected = _live_karp_status.get("detected", False)
+        _resp = {
+            "cluster_id": cluster_id,
+            "karpenter_installed": True if _detected else "missing",
+            "source": "live_agent",
+            "live_status": {
+                "pods_running": _live_karp_status.get("pods_running", 0),
+                "controller_healthy": _live_karp_status.get("controller_healthy", False),
+                "webhook_healthy": _live_karp_status.get("webhook_healthy", False),
+                "last_check": _live_karp_status.get("last_check"),
+            },
+            "last_action": None,
+        }
+        if not _detected:
+            _resp["status"] = "missing"
+            _resp["message"] = "Karpenter was installed but pods are no longer running. Reinstall recommended."
+        return _resp
+
+    # ── Tier 2: Server-side K8s API pod check (cached 120s) ──
+    _k8s_check = None
+    _k8s_cache_key = f"karpenter:k8s_check:{cluster_id}"
+    if _redis:
+        try:
+            _k8s_cached = _redis.get(_k8s_cache_key)
+            if _k8s_cached:
+                _k8s_check = _is_json.loads(_k8s_cached)
+        except Exception:
+            pass
+
+    if _k8s_check is None:
+        # Run live K8s API check — query the cluster for Karpenter pods
+        _k8s_check = _server_side_karpenter_check(cluster, db)
+        if _redis and _k8s_check:
+            try:
+                _redis.setex(_k8s_cache_key, 120, _is_json.dumps(_k8s_check))
+            except Exception:
+                pass
+
+    if _k8s_check and _k8s_check.get("detected"):
+        _mode = _k8s_check.get("karpenter_mode", "unknown")
+        # Also update DB karpenter_mode if not already set
+        if cluster.karpenter_mode is None:
+            from backend.models.cluster import KarpenterMode
+            try:
+                cluster.karpenter_mode = KarpenterMode.AUTO
+                db.commit()
+            except Exception:
+                db.rollback()
+        return {
+            "cluster_id": cluster_id,
+            "karpenter_installed": True,
+            "source": "k8s_api",
+            "karpenter_mode": _mode,
+            "pods_running": _k8s_check.get("pods_running", 0),
+            "last_action": None,
+            "status": "installed",
+            "message": f"Karpenter detected via K8s API ({_k8s_check.get('pods_running', 0)} pods running).",
+        }
+
+    # ── Tier 3: AgentAction history ──
     latest = db.query(AgentAction).filter(
         AgentAction.cluster_id == cluster_id,
         AgentAction.action_type.in_([AgentActionType.INSTALL_KARPENTER, AgentActionType.UNINSTALL_KARPENTER])
@@ -1855,90 +1939,118 @@ def get_karpenter_install_status(
         action_type = latest.action_type.value
         action_status = latest.status.value
 
-        if action_type == "INSTALL_KARPENTER" and action_status == "COMPLETED":
-            installed = True
-        elif action_type == "UNINSTALL_KARPENTER" and action_status == "COMPLETED":
-            installed = False
-        elif action_status in ("PENDING", "PICKED_UP"):
-            installed = None  # In progress
-        else:
-            installed = False
-
-        return {
-            "cluster_id": cluster_id,
-            "karpenter_installed": installed,
-            "last_action": {
-                "id": latest.id,
-                "type": action_type,
-                "status": action_status,
-                "created_at": latest.created_at.isoformat() if latest.created_at else None,
-                "completed_at": latest.completed_at.isoformat() if latest.completed_at else None,
-                "error_message": latest.error_message,
-                "result": latest.result,
-            }
-        }
-
-    # ── 2. No AgentAction record — Karpenter may have been installed manually ──
-    # Fallback 1: check cluster.karpenter_mode (set by detect or config)
-    cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
-    if cluster and cluster.karpenter_mode is not None:
-        _mode = cluster.karpenter_mode.value if cluster.karpenter_mode else None
-        return {
-            "cluster_id": cluster_id,
-            "karpenter_installed": True,
-            "detected_via": "cluster_karpenter_mode",
-            "karpenter_mode": _mode,
-            "last_action": None,
-            "status": "installed",
-            "message": f"Karpenter detected via cluster configuration (mode={_mode}).",
-        }
-
-    # Fallback 2: check Redis detection key (set by detect_karpenter_in_cluster)
-    try:
-        from backend.core.redis_client import get_redis_client
-        _redis = get_redis_client()
-        _redis_key = f"spot:karpenter:installed:{cluster_id}"
-        _redis_val = _redis.get(_redis_key) if _redis else None
-        if _redis_val:
+        if action_status in ("PENDING", "PICKED_UP"):
             return {
                 "cluster_id": cluster_id,
-                "karpenter_installed": True,
-                "detected_via": "redis_detection_key",
-                "karpenter_mode": _redis_val if isinstance(_redis_val, str) else _redis_val.decode("utf-8"),
-                "last_action": None,
-                "status": "installed",
-                "message": "Karpenter detected via live cluster detection.",
+                "karpenter_installed": None,
+                "status": "in_progress",
+                "last_action": _format_action(latest),
+                "message": f"{'Installing' if action_type == 'INSTALL_KARPENTER' else 'Uninstalling'} Karpenter...",
             }
-    except Exception:
-        pass
-
-    # Fallback 3: run live detection now (checks NodePool CRD via agent result)
-    try:
-        from backend.services.karpenter_service import KarpenterService
-        _svc = KarpenterService(db_session=db)
-        _detected = _svc.detect_karpenter_in_cluster(cluster_id, db)
-        if _detected.get("detected"):
-            _mode = _detected.get("karpenter_mode", "unknown")
+        elif action_status == "FAILED":
             return {
                 "cluster_id": cluster_id,
-                "karpenter_installed": True,
-                "detected_via": "live_detection",
-                "karpenter_mode": _mode,
-                "last_action": None,
-                "status": "installed",
-                "message": f"Karpenter detected live in cluster (mode={_mode}).",
+                "karpenter_installed": False,
+                "status": "failed",
+                "last_action": _format_action(latest),
+                "message": f"Last {action_type.lower().replace('_', ' ')} failed: {latest.error_message or 'unknown error'}",
             }
-    except Exception:
-        pass
 
-    # Nothing found — genuinely not installed
+    # ── Tier 4: K8s check returned not-detected or error ──
+    if _k8s_check and _k8s_check.get("error"):
+        return {
+            "cluster_id": cluster_id,
+            "karpenter_installed": False,
+            "status": "unknown",
+            "last_action": _format_action(latest) if latest else None,
+            "message": f"Cannot verify Karpenter status: {_k8s_check['error']}",
+            "error": _k8s_check["error"],
+        }
+
     return {
         "cluster_id": cluster_id,
         "karpenter_installed": False,
-        "last_action": None,
+        "last_action": _format_action(latest) if latest else None,
         "status": "not_installed",
-        "message": "Karpenter not detected. Install via the Karpenter Manager or run detection.",
+        "message": "Karpenter not detected. Install via the Karpenter Manager.",
     }
+
+
+def _format_action(action) -> Optional[Dict]:
+    """Format an AgentAction record for the response."""
+    if not action:
+        return None
+    return {
+        "id": action.id,
+        "type": action.action_type.value,
+        "status": action.status.value,
+        "created_at": action.created_at.isoformat() if action.created_at else None,
+        "completed_at": action.completed_at.isoformat() if action.completed_at else None,
+        "error_message": action.error_message,
+        "result": action.result,
+    }
+
+
+def _server_side_karpenter_check(cluster, db) -> Dict[str, Any]:
+    """
+    Server-side K8s API check for Karpenter pods.
+    Queries the cluster's K8s API directly for pods with 'karpenter' in
+    the karpenter and kube-system namespaces.
+    """
+    try:
+        from backend.services.karpenter_service import KarpenterService
+        from kubernetes import client
+
+        svc = KarpenterService(db=db)
+        api_client = svc._get_k8s_client(cluster)
+        core_v1 = client.CoreV1Api(api_client)
+
+        karpenter_pods = []
+        for ns in ("karpenter", "kube-system"):
+            try:
+                pods = core_v1.list_namespaced_pod(
+                    namespace=ns,
+                    label_selector="app.kubernetes.io/name=karpenter",
+                    timeout_seconds=10,
+                )
+                karpenter_pods.extend(pods.items)
+            except Exception:
+                pass
+            if not karpenter_pods:
+                try:
+                    pods = core_v1.list_namespaced_pod(
+                        namespace=ns,
+                        timeout_seconds=10,
+                    )
+                    for pod in pods.items:
+                        if "karpenter" in (pod.metadata.name or "").lower():
+                            karpenter_pods.append(pod)
+                except Exception:
+                    pass
+
+        if karpenter_pods:
+            running = sum(1 for p in karpenter_pods if p.status and p.status.phase == "Running")
+            _mode = cluster.karpenter_mode.value if cluster.karpenter_mode else "auto"
+            return {
+                "detected": True,
+                "pods_running": running,
+                "total_pods": len(karpenter_pods),
+                "karpenter_mode": _mode,
+                "source": "k8s_api",
+            }
+        else:
+            return {
+                "detected": False,
+                "pods_running": 0,
+                "source": "k8s_api",
+            }
+    except Exception as e:
+        logger.warning(f"[karpenter] Server-side K8s check failed for cluster {cluster.id}: {e}")
+        return {
+            "detected": False,
+            "error": str(e),
+            "source": "k8s_api_error",
+        }
 
 
 @router.get("/v3/workload-status/{cluster_id}")
@@ -2214,11 +2326,16 @@ def detect_karpenter(
     """
     Detect whether Karpenter is installed in the specified cluster.
     Returns detected=true/false and karpenter_mode.
+    Only trusts live agent data — not stale DB column.
     """
     try:
         from backend.services.karpenter_service import KarpenterService
-        svc = KarpenterService(db_session=db)
+        svc = KarpenterService(db=db)
         result = svc.detect_karpenter_in_cluster(cluster_id, db)
+        # If detection came from stale DB column, override to not detected
+        if result.get("source") == "db_column" and result.get("detected"):
+            result["detected"] = False
+            result["warning"] = "No live agent data available — cannot confirm Karpenter status"
         return result
     except Exception as e:
         logger.error(f"[karpenter] detect endpoint failed: {e}")

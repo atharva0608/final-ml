@@ -151,6 +151,12 @@ class WorkloadInspector:
             cache_key = f"spot:node_classification:{cluster_id}"
             self.redis.setex(cache_key, self.CLASSIFICATION_TTL, json.dumps(classification))
 
+            # ── LABEL NODES with workload type ────────────────────────────────
+            # Queue LABEL_NODE agent actions so each node gets a Kubernetes label
+            # (workload=stateless or workload=stateful) for Karpenter NodePool
+            # affinity and operational visibility.
+            self._queue_workload_labels(cluster_id, classification)
+
             # Cache per-node arch constraints (used by auto_rebalancer to build NodePool requirements)
             arch_cache_key = f"spot:node_arch_constraints:{cluster_id}"
             self.redis.setex(arch_cache_key, self.CLASSIFICATION_TTL, json.dumps(arch_classification))
@@ -510,6 +516,74 @@ class WorkloadInspector:
             return float(s) / (1024 ** 3)
         except ValueError:
             return 0.0
+
+    # ── Workload node labeling ─────────────────────────────────────────────────
+
+    def _queue_workload_labels(self, cluster_id: str, classification: Dict):
+        """Queue LABEL_NODE agent actions to apply workload=stateless|stateful labels.
+
+        Uses a Redis dedup key to avoid re-labeling nodes that haven't changed
+        classification since the last scan.
+        """
+        try:
+            from backend.core.database import SessionLocal
+            from backend.models.agent_action import AgentAction, AgentActionType, AgentActionStatus
+            from datetime import datetime, timedelta
+            import uuid
+
+            dedup_key = f"spot:workload_labels:{cluster_id}"
+            prev_raw = self.redis.get(dedup_key)
+            prev_labels = {}
+            if prev_raw:
+                import json as _json_wl
+                prev_labels = _json_wl.loads(prev_raw)
+
+            actions_to_create = []
+            for node_name, status in classification.items():
+                label_value = "stateless" if status == NodeStatus.STATELESS_ELIGIBLE else "stateful"
+                # Skip if label hasn't changed
+                if prev_labels.get(node_name) == label_value:
+                    continue
+                actions_to_create.append((node_name, label_value))
+
+            if not actions_to_create:
+                return
+
+            db = SessionLocal()
+            try:
+                for node_name, label_value in actions_to_create:
+                    action = AgentAction(
+                        id=str(uuid.uuid4()),
+                        cluster_id=cluster_id,
+                        action_type=AgentActionType.LABEL_NODE,
+                        payload={
+                            "node_name": node_name,
+                            "labels": {"workload": label_value},
+                        },
+                        status=AgentActionStatus.PENDING,
+                        priority=0,
+                        created_at=datetime.utcnow(),
+                        expires_at=datetime.utcnow() + timedelta(minutes=30),
+                    )
+                    db.add(action)
+                db.commit()
+                logger.info(
+                    f"[WorkloadInspector] Queued {len(actions_to_create)} LABEL_NODE actions "
+                    f"for cluster {cluster_id}"
+                )
+            finally:
+                db.close()
+
+            # Update dedup cache with current labels
+            import json as _json_wl2
+            current_labels = {
+                n: ("stateless" if s == NodeStatus.STATELESS_ELIGIBLE else "stateful")
+                for n, s in classification.items()
+            }
+            self.redis.setex(dedup_key, self.CLASSIFICATION_TTL, _json_wl2.dumps(current_labels))
+
+        except Exception as e:
+            logger.warning(f"[WorkloadInspector] Failed to queue workload labels: {e}")
 
     # ── Cluster workload type ──────────────────────────────────────────────────
 

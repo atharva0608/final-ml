@@ -40,27 +40,36 @@ def calculate_cluster_costs(self: Task):
         clusters_updated = 0
         total_cost = 0.0
 
+        HOURS_PER_MONTH = 730
+
         for cluster in clusters:
-            # Calculate total monthly cost from instances
-            cluster_cost = db.query(func.sum(Instance.price)).filter(
+            # Calculate total monthly cost: sum(hourly_price) × 730 hours/month
+            # Instance.price stores the hourly rate; multiply by 730 to get monthly cost.
+            running_instances = db.query(Instance).filter(
                 Instance.cluster_id == cluster.id,
-                Instance.price.isnot(None)
-            ).scalar()
+                Instance.state == 'running',
+                Instance.price.isnot(None),
+                Instance.price > 0,
+            ).all()
 
-            if cluster_cost is None:
-                cluster_cost = 0.0
+            if not running_instances:
+                continue
 
-            # Only update if cost changed
-            if cluster.monthly_cost != int(cluster_cost):
-                old_cost = cluster.monthly_cost or 0
-                cluster.monthly_cost = int(cluster_cost)
+            cluster_cost = sum(float(i.price) for i in running_instances) * HOURS_PER_MONTH
+            node_count = len(running_instances)
+
+            # Only update if cost changed significantly (>$1 difference)
+            old_cost = float(cluster.monthly_cost or 0)
+            if abs(old_cost - cluster_cost) > 1.0:
+                cluster.monthly_cost = round(cluster_cost, 2)
+                cluster.node_count = node_count
                 cluster.updated_at = datetime.utcnow()
                 clusters_updated += 1
                 total_cost += cluster_cost
 
                 logger.info(
                     f"[COST-CALC] Updated {cluster.name}: "
-                    f"${old_cost} -> ${cluster_cost:.2f}"
+                    f"${old_cost:.2f} -> ${cluster_cost:.2f} ({node_count} nodes)"
                 )
 
         db.commit()

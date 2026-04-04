@@ -292,6 +292,9 @@ def sync_karpenter_nodepools(self: Task) -> Dict[str, Any]:
             # Avoids repeated 404/connection-refused errors in the worker logs.
             if cluster.agent_installed != 'Y':
                 continue
+            # Skip clusters where Karpenter is not installed — no NodePool CRDs to sync
+            if not cluster.karpenter_mode:
+                continue
             if cluster.last_heartbeat:
                 from datetime import timezone
                 _hb = cluster.last_heartbeat

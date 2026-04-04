@@ -227,6 +227,52 @@ class PodMetricsCollector:
                         )
 
                 # Build metric object matching PodMetricCreate schema
+                # Extract scheduling constraints for simulation accuracy
+                _node_sel = None
+                if pod.spec.node_selector:
+                    _node_sel = dict(pod.spec.node_selector)
+
+                _tolerations = None
+                if pod.spec.tolerations:
+                    _tolerations = []
+                    for t in pod.spec.tolerations:
+                        _tol = {}
+                        if t.key: _tol['key'] = t.key
+                        if t.operator: _tol['operator'] = t.operator
+                        if t.value: _tol['value'] = t.value
+                        if t.effect: _tol['effect'] = t.effect
+                        if _tol.get('key'):  # skip empty default tolerations
+                            _tolerations.append(_tol)
+
+                _affinity = None
+                if pod.spec.affinity:
+                    _aff = {}
+                    if pod.spec.affinity.pod_anti_affinity:
+                        _pa = pod.spec.affinity.pod_anti_affinity
+                        if _pa.required_during_scheduling_ignored_during_execution:
+                            _aff['pod_anti_affinity_required'] = True
+                    if pod.spec.affinity.pod_affinity:
+                        _pa2 = pod.spec.affinity.pod_affinity
+                        if _pa2.required_during_scheduling_ignored_during_execution:
+                            _aff['pod_affinity_required'] = True
+                    if pod.spec.affinity.node_affinity:
+                        _na = pod.spec.affinity.node_affinity
+                        if _na.required_during_scheduling_ignored_during_execution:
+                            _aff['node_affinity_required'] = True
+                    if _aff:
+                        _affinity = _aff
+
+                _topo_spread = None
+                if pod.spec.topology_spread_constraints:
+                    _topo_spread = []
+                    for tsc in pod.spec.topology_spread_constraints:
+                        _topo_spread.append({
+                            'max_skew': tsc.max_skew,
+                            'topology_key': tsc.topology_key,
+                            'when_unsatisfiable': tsc.when_unsatisfiable,
+                            'label_selector_match_labels': (tsc.label_selector.match_labels or {}) if tsc.label_selector else {},
+                        })
+
                 pod_metric = {
                     'namespace': namespace,
                     'pod_name': pod_name,
@@ -243,7 +289,11 @@ class PodMetricsCollector:
                     'metadata': {
                         'labels': pod.metadata.labels or {},
                         'phase': pod.status.phase,
-                        'qos_class': pod.status.qos_class
+                        'qos_class': pod.status.qos_class,
+                        'node_selector': _node_sel,
+                        'tolerations': _tolerations,
+                        'affinity': _affinity,
+                        'topology_spread_constraints': _topo_spread,
                     }
                 }
 

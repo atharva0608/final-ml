@@ -90,6 +90,7 @@ const ASCPAiPage = () => {
                         <AutoRebalanceAuditCard
                             clusterId={selectedClusterId}
                             initialEnabled={selectedCluster?.auto_rebalance_enabled || false}
+                            karpenterMode={selectedCluster?.karpenter_mode || null}
                         />
                         <InterruptionHeatmap clusterId={selectedClusterId} />
                     </div>
@@ -115,6 +116,7 @@ const ASCPAiPage = () => {
                     <AutoRebalanceAuditCard
                         clusterId={selectedClusterId}
                         initialEnabled={selectedCluster?.auto_rebalance_enabled || false}
+                        karpenterMode={selectedCluster?.karpenter_mode || null}
                     />
                     <RebalancingTimeline clusterId={selectedClusterId} />
                 </div>

@@ -101,6 +101,10 @@ export const clusterAPI = {
     getOptimizationSettings: (clusterId) => api.get(`/api/v1/clusters/${clusterId}/optimization-settings`),
     updateOptimizationSettings: (clusterId, settings) => api.put(`/api/v1/clusters/${clusterId}/optimization-settings`, settings),
     getWarmSpareStatus: (clusterId) => api.get(`/api/v1/ascpai/v3/substitute/${clusterId}`),
+    // Migration endpoints
+    startMigration: (clusterId) => api.post(`/api/v1/clusters/${clusterId}/start-migration`),
+    getMigrationStatus: (clusterId) => api.get(`/api/v1/clusters/${clusterId}/migration-status`),
+    forceCompleteMigration: (clusterId) => api.post(`/api/v1/clusters/${clusterId}/force-complete-migration`),
 };
 export const clustersAPI = clusterAPI;
 
@@ -353,7 +357,8 @@ export const ascpaiAPI = {
     getEffectiveConfiguration: (clusterId) => api.get(`/api/v1/ascpai/clusters/${clusterId}/effective-configuration`),
 
     // Node-Specific Rankings (To be implemented in backend)
-    getNodeRecommendations: (clusterId) => api.get(`/api/v1/ascpai/clusters/${clusterId}/node-recommendations`),
+    getNodeRecommendations: (clusterId, { useRightsized = false } = {}) =>
+        api.get(`/api/v1/ascpai/clusters/${clusterId}/node-recommendations${useRightsized ? '?use_rightsized=true' : ''}`),
 
     // Cluster Impact (To be implemented in backend)
     getClusterImpact: (clusterId) => api.get(`/api/v1/ascpai/clusters/${clusterId}/impact`),

@@ -94,8 +94,10 @@ async def add_cors_headers(request: Request, call_next):
     from fastapi.responses import JSONResponse as _JR
     try:
         response = await call_next(request)
-    except Exception:
+    except Exception as _exc:
         # Unhandled exception reached ASGI level — return 500 with CORS headers
+        import traceback as _tb
+        logger.error(f"CORS middleware caught unhandled exception on {request.method} {request.url.path}: {_exc}\n{''.join(_tb.format_exception(type(_exc), _exc, _exc.__traceback__))}")
         response = _JR({"detail": "Internal Server Error"}, status_code=500)
 
     # Get origin from request
@@ -604,10 +606,107 @@ async def _handle_agent_message(cluster_id: str, raw: str):
                 action.completed_at = _dt.utcnow()
                 action.result = msg.get("result")
                 action.error_message = msg.get("error") if not success else None
+
+                # Post-processing: update cluster state based on action type
+                from backend.models.agent_action import AgentActionType
+                if success and action.action_type == AgentActionType.INSTALL_KARPENTER:
+                    from backend.models.cluster import Cluster, KarpenterMode
+                    _cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
+                    if _cluster and _cluster.karpenter_mode is None:
+                        _cluster.karpenter_mode = KarpenterMode.AUTO
+                        logger.info(f"[ws] Set karpenter_mode=AUTO for cluster {cluster_id}")
+                elif success and action.action_type == AgentActionType.UNINSTALL_KARPENTER:
+                    from backend.models.cluster import Cluster, KarpenterMode
+                    _cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
+                    if _cluster:
+                        _cluster.karpenter_mode = None
+                        logger.info(f"[ws] Cleared karpenter_mode for cluster {cluster_id}")
+
                 db.commit()
                 logger.info(f"[ws] Action {action_id} {'COMPLETED' if success else 'FAILED'} for cluster {cluster_id}")
         finally:
             db.close()
+
+    elif msg_type == "heartbeat":
+        # Process heartbeat from agent — update cluster state + Karpenter live status
+        from backend.models.base import get_db as _get_db
+        from datetime import datetime as _dt
+        db = next(_get_db())
+        try:
+            from backend.models.cluster import Cluster, ClusterStatus
+            cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
+            if cluster:
+                cluster.last_heartbeat = _dt.utcnow()
+                if cluster.agent_installed != 'Y':
+                    cluster.agent_installed = 'Y'
+                    cluster.status = ClusterStatus.ACTIVE
+
+                # Process Karpenter live detection from agent heartbeat
+                karpenter_status = msg.get("karpenter_status") or msg.get("data", {}).get("karpenter_status")
+                if karpenter_status and isinstance(karpenter_status, dict):
+                    try:
+                        from backend.core.redis_client import get_redis_client
+                        _redis = get_redis_client()
+                        if _redis:
+                            _live_key = f"karpenter:live_status:{cluster_id}"
+                            _redis.setex(_live_key, 60, _json.dumps(karpenter_status))
+
+                            _karp_live_detected = karpenter_status.get("detected", False)
+                            _det_key = f"karpenter:detected:{cluster_id}"
+                            _inst_key = f"spot:karpenter:installed:{cluster_id}"
+
+                            if _karp_live_detected:
+                                _mode = cluster.karpenter_mode.value if cluster.karpenter_mode else 'auto'
+                                _det_result = {
+                                    'detected': True,
+                                    'cluster_id': cluster_id,
+                                    'karpenter_mode': _mode,
+                                    'source': 'agent_heartbeat',
+                                }
+                                _redis.setex(_det_key, 120, _json.dumps(_det_result))
+                                _redis.setex(_inst_key, 3600, _mode)
+                                # Auto-set karpenter_mode on cluster if not already set
+                                # (detects Karpenter on newly registered clusters instantly)
+                                if cluster.karpenter_mode is None:
+                                    from backend.models.cluster import KarpenterMode
+                                    cluster.karpenter_mode = KarpenterMode.AUTO
+                                    logger.info(f"[ws] Auto-detected Karpenter on cluster {cluster_id}, set mode=AUTO")
+                            else:
+                                _karp_was_installed = cluster.karpenter_mode is not None
+                                if _karp_was_installed:
+                                    _det_result = {
+                                        'detected': False,
+                                        'cluster_id': cluster_id,
+                                        'karpenter_mode': 'missing',
+                                        'previously_installed': True,
+                                        'source': 'agent_heartbeat',
+                                    }
+                                    _redis.setex(_det_key, 120, _json.dumps(_det_result))
+                                    _redis.delete(_inst_key)
+                    except Exception as _karp_err:
+                        logger.debug(f"[ws] Karpenter status update error: {_karp_err}")
+
+                db.commit()
+        except Exception as _hb_err:
+            logger.error(f"[ws] Heartbeat processing error for {cluster_id}: {_hb_err}")
+            db.rollback()
+        finally:
+            db.close()
+
+    elif msg_type == "metrics":
+        # Store metrics from agent in Redis
+        try:
+            from backend.core.redis_client import get_redis_client
+            _redis = get_redis_client()
+            if _redis:
+                metrics_data = msg.get("data") or msg.get("metrics", {})
+                _redis.setex(
+                    f"metrics:cluster:{cluster_id}:summary",
+                    300,
+                    _json.dumps(metrics_data)
+                )
+        except Exception:
+            pass
 
 
 @app.websocket("/ws/cluster/{cluster_id}")

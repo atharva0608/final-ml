@@ -602,41 +602,53 @@ const OptimizationSettingsTab = ({ cluster }) => {
         <div style={{ height: 1, background: C.border, margin: "18px 0" }} />
 
         {/* Risk vs Savings Controls */}
-        <div>
-          <div style={{ fontSize: 13, fontWeight: 600, color: C.text, marginBottom: 12 }}>Risk vs Savings Controls</div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
-            {/* Risk/Savings Tradeoff Slider */}
-            <div style={{ padding: 16, background: C.accentLight, borderRadius: 8, border: `1px solid ${C.blue}30` }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-                <div>
-                  <div style={{ fontSize: 12, fontWeight: 600, color: C.text }}>Risk/Savings Tradeoff</div>
-                  <div style={{ fontSize: 10, color: C.muted, marginTop: 2 }}>Sacrifice % potential savings if a safer pool is available (0% = cheapest only).</div>
-                </div>
-                <div style={{ fontSize: 14, fontWeight: 700, color: C.accent }}>{settings.optimization_strategy?.risk_savings_tradeoff_pct || 20}%</div>
-              </div>
-              <input
-                type="range" min="0" max="50" step="5"
-                value={settings.optimization_strategy?.risk_savings_tradeoff_pct || 20}
-                onChange={e => updateOptimizationStrategy('risk_savings_tradeoff_pct', parseInt(e.target.value))}
-                style={{ width: "100%", accentColor: C.accent, cursor: "pointer" }}
-              />
-            </div>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+          <div>
+            <div style={{ fontSize: 13, fontWeight: 600, color: C.text }}>Risk vs Savings Controls</div>
+            <div style={{ fontSize: 11, color: C.subtle, marginTop: 4 }}>Balance cost savings against interruption risk tolerance</div>
+          </div>
+        </div>
 
-            {/* Risk Ceiling Slider */}
-            <div style={{ padding: 16, background: C.amberLight, borderRadius: 8, border: `1px solid ${C.amber}40` }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-                <div>
-                  <div style={{ fontSize: 12, fontWeight: 600, color: C.text }}>Maximum Risk Ceiling</div>
-                  <div style={{ fontSize: 10, color: C.muted, marginTop: 2 }}>Reject any pool with risk score above %. Lower = safer but fewer candidates.</div>
-                </div>
-                <div style={{ fontSize: 14, fontWeight: 700, color: C.amber }}>{settings.optimization_strategy?.risk_ceiling_percent || 25}%</div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {/* Risk/Savings Tradeoff Slider */}
+          <div style={{ width: "100%", padding: "12px 16px", background: C.surfaceHover, borderRadius: 8, border: `1px solid ${C.border}` }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+              <div>
+                <div style={{ fontSize: 12, fontWeight: 500, color: C.text }}>Risk/Savings Tradeoff</div>
+                <div style={{ fontSize: 10, color: C.muted, marginTop: 2 }}>Sacrifice % potential savings if a safer pool is available (0% = cheapest only).</div>
               </div>
-              <input
-                type="range" min="5" max="50" step="5"
-                value={settings.optimization_strategy?.risk_ceiling_percent || 25}
-                onChange={e => updateOptimizationStrategy('risk_ceiling_percent', parseInt(e.target.value))}
-                style={{ width: "100%", accentColor: C.amber, cursor: "pointer" }}
-              />
+              <div style={{ fontSize: 14, fontWeight: 700, color: C.accent }}>{settings.optimization_strategy?.risk_savings_tradeoff_pct || 20}%</div>
+            </div>
+            <input
+              type="range" min="0" max="50" step="5"
+              value={settings.optimization_strategy?.risk_savings_tradeoff_pct || 20}
+              onChange={e => updateOptimizationStrategy('risk_savings_tradeoff_pct', parseInt(e.target.value))}
+              style={{ width: "100%", accentColor: C.accent, cursor: "pointer" }}
+            />
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 9, color: C.muted, marginTop: 4 }}>
+              <span>0% — Cheapest only</span>
+              <span>50% — Max safety premium</span>
+            </div>
+          </div>
+
+          {/* Risk Ceiling Slider */}
+          <div style={{ width: "100%", padding: "12px 16px", background: C.surfaceHover, borderRadius: 8, border: `1px solid ${C.border}` }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+              <div>
+                <div style={{ fontSize: 12, fontWeight: 500, color: C.text }}>Maximum Risk Ceiling</div>
+                <div style={{ fontSize: 10, color: C.muted, marginTop: 2 }}>Reject any pool with risk score above %. Lower = safer but fewer candidates.</div>
+              </div>
+              <div style={{ fontSize: 14, fontWeight: 700, color: C.accent }}>{settings.optimization_strategy?.risk_ceiling_percent || 25}%</div>
+            </div>
+            <input
+              type="range" min="5" max="50" step="5"
+              value={settings.optimization_strategy?.risk_ceiling_percent || 25}
+              onChange={e => updateOptimizationStrategy('risk_ceiling_percent', parseInt(e.target.value))}
+              style={{ width: "100%", accentColor: C.accent, cursor: "pointer" }}
+            />
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 9, color: C.muted, marginTop: 4 }}>
+              <span>5% — Very conservative</span>
+              <span>50% — High risk tolerance</span>
             </div>
           </div>
         </div>
@@ -646,14 +658,25 @@ const OptimizationSettingsTab = ({ cluster }) => {
   );
 };
 
-const MiniBar = ({ used, total, color, pct }) => {
-  const displayPct = pct !== undefined ? Math.round(pct) : (total > 0 ? Math.round((used / total) * 100) : 0);
+const MiniBar = ({ used, total, color, pct, allocatedPct }) => {
+  const usagePct = pct !== undefined ? Math.round(pct) : (total > 0 ? Math.round((used / total) * 100) : 0);
+  const allocPct = allocatedPct !== undefined ? Math.round(allocatedPct) : 0;
+  // When allocation data exists, show it as primary (matches AWS EKS console)
+  const primaryPct = allocPct > 0 ? allocPct : usagePct;
+  const primaryColor = allocPct > 0 ? C.amber : color;
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-      <div style={{ flex: 1, height: 5, background: "#f0f0f0", borderRadius: 3 }}>
-        <div style={{ width: `${displayPct}%`, height: 5, background: color, borderRadius: 3, transition: "width 0.4s" }} />
+      <div style={{ flex: 1, height: 5, background: "#f0f0f0", borderRadius: 3, position: "relative" }}>
+        {/* Allocated bar (amber) — shows pod request allocation */}
+        {allocPct > 0 && (
+          <div style={{ position: "absolute", width: `${Math.min(allocPct, 100)}%`, height: 5, background: C.amber + "88", borderRadius: 3, transition: "width 0.4s" }} />
+        )}
+        {/* Actual usage bar — thin line inside allocation bar */}
+        <div style={{ position: "relative", width: `${Math.min(usagePct, 100)}%`, height: 5, background: color, borderRadius: 3, transition: "width 0.4s" }} />
       </div>
-      <span style={{ fontSize: 10, color: C.muted, width: 28, textAlign: "right", flexShrink: 0 }}>{displayPct}%</span>
+      <span style={{ fontSize: 10, color: C.muted, width: 28, textAlign: "right", flexShrink: 0 }}>
+        {primaryPct}%
+      </span>
     </div>
   );
 };
@@ -760,12 +783,15 @@ const NodeTreemap = ({ nodes }) => {
         ) : (
           sorted.map((node, nodeIdx) => {
             const size = sizeMap[getSize(node)];
-            const color = utilColor(node.utilization);
-            const bg = utilBg(node.utilization);
+            const effectiveUtil = cpuReq > 0 ? Math.round((cpuReq + memReq) / 2) : node.utilization;
+            const color = utilColor(effectiveUtil);
+            const bg = utilBg(effectiveUtil);
             const isHovered = hoveredNode?.id === node.id;
             const nodeNum = nodeIdx + 1;
             const cpuPct = node.cpuPct !== undefined ? Math.round(node.cpuPct) : (node.cpu.total > 0 ? Math.round((node.cpu.used / node.cpu.total) * 100) : node.utilization);
             const memPct = node.memPct !== undefined ? Math.round(node.memPct) : (node.memory.total > 0 ? Math.round((node.memory.used / node.memory.total) * 100) : node.utilization);
+            const cpuReq = Math.round(node.cpuReqPct || 0);
+            const memReq = Math.round(node.memReqPct || 0);
 
             return (
               <div
@@ -823,12 +849,18 @@ const NodeTreemap = ({ nodes }) => {
                     fontSize: size === 140 ? 15 : size === 110 ? 13 : 11,
                     fontWeight: 800, color: C.text,
                     letterSpacing: "-0.5px", lineHeight: 1,
-                  }}>CPU: {cpuPct}%</div>
+                  }}>CPU: {cpuReq > 0 ? `${cpuReq}%` : `${cpuPct}%`}</div>
+                  {cpuReq > 0 && size >= 110 && (
+                    <div style={{ fontSize: 9, color: C.subtle, lineHeight: 1 }}>{cpuPct}% actual</div>
+                  )}
                   <div style={{
                     fontSize: size === 140 ? 15 : size === 110 ? 13 : 11,
                     fontWeight: 800, color: C.text,
                     letterSpacing: "-0.5px", lineHeight: 1,
-                  }}>MEM: {memPct}%</div>
+                  }}>MEM: {memReq > 0 ? `${memReq}%` : `${memPct}%`}</div>
+                  {memReq > 0 && size >= 110 && (
+                    <div style={{ fontSize: 9, color: C.subtle, lineHeight: 1 }}>{memPct}% actual</div>
+                  )}
                 </div>
 
                 {/* Bottom: Diagnostics (Pods, Type, Liveness) */}
@@ -869,8 +901,10 @@ const NodeTreemap = ({ nodes }) => {
                       <span style={{ color: node.classification === 'STATELESS' ? '#10b981' : node.classification === 'STATEFUL' ? '#f59e0b' : node.classification === 'MIXED' ? '#6366f1' : '#9ca3af' }}>
                         {node.classification === 'STATELESS' ? 'Stateless' : node.classification === 'STATEFUL' ? 'Stateful' : node.classification === 'MIXED' ? 'Mixed' : node.classification === 'EMPTY' ? 'Empty' : 'Unknown'}
                       </span>
-                      <span style={{ color: "#9ca3af" }}>CPU</span><span>{node.cpu.used}/{node.cpu.total} cores</span>
-                      <span style={{ color: "#9ca3af" }}>Memory</span><span>{node.memory.used}/{node.memory.total} GiB</span>
+                      <span style={{ color: "#9ca3af" }}>CPU Used</span><span>{node.cpu.used}/{node.cpu.total} cores ({cpuPct}%)</span>
+                      {cpuReq > 0 && <><span style={{ color: "#9ca3af" }}>CPU Allocated</span><span style={{ color: C.amber }}>{cpuReq}%</span></>}
+                      <span style={{ color: "#9ca3af" }}>Memory Used</span><span>{node.memory.used}/{node.memory.total} GiB ({memPct}%)</span>
+                      {memReq > 0 && <><span style={{ color: "#9ca3af" }}>Mem Allocated</span><span style={{ color: C.amber }}>{memReq}%</span></>}
                       <span style={{ color: "#9ca3af" }}>Pods</span><span>{node.pods}/{node.maxPods}</span>
                       <span style={{ color: "#9ca3af" }}>Age</span><span>{node.age}</span>
                       <span style={{ color: "#9ca3af" }}>Ready</span>
@@ -1020,6 +1054,11 @@ const ClusterListItem = ({ cluster, selected, onClick }) => {
             letterSpacing: "-0.2px", maxWidth: 130,
             overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
           }}>{cluster.name}</span>
+          {cluster.cluster_uid && (
+            <span style={{ fontSize: 9, color: C.subtle, background: "#f0f1f3", padding: "1px 5px", borderRadius: 3, fontFamily: "monospace", letterSpacing: "0.5px" }}>
+              {cluster.cluster_uid}
+            </span>
+          )}
         </div>
         {/* Status as neutral pill, color only on the dot inside */}
         <div style={{
@@ -1048,16 +1087,19 @@ const ClusterListItem = ({ cluster, selected, onClick }) => {
       {cluster.agentInstalled && (
         <div style={{ display: "flex", flexDirection: "column", gap: 3, marginBottom: 6 }}>
           {[
-            { key: "CPU", used: cluster.cpu.used, total: cluster.cpu.total },
-            { key: "MEM", used: cluster.memory.used, total: cluster.memory.total },
-          ].map(r => (
-            <div key={r.key} style={{ display: "flex", gap: 6, alignItems: "center" }}>
-              <span style={{ fontSize: 9, color: C.subtle, width: 26, textTransform: "uppercase", letterSpacing: "0.04em" }}>{r.key}</span>
-              <div style={{ flex: 1 }}>
-                <MiniBar used={r.used} total={r.total} color={utilColor(Math.round(r.used / r.total * 100))} />
+            { key: "CPU", used: cluster.cpu.used, total: cluster.cpu.total, requested: cluster.cpu.requested },
+            { key: "MEM", used: cluster.memory.used, total: cluster.memory.total, requested: cluster.memory.requested },
+          ].map(r => {
+            const allocPct = r.total > 0 && r.requested > 0 ? Math.round((r.requested / r.total) * 100) : 0;
+            return (
+              <div key={r.key} style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                <span style={{ fontSize: 9, color: C.subtle, width: 26, textTransform: "uppercase", letterSpacing: "0.04em" }}>{r.key}</span>
+                <div style={{ flex: 1 }}>
+                  <MiniBar used={r.used} total={r.total} color={utilColor(Math.round(r.used / r.total * 100))} allocatedPct={allocPct} />
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
 
@@ -1093,28 +1135,17 @@ const ClusterDetail = ({ cluster, onClose }) => {
   const [deleting, setDeleting] = useState(false);
   const [karpenterInstallStatus, setKarpenterInstallStatus] = useState(undefined); // undefined=loading, obj=loaded
   const [karpenterActionLoading, setKarpenterActionLoading] = useState(false);
+  const [migrationStatus, setMigrationStatus] = useState(null);
+  const [migrationLoading, setMigrationLoading] = useState(false);
   const karpenterPollRef = React.useRef(null);
 
   const fetchKarpenterStatus = React.useCallback(() => {
     return karpenterAPI.getInstallStatus(cluster.id)
       .then(async res => {
         let data = res.data;
-        // If install-status says not installed, run live detection as fallback
-        // (catches Karpenter installed manually outside the platform).
-        if (!data?.karpenter_installed) {
-          try {
-            const detectRes = await karpenterAPI.detectKarpenter(cluster.id);
-            if (detectRes.data?.detected) {
-              data = {
-                ...data,
-                karpenter_installed: true,
-                detected_via: 'live_detection',
-                karpenter_mode: detectRes.data.karpenter_mode,
-                status: 'installed',
-              };
-            }
-          } catch (_) { /* non-critical */ }
-        }
+        // The backend install-status endpoint already runs live detection
+        // as a fallback. No need for a second detection call from the frontend
+        // which was causing false positives from stale cached data.
         setKarpenterInstallStatus(data);
         return data;
       })
@@ -1130,9 +1161,11 @@ const ClusterDetail = ({ cluster, onClose }) => {
 
     karpenterPollRef.current = setInterval(() => {
       fetchKarpenterStatus().then(data => {
-        // Stop polling once action is no longer in-progress
+        // Stop polling once action is no longer in-progress AND karpenter is not missing
         const inProgress = data?.last_action?.status === 'PENDING' || data?.last_action?.status === 'PICKED_UP';
-        if (!inProgress && karpenterPollRef.current) {
+        const isMissing = data?.karpenter_installed === 'missing' || data?.status === 'missing';
+        // Keep polling if missing (to detect recovery) or in-progress
+        if (!inProgress && !isMissing && karpenterPollRef.current) {
           clearInterval(karpenterPollRef.current);
           karpenterPollRef.current = null;
         }
@@ -1144,12 +1177,49 @@ const ClusterDetail = ({ cluster, onClose }) => {
     };
   }, [cluster.id, cluster.agent_installed, fetchKarpenterStatus]);
 
+  // Fetch migration status on mount and after actions
+  const fetchMigrationStatus = React.useCallback(() => {
+    clusterAPI.getMigrationStatus(cluster.id)
+      .then(res => setMigrationStatus(res.data))
+      .catch(() => setMigrationStatus(null));
+  }, [cluster.id]);
+
+  useEffect(() => {
+    fetchMigrationStatus();
+  }, [fetchMigrationStatus]);
+
+  const handleStartMigration = async () => {
+    setMigrationLoading(true);
+    try {
+      await clusterAPI.startMigration(cluster.id);
+      toast.success('Migration started — auto-rebalancer will drain OD instances');
+      fetchMigrationStatus();
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Failed to start migration');
+    } finally {
+      setMigrationLoading(false);
+    }
+  };
+
+  const handleForceComplete = async () => {
+    if (!window.confirm('Force-complete migration? This marks the cluster as Karpenter-only even if OD instances remain.')) return;
+    setMigrationLoading(true);
+    try {
+      await clusterAPI.forceCompleteMigration(cluster.id);
+      toast.success('Migration force-completed — cluster is now Karpenter-only');
+      fetchMigrationStatus();
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Failed to force-complete');
+    } finally {
+      setMigrationLoading(false);
+    }
+  };
+
   const handleDeleteCluster = () => {
     setDeleting(true);
-    // removeAgent: uninstalls K8s DaemonSet + resets cluster to DISCOVERED state (keeps in list as fresh)
-    clusterAPI.removeAgent(cluster.id)
+    clusterAPI.deleteCluster(cluster.id)
       .then(() => {
-        toast.success(`Agent removed. "${cluster.name}" is now ready for fresh installation.`);
+        toast.success(`Cluster "${cluster.name}" and all data removed.`);
         setShowDeleteModal(false);
         window.dispatchEvent(new Event('refresh-clusters'));
         if (onClose) onClose();
@@ -1174,6 +1244,8 @@ const ClusterDetail = ({ cluster, onClose }) => {
   // Top-level cluster cards should always mathematically reflect exactly what the used/total capacity displays
   const cpuPct = cluster.cpu.total > 0 ? Math.round((cluster.cpu.used / cluster.cpu.total) * 100) : 0;
   const memPct = cluster.memory.total > 0 ? Math.round((cluster.memory.used / cluster.memory.total) * 100) : 0;
+  const cpuAllocPct = cluster.cpu.total > 0 && cluster.cpu.requested > 0 ? Math.round((cluster.cpu.requested / cluster.cpu.total) * 100) : 0;
+  const memAllocPct = cluster.memory.total > 0 && cluster.memory.requested > 0 ? Math.round((cluster.memory.requested / cluster.memory.total) * 100) : 0;
   const hasAgentData = cluster.agentInstalled && (cluster.cpu.total > 0 || cluster.memory.total > 0);
   const sc = statusConfig[cluster.status];
 
@@ -1185,6 +1257,11 @@ const ClusterDetail = ({ cluster, onClose }) => {
         <div>
           <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
             <h2 style={{ fontSize: 17, fontWeight: 700, margin: 0, letterSpacing: "-0.4px", color: C.text }}>{cluster.name}</h2>
+            {cluster.cluster_uid && (
+              <span style={{ fontSize: 10, color: C.subtle, background: "#f0f1f3", padding: "2px 7px", borderRadius: 4, fontFamily: "monospace", letterSpacing: "0.5px", border: `1px solid ${C.border}` }}>
+                UID: {cluster.cluster_uid}
+              </span>
+            )}
             {/* Status pill — dot has color, text is neutral */}
             <div style={{
               display: "flex", alignItems: "center", gap: 5,
@@ -1470,8 +1547,8 @@ const ClusterDetail = ({ cluster, onClose }) => {
         <SectionHeader>Resource Utilization</SectionHeader>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 4 }}>
           {[
-            { label: "CPU", used: cluster.cpu.used, total: cluster.cpu.total, unit: "cores", pct: cpuPct },
-            { label: "Memory", used: cluster.memory.used, total: cluster.memory.total, unit: "GiB", pct: memPct },
+            { label: "CPU", used: cluster.cpu.used, total: cluster.cpu.total, unit: "cores", pct: cpuPct, allocPct: cpuAllocPct },
+            { label: "Memory", used: cluster.memory.used, total: cluster.memory.total, unit: "GiB", pct: memPct, allocPct: memAllocPct },
           ].map(r => (
             <div key={r.label} style={{
               background: C.surface, border: `1px solid ${C.border}`,
@@ -1479,28 +1556,58 @@ const ClusterDetail = ({ cluster, onClose }) => {
             }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", marginBottom: 10 }}>
                 <div>
-                  <div style={{ fontSize: 11, color: C.muted, fontWeight: 500, marginBottom: 3 }}>{r.label} Usage</div>
+                  <div style={{ fontSize: 11, color: C.muted, fontWeight: 500, marginBottom: 3 }}>{r.label}</div>
                   <div style={{ fontSize: 18, fontWeight: 700, color: hasAgentData ? C.text : C.subtle, letterSpacing: "-0.3px" }}>
                     {hasAgentData ? `${r.used} / ${r.total} ${r.unit}` : 'No data'}
                   </div>
                 </div>
-                {/* Pct badge — neutral bg, colored only the dot beside it */}
                 {hasAgentData ? (
-                  <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
-                    <div style={{ width: 6, height: 6, borderRadius: "50%", background: utilColor(r.pct) }} />
-                    <span style={{ fontSize: 13, fontWeight: 700, color: C.text }}>{r.pct}%</span>
+                  <div style={{ textAlign: "right" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 4, justifyContent: "flex-end" }}>
+                      <div style={{ width: 6, height: 6, borderRadius: "50%", background: utilColor(r.pct) }} />
+                      <span style={{ fontSize: 13, fontWeight: 700, color: C.text }}>{r.pct}%</span>
+                      <span style={{ fontSize: 10, color: C.subtle }}>used</span>
+                    </div>
+                    {r.allocPct > 0 && (
+                      <div style={{ display: "flex", alignItems: "center", gap: 4, justifyContent: "flex-end", marginTop: 2 }}>
+                        <div style={{ width: 6, height: 6, borderRadius: "50%", background: C.amber }} />
+                        <span style={{ fontSize: 12, fontWeight: 600, color: C.text }}>{r.allocPct}%</span>
+                        <span style={{ fontSize: 10, color: C.subtle }}>allocated</span>
+                      </div>
+                    )}
                   </div>
                 ) : (
                   <span style={{ fontSize: 13, fontWeight: 600, color: C.subtle }}>—</span>
                 )}
               </div>
               {hasAgentData && (
-                <div style={{ height: 7, background: "#eef0f3", borderRadius: 4, overflow: "hidden" }}>
+                <div style={{ height: 7, background: "#eef0f3", borderRadius: 4, overflow: "hidden", position: "relative" }}>
+                  {/* Allocated bar (amber, behind) */}
+                  {r.allocPct > 0 && (
+                    <div style={{
+                      position: "absolute", width: `${Math.min(r.allocPct, 100)}%`, height: 7,
+                      background: C.amber + "55",
+                      borderRadius: 4, transition: "width 0.5s cubic-bezier(.4,0,.2,1)",
+                    }} />
+                  )}
+                  {/* Usage bar (solid, on top) */}
                   <div style={{
-                    width: `${r.pct}%`, height: 7,
+                    position: "relative", width: `${Math.min(r.pct, 100)}%`, height: 7,
                     background: `linear-gradient(90deg, ${utilColor(r.pct)}bb, ${utilColor(r.pct)})`,
                     borderRadius: 4, transition: "width 0.5s cubic-bezier(.4,0,.2,1)",
                   }} />
+                </div>
+              )}
+              {hasAgentData && r.allocPct > 0 && (
+                <div style={{ display: "flex", gap: 12, marginTop: 6, fontSize: 10, color: C.subtle }}>
+                  <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                    <span style={{ width: 8, height: 4, borderRadius: 2, background: utilColor(r.pct), display: "inline-block" }} />
+                    Used
+                  </span>
+                  <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                    <span style={{ width: 8, height: 4, borderRadius: 2, background: C.amber + "55", display: "inline-block" }} />
+                    Allocated (requests)
+                  </span>
                 </div>
               )}
             </div>
@@ -1611,18 +1718,31 @@ const ClusterDetail = ({ cluster, onClose }) => {
         {(cluster.agent_installed === true || cluster.agent_installed === 'Y') && (() => {
           const ks = karpenterInstallStatus;
           const lastAction = ks?.last_action;
-          const inProgress = lastAction?.status === 'PENDING' || lastAction?.status === 'PICKED_UP';
-          const failed = lastAction?.status === 'FAILED';
+          const inProgress = lastAction?.status === 'PENDING' || lastAction?.status === 'PICKED_UP' || ks?.status === 'in_progress';
+          const failed = lastAction?.status === 'FAILED' || ks?.status === 'failed';
           const installed = ks?.karpenter_installed === true;
+          const isMissing = ks?.karpenter_installed === 'missing' || ks?.status === 'missing';
+          const isUnknown = ks?.status === 'unknown';
           const checking = ks === undefined;
+          const apiError = ks?.error || ks?.message;
 
           // Badge colours
           let badgeBg = "#f3f4f6", badgeColor = C.subtle, badgeBorder = C.border, badgeText = "Not Installed";
           let statusDesc = "Not installed — required to apply right-sizing optimizations";
           if (checking) { badgeText = "Checking..."; statusDesc = "Fetching status..."; }
-          else if (installed) { badgeBg = C.greenBg; badgeColor = C.green; badgeBorder = C.greenBorder; badgeText = "Installed"; statusDesc = "NodePool provisioning active"; }
+          else if (isMissing) { badgeBg = "#fef2f2"; badgeColor = "#dc2626"; badgeBorder = "#fecaca"; badgeText = "Missing"; statusDesc = "Karpenter was installed but pods are no longer running — reinstall required"; }
+          else if (installed) {
+            badgeBg = C.greenBg; badgeColor = C.green; badgeBorder = C.greenBorder; badgeText = "Installed";
+            statusDesc = ks?.live_status
+              ? `NodePool provisioning active — ${ks.live_status.pods_running || 0} pod(s) running`
+              : ks?.pods_running != null
+              ? `NodePool provisioning active — ${ks.pods_running} pod(s) running`
+              : "NodePool provisioning active";
+            if (ks?.source) statusDesc += ` (${ks.source})`;
+          }
           else if (inProgress) { badgeBg = C.amberBg; badgeColor = C.amber; badgeBorder = C.amberBorder; badgeText = lastAction?.type === 'INSTALL_KARPENTER' ? "Installing…" : "Uninstalling…"; statusDesc = lastAction?.type === 'INSTALL_KARPENTER' ? "Installing Karpenter — this takes ~3-5 minutes" : "Uninstalling Karpenter — ~2 minutes"; }
-          else if (failed) { badgeBg = "#fef2f2"; badgeColor = "#dc2626"; badgeBorder = "#fecaca"; badgeText = "Failed"; statusDesc = `Last ${lastAction?.type === 'INSTALL_KARPENTER' ? 'install' : 'uninstall'} failed`; }
+          else if (isUnknown) { badgeBg = C.amberBg; badgeColor = C.amber; badgeBorder = C.amberBorder; badgeText = "Unknown"; statusDesc = ks?.message || "Cannot verify Karpenter status"; }
+          else if (failed) { badgeBg = "#fef2f2"; badgeColor = "#dc2626"; badgeBorder = "#fecaca"; badgeText = "Failed"; statusDesc = ks?.message || `Last ${lastAction?.type === 'INSTALL_KARPENTER' ? 'install' : 'uninstall'} failed`; }
 
           return (
             <div style={{ marginTop: 12, background: C.surface, border: `1px solid ${failed ? "#fecaca" : C.border}`, borderRadius: 10, padding: "14px 16px" }}>
@@ -1637,15 +1757,23 @@ const ClusterDetail = ({ cluster, onClose }) => {
                 </div>
               </div>
 
+              {/* Missing state warning */}
+              {isMissing && (
+                <div style={{ marginBottom: 12, padding: "8px 10px", borderRadius: 7, background: "#fef2f2", border: "1px solid #fecaca", fontSize: 11, color: "#b91c1c" }}>
+                  ⚠️ Karpenter pods are no longer running on this cluster. This may have been caused by manual deletion, a Helm release issue, or node failure. Reinstall to restore Karpenter management.
+                  {ks?.live_status && <span style={{ display: "block", marginTop: 4, fontFamily: "monospace", fontSize: 10 }}>Last check: {ks.live_status.last_check} | Pods: {ks.live_status.pods_running} | Controller: {ks.live_status.controller_healthy ? '✓' : '✗'}</span>}
+                </div>
+              )}
+
               {/* Error message box */}
-              {failed && lastAction?.error_message && (
+              {(failed || isUnknown) && (lastAction?.error_message || ks?.error || ks?.message) && (
                 <div style={{ marginBottom: 12, padding: "8px 10px", borderRadius: 7, background: "#fef2f2", border: "1px solid #fecaca", fontSize: 11, color: "#b91c1c", fontFamily: "monospace", whiteSpace: "pre-wrap", wordBreak: "break-word", maxHeight: 80, overflowY: "auto" }}>
-                  {lastAction.error_message}
+                  {lastAction?.error_message || ks?.error || ks?.message}
                 </div>
               )}
 
               {/* Action buttons */}
-              {!installed ? (
+              {(!installed && !isMissing) ? (
                 <button
                   disabled={karpenterActionLoading || inProgress}
                   onClick={async () => {
@@ -1665,6 +1793,47 @@ const ClusterDetail = ({ cluster, onClose }) => {
                 >
                   {karpenterActionLoading ? 'Queuing...' : inProgress ? 'Installing...' : failed ? '↺ Retry Install' : '⬇ Install Karpenter'}
                 </button>
+              ) : isMissing ? (
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button
+                    disabled={karpenterActionLoading || inProgress}
+                    onClick={async () => {
+                      if (!window.confirm(`Reinstall Karpenter on cluster "${cluster.name}"?\n\nKarpenter pods are missing. This will re-run the installation process.\n\nThis will take ~3-5 minutes.`)) return;
+                      setKarpenterActionLoading(true);
+                      try {
+                        await karpenterAPI.installKarpenter(cluster.id);
+                        toast.success("Karpenter reinstall queued. Status will update automatically.");
+                        fetchKarpenterStatus();
+                      } catch (e) {
+                        toast.error('Reinstall failed: ' + (e.response?.data?.detail || e.message));
+                      } finally {
+                        setKarpenterActionLoading(false);
+                      }
+                    }}
+                    style={{ padding: "7px 16px", borderRadius: 7, border: "none", background: (karpenterActionLoading || inProgress) ? C.border : "#dc2626", color: "#fff", fontSize: 12, fontWeight: 600, cursor: (karpenterActionLoading || inProgress) ? "not-allowed" : "pointer" }}
+                  >
+                    {karpenterActionLoading ? 'Queuing...' : '↺ Reinstall Karpenter'}
+                  </button>
+                  <button
+                    disabled={karpenterActionLoading || inProgress}
+                    onClick={async () => {
+                      if (!window.confirm('Uninstall Karpenter from this cluster?\n\nThis will clean up the Karpenter deployment completely.')) return;
+                      setKarpenterActionLoading(true);
+                      try {
+                        await karpenterAPI.uninstallKarpenter(cluster.id);
+                        toast.success("Karpenter uninstall queued.");
+                        fetchKarpenterStatus();
+                      } catch (e) {
+                        toast.error('Uninstall failed: ' + (e.response?.data?.detail || e.message));
+                      } finally {
+                        setKarpenterActionLoading(false);
+                      }
+                    }}
+                    style={{ padding: "7px 16px", borderRadius: 7, border: `1px solid ${C.border}`, background: "transparent", color: C.subtle, fontSize: 12, fontWeight: 600, cursor: (karpenterActionLoading || inProgress) ? "not-allowed" : "pointer" }}
+                  >
+                    Uninstall
+                  </button>
+                </div>
               ) : (
                 <button
                   disabled={karpenterActionLoading || inProgress}
@@ -1686,6 +1855,82 @@ const ClusterDetail = ({ cluster, onClose }) => {
                   {karpenterActionLoading ? 'Queuing...' : inProgress ? 'Uninstalling...' : 'Uninstall Karpenter'}
                 </button>
               )}
+            </div>
+          );
+        })()}
+
+        {/* ── Karpenter Migration ── */}
+        {(cluster.agent_installed === true || cluster.agent_installed === 'Y') && migrationStatus && (() => {
+          const phase = migrationStatus.phase || 'not_started';
+          const spotPct = migrationStatus.spot_percentage || 0;
+          const odRemaining = migrationStatus.od_remaining || 0;
+          const totalNodes = migrationStatus.total_nodes || 0;
+          const completed = phase === 'completed';
+          const inProgress = phase === 'in_progress' || phase === 'completing';
+          const kInstalled = karpenterInstallStatus?.karpenter_installed === true && karpenterInstallStatus?.status !== 'missing';
+
+          let badgeBg = "#f3f4f6", badgeColor = C.subtle, badgeBorder = C.border, badgeText = "Not Started";
+          if (completed) { badgeBg = C.greenBg; badgeColor = C.green; badgeBorder = C.greenBorder; badgeText = "Completed"; }
+          else if (inProgress) { badgeBg = C.amberBg; badgeColor = C.amber; badgeBorder = C.amberBorder; badgeText = phase === 'completing' ? "Completing…" : "In Progress"; }
+
+          return (
+            <div style={{ marginTop: 12, background: C.surface, border: `1px solid ${completed ? C.greenBorder : C.border}`, borderRadius: 10, padding: "14px 16px" }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: C.muted, letterSpacing: ".06em", textTransform: "uppercase", marginBottom: 10 }}>Karpenter Migration</div>
+
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+                <div>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: C.text }}>Status</div>
+                  <div style={{ fontSize: 11, color: C.subtle, marginTop: 2 }}>
+                    {completed ? 'Fully migrated to Karpenter — ASG bypassed' :
+                     inProgress ? `Draining OD instances (${odRemaining} remaining of ${totalNodes})` :
+                     'Start migration to move from Managed Node Groups to Karpenter'}
+                  </div>
+                </div>
+                <div style={{ padding: "3px 10px", borderRadius: 20, fontSize: 11, fontWeight: 600, background: badgeBg, color: badgeColor, border: `1px solid ${badgeBorder}` }}>
+                  {badgeText}
+                </div>
+              </div>
+
+              {/* Progress bar */}
+              {inProgress && (
+                <div style={{ marginBottom: 12 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: C.subtle, marginBottom: 4 }}>
+                    <span>Spot: {spotPct.toFixed(1)}%</span>
+                    <span>OD remaining: {odRemaining}</span>
+                  </div>
+                  <div style={{ height: 6, borderRadius: 3, background: "#e5e7eb", overflow: "hidden" }}>
+                    <div style={{ height: "100%", borderRadius: 3, background: C.green, width: `${Math.min(spotPct, 100)}%`, transition: "width 0.5s ease" }} />
+                  </div>
+                </div>
+              )}
+
+              {/* Action buttons */}
+              <div style={{ display: "flex", gap: 8 }}>
+                {!completed && !inProgress && kInstalled && (
+                  <button
+                    disabled={migrationLoading}
+                    onClick={handleStartMigration}
+                    style={{ padding: "7px 16px", borderRadius: 7, border: "none", background: migrationLoading ? C.border : C.accent, color: "#fff", fontSize: 12, fontWeight: 600, cursor: migrationLoading ? "not-allowed" : "pointer" }}
+                  >
+                    {migrationLoading ? 'Starting…' : '🚀 Start Full Migration'}
+                  </button>
+                )}
+                {!completed && !inProgress && !kInstalled && (
+                  <div style={{ fontSize: 11, color: C.amber, fontWeight: 500 }}>⚠ Install Karpenter first</div>
+                )}
+                {inProgress && (
+                  <button
+                    disabled={migrationLoading}
+                    onClick={handleForceComplete}
+                    style={{ padding: "7px 16px", borderRadius: 7, border: `1px solid ${C.amber}`, background: "transparent", color: C.amber, fontSize: 12, fontWeight: 600, cursor: migrationLoading ? "not-allowed" : "pointer" }}
+                  >
+                    {migrationLoading ? 'Processing…' : '⚡ Force Complete'}
+                  </button>
+                )}
+                {completed && (
+                  <div style={{ fontSize: 11, color: C.green, fontWeight: 600 }}>✓ Karpenter-only mode active</div>
+                )}
+              </div>
             </div>
           );
         })()}
@@ -2085,14 +2330,22 @@ export default function ClustersPage() {
             utilization: util,
             cpuPct: node.cpu_utilization_pct,
             memPct: node.memory_utilization_pct,
+            cpuReqPct: node.cpu_request_pct || 0,
+            memReqPct: node.memory_request_pct || 0,
             classification: node.classification || 'UNKNOWN',
             cpu: {
-              used: Math.round((node.cpu_utilization_pct / 100) * cpuCores * 10) / 10,
+              used: Math.round((node.cpu_utilization_pct / 100) * cpuCores * 100) / 100,
               total: cpuCores,
+              requested: node.total_cpu_request_millicores
+                ? Math.round(node.total_cpu_request_millicores / 100) / 10
+                : 0,
             },
             memory: {
-              used: Math.round((node.memory_utilization_pct / 100) * memGib * 10) / 10,
+              used: Math.round((node.memory_utilization_pct / 100) * memGib * 100) / 100,
               total: memGib,
+              requested: node.total_memory_request_mb
+                ? Math.round(node.total_memory_request_mb / 1024 * 100) / 100
+                : 0,
             },
             pods: node.pod_count || 0,
             maxPods: 110, // Default K8s limit
@@ -2104,6 +2357,7 @@ export default function ClustersPage() {
 
       return {
         id: c.id,
+        cluster_uid: c.cluster_uid || null,
         name: c.name,
         region: c.region || "us-east-1",
         provider: c.provider || "AWS",
@@ -2141,9 +2395,24 @@ export default function ClustersPage() {
           },
           _nodeCountPending: false,
         }),
-        // Use real data from API if available, calculate actual usage from percentages
-        cpu: { used: Math.round((c.cpu_total * Math.round(c.cpu_usage_pct))) / 100, total: c.cpu_total },
-        memory: { used: Math.round((c.mem_total * Math.round(c.mem_usage_pct))) / 100, total: c.mem_total },
+        // Use real per-node data when available (weighted sum across all nodes),
+        // so CPU/MEM % reflects actual live utilization vs total capacity —
+        // making it easy to spot overprovisioned clusters.
+        // Falls back to stale cluster-level metric fields when node data isn't loaded yet.
+        cpu: nodeList.length > 0
+          ? {
+              used: Math.round(nodeList.reduce((s, n) => s + n.cpu.used, 0) * 100) / 100,
+              total: nodeList.reduce((s, n) => s + n.cpu.total, 0),
+              requested: Math.round(nodeList.reduce((s, n) => s + (n.cpu.requested || 0), 0) * 100) / 100,
+            }
+          : { used: Math.round((c.cpu_total * Math.round(c.cpu_usage_pct))) / 100, total: c.cpu_total, requested: 0 },
+        memory: nodeList.length > 0
+          ? {
+              used: Math.round(nodeList.reduce((s, n) => s + n.memory.used, 0) * 100) / 100,
+              total: nodeList.reduce((s, n) => s + n.memory.total, 0),
+              requested: Math.round(nodeList.reduce((s, n) => s + (n.memory.requested || 0), 0) * 100) / 100,
+            }
+          : { used: Math.round((c.mem_total * Math.round(c.mem_usage_pct))) / 100, total: c.mem_total, requested: 0 },
         cpuUsagePct: c.cpu_usage_pct || 0,
         memUsagePct: c.mem_usage_pct || 0,
         workloadType: c.workload_type || null, // 'stateless' | 'stateful' | null

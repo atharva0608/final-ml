@@ -6,7 +6,7 @@ Orchestrates zero-downtime spot node replacement via a 13-step pipeline.
 Real execution path:
   1. auto_rebalancer.py → create_pool_switch_actions() → AgentAction records
   2. agent_routes.py → WebSocket push / HTTP poll → agent/actuator.py
-  3. actuator.py → cordon_node(), drain_node(), patch_karpenter_nodepool()
+  3. actuator.py → cordon_node(), drain_node(), terminate_node()
 
 execute_replacement() is the primary entry point for direct (non-agent) replacement.
 Rollback on any failure → increments rollback counter → circuit breaker.

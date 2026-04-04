@@ -592,10 +592,10 @@ export default function Dashboard() {
             {/* ── ROW 1: Core KPIs (4 cards) ── */}
             <SectionLabel>Spend & Savings</SectionLabel>
             <div className="grid grid-cols-4 gap-3 mb-5">
-              <KpiCard label="Monthly Spend" value={`$${(dashboardKPIs?.total_cost || 0).toFixed(2)}`} sub="0% vs last month" trend={0} icon="$" color={C.blue} />
-              <KpiCard label="Net Savings" value={`$${(dashboardKPIs?.estimated_savings || 0).toFixed(2)}`} sub="0.0% savings rate" trend={0} icon="↓" color={C.green} />
-              <KpiCard label="Spot Ratio" value={`${(dashboardKPIs?.optimization_rate || 0).toFixed(0)}%`} sub="Calculated across all connected clusters" icon="◎" color={C.purple} />
-              <KpiCard label="Total Nodes" value={clusters.reduce((acc, c) => acc + (c.nodes || c.node_count || 0), 0)} sub={`${clusters.length} clusters connected`} icon="⬡" color={C.teal} />
+              <KpiCard label="Monthly Spend" value={`$${(dashboardKPIs?.total_cost || 0).toFixed(2)}`} sub="This month's AWS spend" trend={0} icon="$" color={C.blue} />
+              <KpiCard label="Net Savings" value={`$${(dashboardKPIs?.estimated_savings || 0).toFixed(2)}`} sub={`${(dashboardKPIs?.savings_percentage || 0).toFixed(1)}% savings rate`} trend={dashboardKPIs?.savings_percentage || 0} icon="↑" color={C.green} />
+              <KpiCard label="Spot Ratio" value={`${(fleetData?.summary?.spot_ratio_pct ?? dashboardKPIs?.optimization_rate ?? 0).toFixed(0)}%`} sub="Calculated across all connected clusters" icon="◎" color={C.purple} />
+              <KpiCard label="Total Nodes" value={fleetData?.summary?.total_nodes ?? clusters.reduce((acc, c) => acc + (c.nodes || c.node_count || 0), 0)} sub={`${clusters.length} clusters connected`} icon="⬡" color={C.teal} />
             </div>
 
             {/* ── ROW 2: Fleet Overview ── */}
@@ -694,7 +694,7 @@ export default function Dashboard() {
 
             {/* ── ROW 4: Fleet Composition + Activity Feed ── */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-5">
-              <FleetComposition widgetKey="fleet_composition" data={{}} />
+              <FleetComposition widgetKey="fleet_composition" />
               <div className="md:col-span-2">
                 <ActivityFeed widgetKey="activity_feed" data={{ activities: activityFeed }} />
               </div>

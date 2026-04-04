@@ -817,43 +817,91 @@ class KarpenterService:
 
     def detect_karpenter_in_cluster(self, cluster_id: str, db) -> dict:
         """
-        Detect if Karpenter is installed in a cluster by checking for NodePool CRD
-        via an agent action. Uses Redis cache to avoid repeated checks.
+        Detect if Karpenter is installed in a cluster. Uses a 3-tier approach:
+        1. Live agent heartbeat status (most authoritative — agent checks K8s pods every 30s)
+        2. Short-term Redis cache (karpenter:detected:{cluster_id}, 120s TTL)
+        3. DB column fallback (cluster.karpenter_mode)
         """
         try:
             from backend.core.redis_client import get_redis_client
             import json as _json
 
             redis = get_redis_client()
-            cache_key = f"karpenter:detected:{cluster_id}"
-            cached = redis.get(cache_key)
-            if cached:
-                return _json.loads(cached)
 
-            # Check via AgentAction result or settings
+            # ── Tier 1: Live agent heartbeat status (refreshed every 30s) ──
+            _live_key = f"karpenter:live_status:{cluster_id}"
+            _live_raw = redis.get(_live_key) if redis else None
+            if _live_raw:
+                _live = _json.loads(_live_raw)
+                _live_detected = _live.get('detected', False)
+
+                from backend.models.cluster import Cluster
+                cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
+                _was_installed = cluster and cluster.karpenter_mode is not None
+                _mode = cluster.karpenter_mode.value if cluster and cluster.karpenter_mode else 'none'
+
+                if _live_detected:
+                    result = {
+                        'detected': True,
+                        'cluster_id': cluster_id,
+                        'karpenter_mode': _mode,
+                        'source': 'live_agent',
+                        'pods_running': _live.get('pods_running', 0),
+                        'controller_healthy': _live.get('controller_healthy', False),
+                    }
+                else:
+                    result = {
+                        'detected': False,
+                        'cluster_id': cluster_id,
+                        'karpenter_mode': 'missing' if _was_installed else 'none',
+                        'previously_installed': _was_installed,
+                        'source': 'live_agent',
+                        'error': _live.get('error'),
+                        'pods_running': _live.get('pods_running', 0),
+                    }
+
+                # Update caches
+                cache_key = f"karpenter:detected:{cluster_id}"
+                redis.setex(cache_key, 120, _json.dumps(result))
+                _installed_key = f"spot:karpenter:installed:{cluster_id}"
+                if _live_detected:
+                    redis.setex(_installed_key, 3600, _mode)
+                elif _was_installed:
+                    redis.delete(_installed_key)
+
+                return result
+
+            # ── Tier 2: Short-term detection cache ──
+            cache_key = f"karpenter:detected:{cluster_id}"
+            cached = redis.get(cache_key) if redis else None
+            if cached:
+                cached_result = _json.loads(cached)
+                # Don't trust cached results from db_column source — they may be stale
+                if cached_result.get('source') != 'db_column':
+                    return cached_result
+
+            # ── Tier 3: DB column fallback (no live data available) ──
+            # NOTE: karpenter_mode alone is NOT proof of installation — it can be
+            # set as a desired mode before Karpenter is actually installed.
+            # Without live agent confirmation, report detected=False.
             from backend.models.cluster import Cluster
             cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
             if not cluster:
                 return {'detected': False, 'reason': 'cluster_not_found'}
 
-            # Check karpenter_mode via direct Cluster column (cluster.karpenter_mode)
-            # cluster.settings does not exist as a Cluster model attribute
             karpenter_mode = cluster.karpenter_mode.value if cluster.karpenter_mode else 'none'
-            detected = cluster.karpenter_mode is not None
 
             result = {
-                'detected': detected,
+                'detected': False,
                 'cluster_id': cluster_id,
                 'karpenter_mode': karpenter_mode,
+                'source': 'db_column',
+                'warning': 'No live agent data available — cannot confirm Karpenter status',
             }
-            redis.setex(cache_key, 300, _json.dumps(result))
-
-            # Task 3.3: Also set/clear the spot:karpenter:installed key that
-            # emergency_rebalancer and other services check.
-            _installed_key = f"spot:karpenter:installed:{cluster_id}"
-            if detected:
-                redis.setex(_installed_key, 3600, karpenter_mode)  # 1h TTL, refreshed on every detection
-            else:
+            if redis:
+                redis.setex(cache_key, 120, _json.dumps(result))
+                # Do NOT set the installed key from DB-only data
+                _installed_key = f"spot:karpenter:installed:{cluster_id}"
                 redis.delete(_installed_key)
 
             return result
@@ -862,31 +910,104 @@ class KarpenterService:
             logger.error(f"[karpenter] detect_karpenter_in_cluster failed: {e}")
             return {'detected': False, 'error': str(e)}
 
+    def add_allowed_instance_type(self, cluster_id: str, instance_type: str, nodepool_name: str = "default") -> bool:
+        """
+        Add a single instance type to the NodePool's allowed instance-type list.
+        Called by the auto-rebalancer to ensure the target type is in the NodePool
+        before Karpenter provisions a node.
+
+        Returns True on success, False if NodePool not found or update fails.
+        Idempotent: if the type is already present, returns True without patching.
+        """
+        try:
+            cluster = self.db.query(Cluster).filter(Cluster.id == cluster_id).first()
+            if not cluster:
+                logger.error(f"[karpenter] add_allowed_instance_type: cluster {cluster_id} not found")
+                return False
+
+            api_client = self._get_k8s_client(cluster)
+            custom_api = client.CustomObjectsApi(api_client)
+
+            # Read current NodePool
+            try:
+                nodepool = custom_api.get_cluster_custom_object(
+                    group="karpenter.sh",
+                    version="v1",
+                    plural="nodepools",
+                    name=nodepool_name,
+                )
+            except ApiException as e:
+                if e.status == 404:
+                    logger.warning(f"[karpenter] NodePool '{nodepool_name}' not found for cluster {cluster_id}")
+                    return False
+                raise
+
+            # Extract instance-type requirement
+            requirements = nodepool.get('spec', {}).get('template', {}).get('spec', {}).get('requirements', [])
+            found_req = False
+            for req in requirements:
+                if req.get('key') == 'node.kubernetes.io/instance-type':
+                    values = set(req.get('values', []))
+                    if instance_type in values:
+                        logger.info(
+                            f"[karpenter] {instance_type} already in NodePool '{nodepool_name}' "
+                            f"for cluster {cluster_id} — no patch needed"
+                        )
+                        return True
+                    values.add(instance_type)
+                    req['values'] = sorted(values)
+                    found_req = True
+                    break
+
+            if not found_req:
+                # No instance-type requirement exists; create one
+                requirements.append({
+                    'key': 'node.kubernetes.io/instance-type',
+                    'operator': 'In',
+                    'values': [instance_type]
+                })
+
+            # Patch the NodePool
+            patch_body = {
+                "spec": {"template": {"spec": {"requirements": requirements}}}
+            }
+            custom_api.patch_cluster_custom_object(
+                group="karpenter.sh",
+                version="v1",
+                plural="nodepools",
+                name=nodepool_name,
+                body=patch_body,
+            )
+            logger.info(
+                f"[karpenter] Added {instance_type} to NodePool '{nodepool_name}' "
+                f"for cluster {cluster_id}"
+            )
+            return True
+
+        except Exception as e:
+            logger.error(f"[karpenter] add_allowed_instance_type failed: {e}")
+            return False
+
     def patch_node_pool_allowed_types(self, cluster_id: str, instance_types: list, db) -> dict:
         """
         Update NodePool instance-type requirements with a new allowed list.
-        Creates a PATCH_KARPENTER_NODEPOOL AgentAction.
+        Directly patches the NodePool via K8s API (no longer creates an AgentAction).
         """
         try:
-            from backend.models.agent_action import AgentAction, AgentActionType, AgentActionStatus
-            from backend.models.base import generate_uuid
+            cluster = self.db.query(Cluster).filter(Cluster.id == cluster_id).first()
+            if not cluster:
+                return {'status': 'error', 'error': f'Cluster {cluster_id} not found'}
 
-            action = AgentAction(
-                id=generate_uuid(),
-                cluster_id=cluster_id,
-                action_type=AgentActionType.PATCH_KARPENTER_NODEPOOL,
-                payload={
-                    "instance_types": instance_types,
-                    "reason": "ml_ranking_update",
-                },
-                status=AgentActionStatus.PENDING,
+            api_client = self._get_k8s_client(cluster)
+            updated = self._update_nodepool(
+                api_client=api_client,
+                nodepool_name="default",
+                instance_types=instance_types,
+                azs=[],
+                cluster=cluster,
             )
-            db.add(action)
-            db.commit()
-
             return {
-                'status': 'queued',
-                'action_id': action.id,
+                'status': 'success',
                 'instance_types': instance_types,
             }
         except Exception as e:

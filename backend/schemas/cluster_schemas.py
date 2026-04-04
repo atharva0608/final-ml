@@ -9,6 +9,7 @@ from datetime import datetime
 class ClusterListItem(BaseModel):
     """Single cluster in list view"""
     id: str = Field(..., description="Cluster UUID")
+    cluster_uid: Optional[str] = Field(None, description="Short unique display ID (8-char hex)")
     name: str = Field(..., description="Cluster name")
     region: str = Field(..., description="AWS region")
     status: str = Field(..., description="Cluster status (PENDING, ACTIVE, INACTIVE, ERROR)")
@@ -312,6 +313,7 @@ class ClusterUpdate(BaseModel):
 class ClusterResponse(BaseModel):
     """Schema for cluster response"""
     id: str = Field(..., description="Cluster UUID")
+    cluster_uid: Optional[str] = Field(None, description="Short unique display ID (8-char hex)")
     account_id: str = Field(..., description="Account UUID")
     name: str = Field(..., description="Cluster name")
     arn: str = Field(..., description="AWS ARN")
@@ -327,14 +329,24 @@ class ClusterResponse(BaseModel):
     created_at: datetime = Field(..., description="Creation timestamp")
     updated_at: datetime = Field(..., description="Last update timestamp")
 
-    # Teaser Fields
+    # Financial fields
+    monthly_cost: float = Field(0.0, description="Monthly compute cost")
+    estimated_savings: float = Field(0.0, description="Estimated potential savings")
+    realized_savings_monthly: float = Field(0.0, description="Realized savings from spot")
     potential_savings_monthly: float = Field(0.0, description="Potential savings")
+
+    # Node counts
+    node_count: int = Field(0, description="Total node count")
+    spot_count: int = Field(0, description="Spot instance count")
     on_demand_node_count: int = Field(0, description="OD Node Count")
     inventory_summary: Optional[Dict[str, Any]] = Field(default_factory=dict, description="Inventory breakdown")
 
     # Auto-rebalancing
     auto_rebalance_enabled: bool = Field(False, description="Auto on-demand→spot rebalancing enabled")
     rightsizing_enabled: bool = Field(False, description="Right-sizing enabled")
+
+    # Migration tracking
+    managed_node_group_deleted: bool = Field(False, description="True when original managed node group has been deleted")
 
 
 class AgentInstallCommand(BaseModel):
@@ -363,7 +375,7 @@ class AutomationControlsSchema(BaseModel):
     auto_rightsizing_enabled: bool = False
     instance_aware_rightsizing: bool = False
     cooldown_override_minutes: Optional[int] = None
-    spot_join_timeout_minutes: Optional[int] = None  # How long to wait for new spot node to join (default 30 min)
+    # spot_join_timeout_minutes removed — Karpenter manages node readiness timing
 
     manual_approval_required: bool = False
     target_spot_exposure_pct: int = 100
@@ -379,6 +391,8 @@ class AutomationControlsSchema(BaseModel):
     enable_ascp_auto_scaler: bool = False
     check_interval_seconds: int = 15
     architecture_preference: str = "both"  # "both", "amd64", or "arm64"
+    rebalance_batch_percent: Optional[int] = None  # None = auto (PDB-safe or 15%)
+    karpenter_only_mode: bool = False  # When True, rebalancer skips all ASG code paths
 
 class OptimizationStrategySchema(BaseModel):
     strategy_type: str = "BALANCED"
@@ -413,3 +427,5 @@ class UnifiedOptimizationSettings(BaseModel):
     optimization_strategy: Optional[OptimizationStrategySchema] = None
     stateless_rules: Optional[StatelessRulesSchema] = None
     stateful_rules: Optional[StatefulRulesSchema] = None
+    # Read-only computed field: max safe batch % based on PDBs (None = no PDBs found)
+    pdb_safe_percent: Optional[int] = None

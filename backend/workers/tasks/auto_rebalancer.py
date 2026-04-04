@@ -17,6 +17,7 @@ Celery Task: Runs every 15 seconds checking for active rebalancing actions
 from datetime import datetime, timedelta
 from typing import Dict, Optional
 from sqlalchemy.orm import Session
+from sqlalchemy import or_
 import hashlib
 
 import boto3
@@ -627,467 +628,9 @@ def _sync_instance_state_from_aws(db: Session, cluster: Cluster):
         logger.warning(f"[aws_sync] Sync failed for cluster {cluster.name}: {e}")
 
 
-def _launch_spot_instance_direct(
-    db, cluster, source_instance_id: str,
-    target_instance_types: list, target_az: str, region: str
-) -> tuple:
-    """
-    Launch a spot EC2 instance for non-Karpenter clusters.
-    Returns (instance_id, instance_type, az, error_msg, skipped_map).
-    error_msg is None on success.
-
-    Copies AMI, subnet, security groups, IAM instance profile, and cluster tags
-    from the source OD instance, then calls run_instances() with spot market options.
-    Tries each target_instance_type in order, falling back on InsufficientInstanceCapacity.
-
-    Returns the new EC2 instance_id on success, or None on failure.
-    """
-    _last_err = None  # tracks the most recent AWS error for caller reporting
-    try:
-        import boto3 as _b3f
-        from botocore.exceptions import ClientError as _CE
-        from backend.models.system_config import SystemConfig as _SC
-
-        # Load stored platform credentials
-        _pk = db.query(_SC).filter(_SC.key == "PLATFORM_AWS_ACCESS_KEY").first()
-        _ps = db.query(_SC).filter(_SC.key == "PLATFORM_AWS_SECRET").first()
-        _plat_key    = (_pk.value if _pk and _pk.value else None)
-        _plat_secret = (_ps.value if _ps and _ps.value else None)
-
-        # Resolve IAM role for cross-account access
-        _creds = {}
-        _role_arn = cluster.aws_role_arn
-        _ext_id   = cluster.aws_external_id
-        if not _role_arn and cluster.account_id:
-            try:
-                from backend.models.account import Account as _Acct
-                _acct = db.query(_Acct).filter(_Acct.id == cluster.account_id).first()
-                if _acct:
-                    _role_arn = _acct.role_arn
-                    _ext_id   = _acct.external_id
-            except Exception:
-                pass
-
-        if _plat_key and _plat_secret:
-            if _role_arn:
-                _sts = _b3f.client("sts",
-                                   aws_access_key_id=_plat_key,
-                                   aws_secret_access_key=_plat_secret,
-                                   region_name=region,
-                                   endpoint_url=f"https://sts.{region}.amazonaws.com")
-                _kw = {"RoleArn": _role_arn, "RoleSessionName": "spot-direct-launch"}
-                if _ext_id:
-                    _kw["ExternalId"] = _ext_id
-                _assumed = _sts.assume_role(**_kw)
-                _c = _assumed["Credentials"]
-                _creds = {
-                    "aws_access_key_id":     _c["AccessKeyId"],
-                    "aws_secret_access_key": _c["SecretAccessKey"],
-                    "aws_session_token":     _c["SessionToken"],
-                }
-            else:
-                _creds = {"aws_access_key_id": _plat_key, "aws_secret_access_key": _plat_secret}
-
-        _ec2 = _b3f.client("ec2", region_name=region, **_creds)
-
-        # Describe source instance to copy launch parameters
-        try:
-            _resp = _ec2.describe_instances(InstanceIds=[source_instance_id])
-            _src  = _resp["Reservations"][0]["Instances"][0]
-        except _CE as _ce:
-            if _ce.response["Error"]["Code"] == "InvalidInstanceID.NotFound":
-                if not _role_arn:
-                    raise ValueError(f"CRITICAL ERROR: Cannot access customer AWS account for cluster {cluster.name}. No 'aws_role_arn' is configured. Please link an AWS account.")
-                else:
-                    raise ValueError(f"CRITICAL ERROR: Cannot find instance {source_instance_id} using role {_role_arn}. Verify cross-account IAM permissions.")
-            raise
-
-        _ami_id       = _src["ImageId"]
-        _subnet_id    = _src.get("SubnetId", "")
-        _sg_ids       = [sg["GroupId"] for sg in _src.get("SecurityGroups", [])]
-        _iam_profile  = _src.get("IamInstanceProfile", {}).get("Arn", "")
-        _key_name     = _src.get("KeyName", "")
-
-        # ── Determine source AMI architecture so we can resolve correct AMI
-        # for cross-architecture launches (e.g., x86_64 source → arm64 target) ──
-        _src_ami_arch = "x86_64"
-        _src_ami_name = ""
-        _ami_cache = {}  # {arch: ami_id} — avoid repeated describe_images calls
-        try:
-            _ami_resp = _ec2.describe_images(ImageIds=[_ami_id])
-            if _ami_resp.get("Images"):
-                _src_ami_arch = _ami_resp["Images"][0].get("Architecture", "x86_64")
-                _src_ami_name = _ami_resp["Images"][0].get("Name", "")
-                logger.info(
-                    f"[auto_rebalancer] Source AMI {_ami_id}: arch={_src_ami_arch}, "
-                    f"name={_src_ami_name}"
-                )
-        except Exception as _ami_err:
-            logger.warning(f"[auto_rebalancer] Could not describe source AMI {_ami_id}: {_ami_err}")
-        _ami_cache[_src_ami_arch] = _ami_id
-
-        # CRITICAL: Copy user-data from source instance.
-        # EKS bootstrap script (/etc/eks/bootstrap.sh) is NOT baked into the AMI —
-        # it is passed as user-data at launch time. Without it the new node's kubelet
-        # never starts and the node never joins the cluster.
-        _user_data_b64 = ""
-        # Attempt 1: describe_instance_attribute (requires ec2:DescribeInstanceAttribute IAM perm)
-        try:
-            _ud_resp = _ec2.describe_instance_attribute(
-                InstanceId=source_instance_id, Attribute="userData"
-            )
-            _user_data_b64 = _ud_resp.get("UserData", {}).get("Value", "")
-            if _user_data_b64:
-                logger.info(
-                    f"[auto_rebalancer] Got user-data via instance attribute for {source_instance_id} "
-                    f"({len(_user_data_b64)} chars base64)"
-                )
-        except Exception as _ud_err:
-            logger.warning(
-                f"[auto_rebalancer] Could not fetch user-data via DescribeInstanceAttribute "
-                f"for {source_instance_id}: {_ud_err} — trying launch template fallback"
-            )
-
-        # Attempt 2: get user-data from the source instance's launch template (EKS managed node groups
-        # store the bootstrap script in the launch template, not the instance attribute directly).
-        # This also handles the case where ec2:DescribeInstanceAttribute is not granted.
-        if not _user_data_b64:
-            try:
-                _lt_info = _src.get("LaunchTemplate", {})
-                _lt_id = _lt_info.get("LaunchTemplateId")
-                _lt_version = str(_lt_info.get("Version") or "$Default")
-                if _lt_id:
-                    _lt_resp = _ec2.describe_launch_template_versions(
-                        LaunchTemplateId=_lt_id,
-                        Versions=[_lt_version],
-                    )
-                    _lt_versions = _lt_resp.get("LaunchTemplateVersions", [])
-                    if _lt_versions:
-                        _lt_ud = _lt_versions[0].get("LaunchTemplateData", {}).get("UserData", "")
-                        if _lt_ud:
-                            _user_data_b64 = _lt_ud
-                            logger.info(
-                                f"[auto_rebalancer] Got user-data from launch template "
-                                f"{_lt_id}:{_lt_version} ({len(_user_data_b64)} chars base64)"
-                            )
-                        else:
-                            logger.warning(
-                                f"[auto_rebalancer] Launch template {_lt_id}:{_lt_version} "
-                                f"has no user-data"
-                            )
-                else:
-                    logger.warning(
-                        f"[auto_rebalancer] Source instance {source_instance_id} has no "
-                        f"LaunchTemplate association — cannot get user-data from LT"
-                    )
-            except Exception as _lt_err:
-                logger.warning(
-                    f"[auto_rebalancer] Could not fetch user-data from launch template: {_lt_err}"
-                )
-
-        # Attempt 3: Get user-data from the EKS managed node group launch template.
-        # This is the most reliable source — it is the authoritative bootstrap script
-        # for this EKS cluster, independent of which running instance we copied from.
-        # REQUIRED when source_instance_id is a direct-launched node (no LT association).
-        if not _user_data_b64:
-            try:
-                import boto3 as _b3_eks3
-                _eks3 = _b3_eks3.client("eks", region_name=region, **_creds)
-                _eks_cluster_name = (
-                    getattr(cluster, 'eks_cluster_name', None)
-                    or getattr(cluster, 'name', None)
-                    or cluster.name
-                )
-                _ngs = _eks3.list_nodegroups(clusterName=_eks_cluster_name).get('nodegroups', [])
-                for _ng_name in _ngs:
-                    _ng = _eks3.describe_nodegroup(
-                        clusterName=_eks_cluster_name, nodegroupName=_ng_name
-                    )['nodegroup']
-                    _ng_lt = _ng.get('launchTemplate', {})
-                    _ng_lt_id = _ng_lt.get('id')
-                    _ng_lt_ver = str(_ng_lt.get('version') or '$Default')
-                    if _ng_lt_id:
-                        _lt3 = _ec2.describe_launch_template_versions(
-                            LaunchTemplateId=_ng_lt_id, Versions=[_ng_lt_ver]
-                        ).get('LaunchTemplateVersions', [])
-                        if _lt3:
-                            _ud3 = _lt3[0].get('LaunchTemplateData', {}).get('UserData', '')
-                            if _ud3:
-                                _user_data_b64 = _ud3
-                                logger.info(
-                                    f"[auto_rebalancer] Got user-data from EKS nodegroup "
-                                    f"'{_ng_name}' LT {_ng_lt_id}:{_ng_lt_ver} "
-                                    f"({len(_user_data_b64)} chars base64)"
-                                )
-                                break
-                if not _user_data_b64:
-                    logger.warning(
-                        f"[auto_rebalancer] EKS nodegroup LT user-data: no nodegroup had user-data "
-                        f"for cluster '{_eks_cluster_name}'"
-                    )
-            except Exception as _eks3_err:
-                logger.warning(
-                    f"[auto_rebalancer] Attempt 3 (EKS nodegroup LT): {_eks3_err}"
-                )
-
-        # ── Cross-architecture user-data generation ────────────────────────────
-        # When the target architecture differs from the source, the copied
-        # user-data (EKS bootstrap script) may contain arch-specific
-        # paths/binaries that fail on the new architecture.  Generate fresh,
-        # arch-correct EKS bootstrap user-data in that case.
-        # This is DECOUPLED from attach_to_asg_enabled — cross-arch launches
-        # always need correct user-data regardless of ASG attach mode.
-        # Also serves as a fallback when all 3 retrieval tiers above returned
-        # empty (e.g., EKS nodegroup has no LT).
-        #
-        # We pre-generate user-data per architecture into _ud_cache so the
-        # launch loop can pick the right one for each candidate instance type
-        # (the list may mix arm64 and x86_64 types when architecture_preference='both').
-        _ARM_FAMILIES_UD = {'t4g', 'c6g', 'c7g', 'c8g', 'm6g', 'm7g', 'm8g', 'r6g', 'r7g', 'r8g',
-                            'c6gn', 'c6gd', 'm6gd', 'r6gd', 'a1', 'hpc7g', 'x2gd', 'im4gn', 'is4gen'}
-        _ud_cache = {}  # {arch: base64_userdata}
-        _ud_cache[_src_ami_arch] = _user_data_b64  # source arch → copied user-data
-
-        def _get_or_generate_ud(arch: str) -> str:
-            """Return user-data for the given architecture, generating if needed."""
-            if arch in _ud_cache and _ud_cache[arch]:
-                return _ud_cache[arch]
-            try:
-                from backend.utils.aws.user_data import generate_eks_user_data as _gen_ud
-                _eks_cluster_name_ud = (
-                    getattr(cluster, 'eks_cluster_name', None)
-                    or getattr(cluster, 'name', None)
-                    or cluster.name
-                )
-                _k8s_version_ud = getattr(cluster, 'kubernetes_version', None)
-                _generated_ud = _gen_ud(
-                    cluster_name=_eks_cluster_name_ud,
-                    arch=arch,
-                    kubernetes_version=_k8s_version_ud,
-                )
-                logger.info(
-                    f"[auto_rebalancer] Generated fresh user-data "
-                    f"for cluster='{_eks_cluster_name_ud}' arch={arch} "
-                    f"(source_arch={_src_ami_arch})"
-                )
-                _ud_cache[arch] = _generated_ud
-                return _generated_ud
-            except Exception as _gen_ud_err:
-                logger.warning(
-                    f"[auto_rebalancer] user-data generation "
-                    f"failed for arch={arch}: {_gen_ud_err} — falling back to source user-data"
-                )
-                return _ud_cache.get(_src_ami_arch, "")
-
-        # Pre-generate user-data for the opposite architecture if any target
-        # type needs it, so the launch loop doesn't do AWS calls per-type.
-        _any_cross_arch = False
-        for _pre_itype in (target_instance_types or []):
-            _pre_arch = _get_instance_arch(
-                _ec2, _pre_itype, _ARM_FAMILIES_UD, region,
-            )
-            if _pre_arch != _src_ami_arch:
-                _any_cross_arch = True
-                _get_or_generate_ud(_pre_arch)
-                break  # only two arches possible; one generation is enough
-
-        if not _user_data_b64:
-            # No user-data from any source retrieval tier. Try generating fresh
-            # user-data for the source architecture as a last resort before aborting.
-            _user_data_b64 = _get_or_generate_ud(_src_ami_arch)
-            _ud_cache[_src_ami_arch] = _user_data_b64
-
-        if not _user_data_b64:
-            logger.error(
-                f"[auto_rebalancer] *** No user-data found for {source_instance_id} ***  "
-                f"New spot node will launch WITHOUT the EKS bootstrap script — "
-                f"kubelet will NOT start and the node will NOT join the cluster. "
-                f"Grant ec2:DescribeInstanceAttribute + ec2:DescribeLaunchTemplateVersions "
-                f"to the cross-account IAM role to fix this."
-            )
-            # Problem #6: Abort rebalance when user-data is missing to avoid
-            # launching a node that can never join the cluster.
-            _ud_err = f"No user-data found for {source_instance_id}"
-            return None, None, None, _ud_err, {
-                "__launch__": f"MISSING_USERDATA: {_ud_err}"
-            }
-
-        # Problem #6: Validate user-data contains EKS bootstrap script.
-        # Decode base64 and check for minimal expected content.
-        try:
-            import base64 as _b64_val
-            _ud_decoded = _b64_val.b64decode(_user_data_b64).decode('utf-8', errors='replace')
-            if '/etc/eks/bootstrap.sh' not in _ud_decoded and 'bootstrap.sh' not in _ud_decoded:
-                logger.warning(
-                    f"[auto_rebalancer] User-data for {source_instance_id} does not contain "
-                    f"expected EKS bootstrap script — node may fail to join cluster"
-                )
-        except Exception as _ud_val_err:
-            logger.warning(
-                f"[auto_rebalancer] Could not validate user-data for {source_instance_id}: "
-                f"{_ud_val_err}"
-            )
-
-        # Copy existing tags; add/update cluster ownership and platform marker
-        _tags = [t for t in _src.get("Tags", []) if not t["Key"].startswith("aws:")]
-        _cluster_tag = f"kubernetes.io/cluster/{cluster.name}"
-        # Strip all keys we will re-set below to prevent InvalidParameterValue: Duplicate tag key.
-        _STRIP_KEYS = {
-            _cluster_tag,
-            "spot-optimizer:status",
-            "spot-optimizer:launched-by",
-            "spot-optimizer:template-id",
-            "spot-optimizer:termination-mode",
-            "spot-optimizer:allowed-architectures",
-        }
-        _tags = [t for t in _tags if t["Key"] not in _STRIP_KEYS]
-        _tags.append({"Key": _cluster_tag, "Value": "owned"})
-        _tags.append({"Key": "spot-optimizer:launched-by", "Value": "spot-optimizer-direct"})
-        # ── Task 3.9: Additional node labels at launch ────────────────
-        _tags.append({"Key": "spot-optimizer:template-id", "Value": source_instance_id[:20]})
-        _tags.append({"Key": "spot-optimizer:termination-mode", "Value": "replacement"})
-        # allowed-architectures: set based on source instance type.
-        # Problem #10: Use DescribeInstanceTypes API with Redis cache (7-day TTL)
-        # instead of hardcoded family list. Falls back to static set if API unavailable.
-        _ARM_FAMILIES_TAG = {'t4g', 'c6g', 'c7g', 'c8g', 'm6g', 'm7g', 'm8g', 'r6g', 'r7g', 'r8g',
-                             'c6gn', 'c6gd', 'm6gd', 'r6gd', 'a1', 'hpc7g', 'x2gd', 'im4gn', 'is4gen'}
-        _src_instance_type = _src.get("InstanceType", "")
-        _arch_tag_val = _get_instance_arch(_ec2, _src_instance_type, _ARM_FAMILIES_TAG, region)
-        _tags.append({"Key": "spot-optimizer:allowed-architectures", "Value": _arch_tag_val})
-        # scan_orphans relies on this tag to detect unjoined instances (15-min timeout)
-        _tags.append({"Key": "spot-optimizer:status", "Value": "pending"})
-
-        # If target AZ requested, find a subnet in that AZ (same VPC)
-        _target_subnet = _subnet_id
-        if target_az and _src.get("VpcId"):
-            try:
-                _sn_resp = _ec2.describe_subnets(Filters=[
-                    {"Name": "vpc-id",            "Values": [_src["VpcId"]]},
-                    {"Name": "availabilityZone",   "Values": [target_az]},
-                    {"Name": "state",              "Values": ["available"]},
-                ])
-                if _sn_resp.get("Subnets"):
-                    _target_subnet = _sn_resp["Subnets"][0]["SubnetId"]
-            except Exception:
-                pass  # Fall back to source subnet
-
-        # Copy public IP setting from source instance.
-        # If source EKS nodes have public IPs (public subnets with MapPublicIpOnLaunch=True),
-        # the spot replacement MUST also get a public IP to reach the EKS API server.
-        # Without this, kubelet bootstrap fails: node never joins the cluster.
-        # Root cause of orphan c5.large (i-0beb31e95ae1af124) not joining EKS cluster.
-        _src_has_public_ip = bool(_src.get("PublicIpAddress"))
-
-        # Try each instance type in priority order; skip on capacity errors
-        # Task 4.8: configurable cascade limit (default 6)
-        _max_attempts = 6
-        try:
-            from backend.models.cluster import ClusterOptimizationSettings
-            _opt_settings = db.query(ClusterOptimizationSettings).filter(
-                ClusterOptimizationSettings.cluster_id == cluster.id
-            ).first()
-            if _opt_settings and _opt_settings.max_instance_type_attempts:
-                _max_attempts = _opt_settings.max_instance_type_attempts
-        except Exception:
-            pass
-        # Track which types were tried and why they failed so callers can record
-        # the reason a pool was changed from the originally planned type.
-        _skipped: dict = {}  # {instance_type: "ErrorCode: message"}
-        _ARM_FAMILIES_LAUNCH = {'t4g', 'c6g', 'c7g', 'c8g', 'm6g', 'm7g', 'm8g', 'r6g', 'r7g', 'r8g',
-                                'c6gn', 'c6gd', 'm6gd', 'r6gd', 'a1', 'hpc7g', 'x2gd', 'im4gn', 'is4gen'}
-        for _itype in (target_instance_types or ["t3.medium"])[:_max_attempts]:
-            try:
-                # ── Resolve architecture-compatible AMI for this instance type ──
-                # Settings allow 'both' architectures, so we must pick the right
-                # AMI to match. x86_64 AMI cannot boot arm64 types and vice versa.
-                _itype_arch = _get_instance_arch(_ec2, _itype, _ARM_FAMILIES_LAUNCH, region)
-                _launch_ami = _ami_cache.get(_itype_arch)
-                if not _launch_ami:
-                    _launch_ami = _resolve_arch_compatible_ami(
-                        _ec2, cluster, _src_ami_name, _itype_arch
-                    )
-                    if _launch_ami:
-                        _ami_cache[_itype_arch] = _launch_ami
-                if not _launch_ami:
-                    _skipped[_itype] = (
-                        f"ArchMismatch: {_itype} is {_itype_arch} but source AMI is "
-                        f"{_src_ami_arch}, no matching AMI found"
-                    )
-                    logger.warning(
-                        f"[auto_rebalancer] Skipping {_itype} ({_itype_arch}): "
-                        f"no {_itype_arch} AMI found (source AMI is {_src_ami_arch})"
-                    )
-                    continue
-
-                # Issue #17: Deterministic idempotency token — same source+type always
-                # produces the same token, so a retry returns the existing instance
-                # instead of launching a duplicate.
-                _client_token = hashlib.sha256(
-                    f"{source_instance_id}:{_itype}".encode()
-                ).hexdigest()  # 64 hex chars — within AWS 64-char limit
-                # ── Pick arch-correct user-data for this specific instance type ──
-                _launch_ud = _get_or_generate_ud(_itype_arch)
-
-                _run_kwargs = {
-                    "ImageId":      _launch_ami,
-                    "InstanceType": _itype,
-                    "MinCount": 1, "MaxCount": 1,
-                    "ClientToken":  _client_token,
-                    "NetworkInterfaces": [{
-                        "DeviceIndex": 0,
-                        "SubnetId": _target_subnet,
-                        "Groups": _sg_ids,
-                        "AssociatePublicIpAddress": _src_has_public_ip,
-                    }],
-                    "InstanceMarketOptions": {
-                        "MarketType": "spot",
-                        "SpotOptions": {"SpotInstanceType": "one-time"},
-                    },
-                    "TagSpecifications": [{"ResourceType": "instance", "Tags": _tags}],
-                }
-                if _launch_ud:
-                    _run_kwargs["UserData"] = _launch_ud  # base64-encoded already
-                if _iam_profile:
-                    _run_kwargs["IamInstanceProfile"] = {"Arn": _iam_profile}
-                if _key_name:
-                    _run_kwargs["KeyName"] = _key_name
-
-                _run_resp = _ec2.run_instances(**_run_kwargs)
-                _new_id   = _run_resp["Instances"][0]["InstanceId"]
-                _actual_az = _run_resp["Instances"][0].get("Placement", {}).get("AvailabilityZone", target_az or "")
-                logger.info(
-                    f"[auto_rebalancer] Direct spot launch: {_itype} in {_actual_az} "
-                    f"→ EC2 {_new_id} (cluster {cluster.name})"
-                    + (f" [skipped: {_skipped}]" if _skipped else "")
-                )
-                return _new_id, _itype, _actual_az, None, _skipped
-
-            except _CE as _ce:
-                _code = _ce.response["Error"]["Code"]
-                _msg = _ce.response["Error"].get("Message", str(_ce))
-                _last_err = f"{_code}: {_msg}"
-                if _code in ("InsufficientInstanceCapacity", "SpotMaxPriceTooLow",
-                             "InstanceLimitExceeded", "Unsupported",
-                             "InvalidParameterValue"):
-                    _skipped[_itype] = f"{_code}: {_msg}"
-                    logger.warning(
-                        f"[auto_rebalancer] {_itype} unavailable ({_code}), trying next type"
-                    )
-                    continue
-                raise  # Unexpected error — propagate
-
-        _capacity_err = (
-            f"All instance types exhausted ({', '.join(target_instance_types[:3])}) "
-            f"in {target_az or 'any AZ'}"
-            + (f" — last AWS error: {_last_err}" if _last_err else "")
-        )
-        logger.error(f"[auto_rebalancer] {_capacity_err} for cluster {cluster.name}")
-        return None, None, None, _capacity_err, _skipped
-
-    except Exception as _e:
-        _err_str = str(_e)
-        logger.error(f"[auto_rebalancer] _launch_spot_instance_direct failed: {_err_str}")
-        return None, None, None, _err_str, {}
+# _launch_spot_instance_direct() removed — all node provisioning now goes through
+# Karpenter NodePool updates. The auto-rebalancer patches the NodePool with the
+# target instance type, and Karpenter provisions the replacement node.
 
 
 def execute_rebalancing_action(db: Session, action: RebalancingAction):
@@ -1290,9 +833,21 @@ def execute_rebalancing_action(db: Session, action: RebalancingAction):
                     # No ASG process suspension is performed here. The atomic API call
                     # in Phase 2 handles termination + desired capacity decrement in a
                     # single step, eliminating the need for suspend/resume.
+                    #
+                    # When karpenter_only_mode is True, skip ASG detection entirely —
+                    # all nodes are assumed Karpenter-managed.
                     _asg_reduced = False
                     _asg_name_used = None
-                    if instance_id_for_action and instance_id_for_action.startswith('i-'):
+                    _karpenter_only = getattr(
+                        getattr(cluster, 'optimization_settings', None),
+                        'karpenter_only_mode', False
+                    )
+                    if _karpenter_only:
+                        logger.info(
+                            f"[auto_rebalancer] Cluster {cluster.name} is karpenter_only_mode "
+                            f"— skipping ASG detection for {instance_id_for_action}"
+                        )
+                    elif instance_id_for_action and instance_id_for_action.startswith('i-'):
                         try:
                             from backend.utils.aws.asg import (
                                 get_assumed_credentials,
@@ -1352,8 +907,8 @@ def execute_rebalancing_action(db: Session, action: RebalancingAction):
                             )
 
                     # ── 2-PHASE PROVISION-AND-WAIT ─────────────────────────────────────
-                    # Phase 1: Queue ONLY PATCH_KARPENTER_NODEPOOL.
-                    #          This tells Karpenter to provision a new spot node.
+                    # Phase 1: Update Karpenter NodePool directly via K8s API to add
+                    #          target instance types. Karpenter provisions a new spot node.
                     #          Action resolution (below) waits for spot to be Ready.
                     # Phase 2: Once spot node is Ready, action resolution creates
                     #          CORDON → DRAIN → TERMINATE.
@@ -1496,11 +1051,10 @@ def execute_rebalancing_action(db: Session, action: RebalancingAction):
                         pass
 
                     # ── ARCHITECTURE FILTER ────────────────────────────────────────
-                    # _launch_spot_instance_direct() copies the source instance's AMI.
-                    # An amd64 AMI cannot boot ARM64 types (c6g, m6g, t4g, etc.)
-                    # and vice-versa.  Filter ml_instance_types to the source arch
-                    # so we never attempt a cross-arch launch that silently fails
-                    # and falls through to a larger/wrong instance type.
+                    # Karpenter NodePool must only include instance types matching the
+                    # cluster's architecture. An amd64 NodePool cannot run ARM64 types
+                    # (c6g, m6g, t4g, etc.) and vice-versa. Filter ml_instance_types
+                    # to the source arch to prevent provisioning failures.
                     #
                     # Fix 2: Also respect the cluster's architecture_preference setting.
                     # If the cluster is configured for arm64-only or amd64-only, enforce
@@ -1590,37 +1144,20 @@ def execute_rebalancing_action(db: Session, action: RebalancingAction):
                             f"{ml_instance_types[:5]}"
                         )
 
-                    # ── PHASE 1: Provision spot node ────────────────────────────────
-                    # CORDON, DRAIN, TERMINATE will be created by the action resolution
-                    # step AFTER a spot node is confirmed Ready.
+                    # ── PHASE 1: Provision spot node via Karpenter ─────────────
+                    # Karpenter-only path: directly update the NodePool via K8s API
+                    # to include the target instance type. Karpenter provisions the
+                    # replacement node automatically. No direct EC2 launch.
                     #
-                    # Karpenter clusters:     PATCH_NODEPOOL AgentAction → agent applies it
-                    #                         → Karpenter sees NodePool update → provisions spot
-                    # Non-Karpenter clusters: Direct boto3 run_instances() spot launch
-                    #                         → PATCH_NODEPOOL created as already-COMPLETED
-                    #                         → Same 2-phase resolution loop awaits spot join
-                    _phase1_payload = {
-                        "nodepool_name": "default",
-                        "instance_types": ml_instance_types,
-                        "capacity_type": ["spot"],
-                        "az": target_az,
-                        "architecture": _arch_values,
-                        "rebalancing_action_id": action.id,
-                        "zero_downtime_step": 1,
-                        # Phase 2 params so resolution can create CORDON/DRAIN/TERMINATE
-                        "phase2_params": {
-                            "instance_id": instance_id_for_action,
-                            "instance_type": source_instance_type,
-                            "az": source_az,
-                        },
-                    }
+                    # If Karpenter is not installed, the rebalancer skips this cluster.
 
                     _karpenter_installed = getattr(cluster, 'karpenter_mode', None) is not None
 
-                    # Fix 3: Before taking the Karpenter path, verify that a Karpenter
-                    # install actually completed for this cluster (which creates the NodePool).
-                    # If no INSTALL_KARPENTER action is COMPLETED, fall back to direct EC2 —
-                    # patching a non-existent NodePool silently does nothing.
+                    # Verify Karpenter is actually available.
+                    # Accepts ANY of:
+                    #   (a) a completed INSTALL_KARPENTER AgentAction, OR
+                    #   (b) the Redis live-detection key set by detect_karpenter_in_cluster(), OR
+                    #   (c) karpenter_mode is set AND an install action is in-flight
                     if _karpenter_installed:
                         try:
                             from backend.models.agent_action import AgentActionStatus as _AAS_P1
@@ -1630,403 +1167,125 @@ def execute_rebalancing_action(db: Session, action: RebalancingAction):
                                 AgentAction.status == _AAS_P1.COMPLETED,
                             ).first()
                             if not _install_completed:
-                                logger.warning(
-                                    f"[auto_rebalancer] Phase 1: karpenter_mode set but no completed "
-                                    f"INSTALL_KARPENTER for cluster {cluster.name} — NodePool may not "
-                                    f"exist. Falling back to direct EC2 spot launch."
-                                )
-                                _karpenter_installed = False
+                                _redis_kp_key = f"spot:karpenter:installed:{action.cluster_id}"
+                                _redis_kp_val = _redis.get(_redis_kp_key) if _redis else None
+                                if not _redis_kp_val:
+                                    _install_inflight = db.query(AgentAction).filter(
+                                        AgentAction.cluster_id == action.cluster_id,
+                                        AgentAction.action_type == AgentActionType.INSTALL_KARPENTER,
+                                        AgentAction.status.in_([_AAS_P1.PICKED_UP, _AAS_P1.PENDING]),
+                                    ).first()
+                                    if not _install_inflight:
+                                        _karpenter_installed = False
                         except Exception as _kp_check_err:
                             logger.warning(
                                 f"[auto_rebalancer] Phase 1: NodePool pre-check failed "
                                 f"({_kp_check_err}) — proceeding with Karpenter path"
                             )
 
-                    if _karpenter_installed:
-                        # Karpenter path: queue AgentAction for in-cluster agent to process
-                        nodepool_action = AgentAction(
-                            cluster_id=action.cluster_id,
-                            action_type=AgentActionType.PATCH_KARPENTER_NODEPOOL,
-                            payload=_phase1_payload,
+                    if not _karpenter_installed:
+                        logger.warning(
+                            f"[auto_rebalancer] Karpenter not installed on cluster {cluster.name} "
+                            f"(id={cluster.id}), cannot rebalance. Install Karpenter first."
                         )
-                        db.add(nodepool_action)
-                        db.flush()
-                        logger.info(
-                            f"[auto_rebalancer] Phase 1 (Karpenter): queued PATCH_NODEPOOL "
-                            f"(spot:{ml_instance_types[:3]}) — awaiting spot node. "
-                            f"{source_instance_type}:{source_az}"
-                        )
-                    else:
-                        # Non-Karpenter path: directly launch EC2 spot instance
+                        action.status = 'failed'
+                        action.error_message = "Karpenter not installed — install Karpenter before rebalancing"
+                        db.commit()
+                        return
 
-                        # ── PRE-LAUNCH ORPHAN DETECTION ────────────────────────────
-                        # If a previous rebalancing action for the SAME source instance
-                        # failed and its orphan spot wasn't cleaned up (e.g. rollback
-                        # ran before discovery synced the DB), terminate it now before
-                        # launching a new one.  Prevents unbounded node growth.
-                        try:
-                            _prev_failed = db.query(RebalancingAction).filter(
-                                RebalancingAction.cluster_id == action.cluster_id,
-                                RebalancingAction.status == 'failed',
-                                RebalancingAction.id != action.id,
-                                RebalancingAction.started_at >= datetime.utcnow() - timedelta(hours=24),
-                            ).all()
-                            for _pf in _prev_failed:
-                                _pf_meta = _pf.action_metadata or {}
-                                if _pf_meta.get('instance_id') != instance_id_for_action:
-                                    continue  # different source instance
-                                _pf_orphan = _pf_meta.get('replacement_spot_instance_id')
-                                _pf_rolled = _pf_meta.get('rollback_terminated_spot')
-                                if _pf_orphan and _pf_orphan.startswith('i-') and _pf_orphan != _pf_rolled:
-                                    # Orphan exists and wasn't terminated by rollback
-                                    # Verify it's still running via AWS before terminating
-                                    try:
-                                        from backend.utils.aws.asg import get_assumed_credentials as _gac_orphan
-                                        import boto3 as _b3_orphan
-                                        _oc = _gac_orphan(cluster, db)
-                                        _oec2 = _b3_orphan.Session(
-                                            aws_access_key_id=_oc.get('aws_access_key_id') or _oc.get('AccessKeyId'),
-                                            aws_secret_access_key=_oc.get('aws_secret_access_key') or _oc.get('SecretAccessKey'),
-                                            aws_session_token=_oc.get('aws_session_token') or _oc.get('SessionToken'),
-                                        ).client('ec2', region_name=cluster.region or 'ap-south-1')
-                                        _or = _oec2.describe_instances(InstanceIds=[_pf_orphan])
-                                        _o_state = 'terminated'
-                                        for _orr in _or.get('Reservations', []):
-                                            for _oi in _orr.get('Instances', []):
-                                                _o_state = _oi.get('State', {}).get('Name', 'terminated')
-                                        if _o_state in ('running', 'pending'):
-                                            _oec2.terminate_instances(InstanceIds=[_pf_orphan])
-                                            logger.info(
-                                                f"[auto_rebalancer] Pre-launch orphan cleanup: "
-                                                f"terminated {_pf_orphan} (from failed action {_pf.id}) "
-                                                f"before launching new spot for {instance_id_for_action}"
-                                            )
-                                            # Record cleanup in old action metadata
-                                            _pf_meta['rollback_terminated_spot'] = _pf_orphan
-                                            _pf.action_metadata = _pf_meta
-                                            db.flush()
-                                    except Exception as _oe:
-                                        # Cannot confirm orphan state — fail the action.
-                                        # Launching a new spot without cleaning up a potential orphan
-                                        # risks growing the cluster beyond its original size.
-                                        logger.error(
-                                            f"[auto_rebalancer] Pre-launch orphan cleanup FAILED "
-                                            f"for {_pf_orphan}: {_oe} — aborting action to prevent "
-                                            f"duplicate instances. Manual cleanup required."
-                                        )
-                                        action.status = 'failed'
-                                        action.error_message = (
-                                            f"Pre-launch orphan cleanup failed for {_pf_orphan}: {_oe}. "
-                                            f"Manual intervention required before retrying."
-                                        )
-                                        db.commit()
-                                        return
-                        except Exception as _pf_err:
-                            # Cannot check for orphan instances — fail the action.
-                            # Proceeding without this check risks duplicate instances in the cluster.
-                            logger.error(
-                                f"[auto_rebalancer] Pre-launch orphan detection FAILED: {_pf_err} "
-                                f"— aborting action to prevent unbounded cluster growth."
-                            )
+                    # Validate capacity via dry-run before updating NodePool
+                    try:
+                        from backend.core.redis_client import get_redis_client as _grc_dr
+                        from backend.utils.aws.dry_run import dry_run_pool as _dr_pool
+                        _dr_redis = _grc_dr()
+                        _verified_types = []
+                        _dr_region = cluster.region or "ap-south-1"
+                        _dr_max_checks = 5
+                        _dr_api_calls = 0
+                        for _lt in ml_instance_types:
+                            _dr_key = f"dry_run:{_lt}:{target_az}"
+                            _dr_cached = _dr_redis.get(_dr_key)
+                            if _dr_cached:
+                                _dr_val = _dr_cached.decode() if isinstance(_dr_cached, bytes) else _dr_cached
+                                if _dr_val == "fail":
+                                    continue
+                                _verified_types.append(_lt)
+                            else:
+                                if _dr_api_calls >= _dr_max_checks:
+                                    _verified_types.append(_lt)
+                                    continue
+                                _dr_api_calls += 1
+                                if _dr_pool(region=_dr_region, instance_type=_lt, az=target_az, redis=_dr_redis):
+                                    _verified_types.append(_lt)
+                        if _verified_types:
+                            ml_instance_types = _verified_types
+                        else:
                             action.status = 'failed'
-                            action.error_message = (
-                                f"Pre-launch orphan detection failed: {_pf_err}. "
-                                f"Cannot safely launch spot instance without confirming no orphans exist."
-                            )
+                            action.error_message = f"Dry run: no capacity in {target_az} for any of {ml_instance_types[:3]}"
                             db.commit()
                             return
+                    except Exception as _dr_err:
+                        logger.warning(f"[auto_rebalancer] Dry run pre-check failed ({_dr_err}) — proceeding")
 
-                        # ── DRY RUN PRE-LAUNCH CHECK ───────────────────────────────
-                        # Filter out any instance types whose dry_run:{type}:{az} == "fail"
-                        # before attempting real launch. For unverified pools, run dry run
-                        # synchronously now so we never waste a real launch attempt.
-                        # Problem #17: Limit to top 5 candidates to avoid API throttling
-                        try:
-                            from backend.core.redis_client import get_redis_client as _grc_dr
-                            from backend.utils.aws.dry_run import dry_run_pool as _dr_pool
-                            _dr_redis = _grc_dr()
-                            _verified_types = []
-                            _dr_region = cluster.region or "ap-south-1"
-                            _dr_max_checks = 5  # Problem #17: limit API calls
-                            _dr_api_calls = 0
-                            for _lt in ml_instance_types:
-                                _dr_key = f"dry_run:{_lt}:{target_az}"
-                                _dr_cached = _dr_redis.get(_dr_key)
-                                if _dr_cached:
-                                    _dr_val = _dr_cached.decode() if isinstance(_dr_cached, bytes) else _dr_cached
-                                    if _dr_val == "fail":
-                                        logger.info(
-                                            f"[auto_rebalancer] Skipping {_lt}:{target_az} "
-                                            f"— dry_run:fail cached (no capacity)"
-                                        )
-                                        continue
-                                    # pass — capacity confirmed, include
-                                    _verified_types.append(_lt)
-                                else:
-                                    # Not cached — run synchronous dry run check now
-                                    # Problem #17: Skip API call if we've hit the limit
-                                    if _dr_api_calls >= _dr_max_checks:
-                                        _verified_types.append(_lt)  # assume ok, skip check
-                                        continue
-                                    _dr_api_calls += 1
-                                    _dr_result = _dr_pool(
-                                        region=_dr_region,
-                                        instance_type=_lt,
-                                        az=target_az,
-                                        redis=_dr_redis,
-                                    )
-                                    if _dr_result:
-                                        _verified_types.append(_lt)
-                                    else:
-                                        logger.info(
-                                            f"[auto_rebalancer] Skipping {_lt}:{target_az} "
-                                            f"— dry_run check returned no capacity"
-                                        )
-                            if _verified_types:
-                                ml_instance_types = _verified_types
+                    # Update Karpenter NodePool directly via K8s API
+                    _nodepool_updated = False
+                    try:
+                        from backend.services.karpenter_service import KarpenterService
+                        _karp_svc = KarpenterService(db, _redis)
+                        for _kp_itype in ml_instance_types[:8]:
+                            _kp_result = _karp_svc.add_allowed_instance_type(
+                                cluster_id=action.cluster_id,
+                                instance_type=_kp_itype,
+                            )
+                            if _kp_result:
+                                _nodepool_updated = True
+                                logger.info(
+                                    f"[auto_rebalancer] Phase 1: Updated NodePool with {_kp_itype} "
+                                    f"for cluster {cluster.name}"
+                                )
+                                break
                             else:
                                 logger.warning(
-                                    f"[auto_rebalancer] All {len(ml_instance_types)} candidate types "
-                                    f"have no capacity in {target_az} — cannot launch"
+                                    f"[auto_rebalancer] Phase 1: Failed to add {_kp_itype} to NodePool, "
+                                    f"trying next candidate"
                                 )
-                                action.status = 'failed'
-                                action.error_message = (
-                                    f"Dry run: no capacity in {target_az} for any of "
-                                    f"{ml_instance_types[:3]}"
-                                )
-                                db.commit()
-                                return
-                        except Exception as _dr_err:
-                            logger.warning(
-                                f"[auto_rebalancer] Dry run pre-check failed ({_dr_err}) "
-                                f"— proceeding without capacity filter"
-                            )
+                    except Exception as _kp_err:
+                        logger.error(f"[auto_rebalancer] Phase 1: NodePool update failed: {_kp_err}")
 
-                        # Track launch attempt for pool reliability metrics
-                        try:
-                            from backend.services.pool_ranking_service import report_launch_attempt as _rla
-                            for _lt in ml_instance_types[:3]:
-                                _rla(f"{_lt}:{target_az}")
-                        except Exception:
-                            pass
-
-                        _new_ec2_id, _actual_itype, _actual_az, _launch_err, _launch_skipped = _launch_spot_instance_direct(
-                            db, cluster,
-                            source_instance_id=instance_id_for_action,
-                            target_instance_types=ml_instance_types,
-                            target_az=target_az,
-                            region=cluster.region or "ap-south-1",
+                    if not _nodepool_updated:
+                        action.status = 'failed'
+                        action.error_message = (
+                            f"Failed to update Karpenter NodePool with any of {ml_instance_types[:3]}"
                         )
-                        if not _new_ec2_id:
-                            # Record launch failure for pool blacklist scoring
-                            try:
-                                from backend.services.pool_ranking_service import report_launch_failure as _rlf
-                                for _lt in ml_instance_types[:3]:
-                                    _rlf(f"{_lt}:{target_az}")
-                            except Exception:
-                                pass
-                            # Z5 fix: Remove failed pools from cluster_pools set
-                            try:
-                                for _lt in ml_instance_types[:3]:
-                                    _redis.srem(f"cluster_pools:{cluster.id}", f"{_lt}:{target_az}")
-                            except Exception:
-                                pass
+                        db.commit()
+                        return
 
-                            action.status = 'failed'
-                            action.error_message = _launch_err or (
-                                f"Direct spot EC2 launch failed for types {ml_instance_types[:3]}"
-                            )
-                            db.commit()
-                            return
+                    # Store metadata for Phase 2 tracking
+                    _meta_update_p1 = dict(action.action_metadata or {})
+                    _meta_update_p1['karpenter_nodepool_updated'] = True
+                    _meta_update_p1['karpenter_target_types'] = ml_instance_types[:8]
+                    _meta_update_p1['phase1_completed_at'] = datetime.utcnow().isoformat()
+                    _meta_update_p1['phase2_params'] = {
+                        'instance_id': instance_id_for_action,
+                        'instance_type': source_instance_type,
+                        'az': target_az or source_az or '',
+                    }
+                    action.action_metadata = _meta_update_p1
+                    action.current_state = 'WAITING_FOR_KARPENTER'
 
-                        # Update target_pool to the ACTUAL launched type (not just ML top pick)
-                        _original_target_pool = action.target_pool  # preserve planned pool before overwrite
-                        if _actual_itype and _actual_az:
-                            action.target_pool = f"{_actual_itype}:{_actual_az}"
+                    logger.info(
+                        f"[auto_rebalancer] Phase 1 (Karpenter): NodePool updated with "
+                        f"types {ml_instance_types[:3]} — awaiting Karpenter to provision spot node. "
+                        f"Source: {source_instance_type}:{source_az}"
+                    )
 
-                        # Pre-register the new spot instance in DB immediately so that
-                        # metrics.py (which doesn't see K8s lifecycle labels for direct-launched
-                        # nodes) cannot create it as ON_DEMAND. The RC3 guard then protects
-                        # it for the first 90 s until aws_sync confirms.
-                        try:
-                            _safe_new_id = _new_ec2_id[:20]
-                            _exists_new = db.query(Instance).filter(
-                                Instance.cluster_id == cluster.id,
-                                Instance.instance_id == _safe_new_id,
-                            ).first()
-                            if not _exists_new:
-                                _pre_inst = Instance(
-                                    cluster_id=cluster.id,
-                                    instance_id=_safe_new_id,
-                                    instance_type=_actual_itype or "unknown",
-                                    lifecycle=InstanceLifecycle.SPOT,
-                                    az=_actual_az or f"{cluster.region or 'ap-south-1'}a",
-                                    price=0.0,
-                                    state='pending',
-                                    status='PENDING',
-                                    architecture='amd64',
-                                )
-                                db.add(_pre_inst)
-                                db.flush()
-                                logger.info(
-                                    f"[auto_rebalancer] Pre-registered {_safe_new_id} "
-                                    f"({_actual_itype}) as SPOT in DB — prevents false OD classification"
-                                )
-                                # Set spot assertion key so discovery doesn't downgrade
-                                # this instance to OD while AWS API propagates InstanceLifecycle
-                                # Problem #14: Extended to 10 min to cover pre-registration window
-                                try:
-                                    get_redis_client().setex(
-                                        f"spot:asserted_spot:{_new_ec2_id}", 600, '1'
-                                    )
-                                except Exception:
-                                    pass
-                        except Exception as _pre_reg_err:
-                            logger.warning(f"[auto_rebalancer] Pre-register spot instance failed: {_pre_reg_err}")
-
-                        # Create a pre-COMPLETED PATCH_NODEPOOL action so the resolution
-                        # loop treats Phase 1 as done and waits for the spot node to join.
-                        _phase1_payload["direct_ec2_launch"] = True
-                        _phase1_payload["new_ec2_instance_id"] = _new_ec2_id
-                        _phase1_payload["actual_instance_type"] = _actual_itype
-                        # Store in RebalancingAction metadata: replacement ID, original
-                        # planned pool, and reason if pool changed due to capacity issues.
-                        _meta_update_p1 = dict(action.action_metadata or {})
-                        _meta_update_p1['replacement_spot_instance_id'] = _new_ec2_id
-                        _original_itype_p1 = (_original_target_pool or '').split(':')[0]
-                        if _actual_itype and _actual_itype != _original_itype_p1:
-                            _meta_update_p1['original_target_pool'] = _original_target_pool
-                            _skipped_values = list((_launch_skipped or {}).values())
-                            if any(
-                                ("InsufficientInstanceCapacity" in _v) or ("SpotMaxPriceTooLow" in _v)
-                                for _v in _skipped_values
-                            ):
-                                _pool_change_cause = "capacity unavailable"
-                            elif any("ArchMismatch" in _v for _v in _skipped_values):
-                                _pool_change_cause = "architecture mismatch"
-                            elif any("InstanceLimitExceeded" in _v for _v in _skipped_values):
-                                _pool_change_cause = "account limits exceeded"
-                            elif any(
-                                ("InvalidParameterValue" in _v) or ("Unsupported" in _v)
-                                for _v in _skipped_values
-                            ):
-                                _pool_change_cause = "pool not launchable"
-                            else:
-                                _pool_change_cause = "launch fallback"
-                            _skipped_summary = '; '.join(
-                                f"{t}: {e}" for t, e in (_launch_skipped or {}).items()
-                            )
-                            _meta_update_p1['pool_change_reason'] = (
-                                f"{_original_itype_p1} → {_actual_itype} "
-                                f"({_pool_change_cause}"
-                                + (f": {_skipped_summary}" if _skipped_summary else "")
-                                + ")"
-                            )
-                            # Per-cluster capacity block: increment failure counter
-                            # and hard-block the pool after 3 failures (30 min).
-                            # Does NOT use global BlacklistService — only per-cluster Redis keys.
-                            if _launch_skipped:
-                                try:
-                                    from backend.utils.aws.dry_run import invalidate_dry_run_cache as _inv_drc
-                                    if _redis:
-                                        for _bl_type, _bl_err_str in _launch_skipped.items():
-                                            if "InsufficientInstanceCapacity" in _bl_err_str:
-                                                # Problem #5: Per-cluster blacklist instead of global 6h ban.
-                                                # Increment per-cluster failure counter; hard-block after 3 failures.
-                                                _cap_fail_key = f"spot:capacity_failures:{action.cluster_id}:{_bl_type}:{target_az}"
-                                                _cap_fail_cnt = int(_redis.incr(_cap_fail_key) or 1)
-                                                _redis.expire(_cap_fail_key, 3600)  # 1h failure counter
-                                                if _cap_fail_cnt >= 3:
-                                                    # Hard-block for this cluster only (30 min)
-                                                    _redis.setex(
-                                                        f"spot:launch_blocked:{action.cluster_id}:{_bl_type}:{target_az}",
-                                                        1800,  # 30 minutes
-                                                        f"capacity_failures:{_cap_fail_cnt}",
-                                                    )
-                                                    logger.info(
-                                                        f"[auto_rebalancer] Per-cluster blocked "
-                                                        f"{_bl_type}:{target_az} for 30m "
-                                                        f"(failures: {_cap_fail_cnt}, cluster {action.cluster_id})"
-                                                    )
-                                                else:
-                                                    logger.info(
-                                                        f"[auto_rebalancer] Capacity failure #{_cap_fail_cnt} "
-                                                        f"for {_bl_type}:{target_az} on cluster {action.cluster_id} "
-                                                        f"— score penalty applied, not yet blocked"
-                                                    )
-                                                # Always invalidate dry_run cache immediately
-                                                _inv_drc(_bl_type, target_az or "", _redis, mark_failed=True)
-                                except Exception as _bl_ex:
-                                    logger.warning(f"[auto_rebalancer] Capacity blacklist update failed: {_bl_ex}")
-
-                            # Task 9: S2S suppression after fallback to prevent immediate
-                            # re-evaluation of the newly-launched node as an S2S candidate.
-                            # If a fallback occurred (actual type ≠ original target), suppress S2S
-                            # for the node being replaced for 2× the cluster stabilization window.
-                            if _launch_skipped and _actual_itype and _redis and instance_id_for_action:
-                                try:
-                                    _s2s_ttl = 2 * 90  # 2× the 90s stabilization window
-                                    _redis.setex(
-                                        f"spot:s2s_suppressed:{instance_id_for_action}",
-                                        _s2s_ttl,
-                                        "fallback",
-                                    )
-                                    logger.info(
-                                        f"[auto_rebalancer] S2S suppressed for {instance_id_for_action} "
-                                        f"for {_s2s_ttl}s after fallback to {_actual_itype}"
-                                    )
-                                except Exception:
-                                    pass
-                        action.action_metadata = _meta_update_p1
-                        from backend.models.agent_action import AgentActionStatus as _AAS_P1
-                        nodepool_action = AgentAction(
-                            cluster_id=action.cluster_id,
-                            action_type=AgentActionType.PATCH_KARPENTER_NODEPOOL,
-                            payload=_phase1_payload,
-                            status=_AAS_P1.COMPLETED,
-                            completed_at=datetime.utcnow(),
-                        )
-                        db.add(nodepool_action)
-                        db.flush()
-                        logger.info(
-                            f"[auto_rebalancer] Phase 1 (direct EC2): launched spot {_new_ec2_id} "
-                            f"— waiting for it to join cluster {cluster.name} as a K8s node. "
-                            f"Phase 2 (CORDON→DRAIN→TERMINATE {instance_id_for_action}) starts after join."
-                        )
-
-                        # Register pool in global EMA tracker (neutral entry on first use)
-                        try:
-                            from backend.services.global_ema_service import get_or_create_ema
-                            _ema_pool_key = f"{_actual_itype}:{_actual_az}"
-                            get_or_create_ema(
-                                redis=_redis, db=db, pool_key=_ema_pool_key,
-                                instance_type=_actual_itype,
-                                az=_actual_az,
-                                region=cluster.region or "ap-south-1",
-                            )
-                        except Exception as _ema_err:
-                            logger.debug(f"[auto_rebalancer] EMA get_or_create failed: {_ema_err}")
-
-                    # Set 24h cooldown on this instance immediately so the rebalancer
-                    # doesn't re-target it in the next cycle while agent actions are in-flight.
+                    # Set 24h cooldown on this instance
                     if instance_id_for_action:
                         try:
                             _cooldown_key = f"spot:rebalanced:instance:{instance_id_for_action}"
                             _redis.setex(_cooldown_key, 86400, "1")
-                            logger.info(
-                                f"[auto_rebalancer] Set 24h cooldown for instance {instance_id_for_action}"
-                            )
                         except Exception as _cd_err:
                             logger.warning(f"[auto_rebalancer] Failed to set instance cooldown: {_cd_err}")
-
-                    # Task 11: Post-launch cooldown on the NEW spot instance.
-                    # Suppresses S2S evaluation for 60s after launch while the node settles
-                    # (AWS spot metadata propagates slowly; prevents immediate re-evaluation).
-                    if _new_ec2_id and _redis:
-                        try:
-                            _redis.setex(f"spot:post_launch_cooldown:{_new_ec2_id}", 60, "1")
-                        except Exception:
-                            pass
 
             except RuntimeError as lock_err:
                 logger.warning(f"[auto_rebalancer] Action {action.id} deferred: lock contention — {lock_err}")
@@ -2077,8 +1336,8 @@ def execute_rebalancing_action(db: Session, action: RebalancingAction):
             db.commit()
 
             logger.info(
-                f"[auto_rebalancer] Action {action.id} queued 4 agent steps — "
-                f"status=waiting_agent until agent completes PATCH_NODEPOOL→CORDON→DRAIN→TERMINATE"
+                f"[auto_rebalancer] Action {action.id} — Karpenter NodePool updated — "
+                f"status=waiting_agent until Karpenter provisions spot node, then CORDON→DRAIN→TERMINATE"
             )
 
         except Exception as e:
@@ -2694,8 +1953,11 @@ def execute_rebalancing():
                     # ── STEP TRACKING: record step timestamps while agent is still working ──
                     _wa_meta_live = dict(_wa.action_metadata or {})
                     from backend.models.agent_action import AgentActionType as _AAT0
+                    # step_1 (Karpenter NodePool update) is done directly in Phase 1,
+                    # not via agent action — timestamp stored in action_metadata.
+                    if 'karpenter_nodepool_updated' in _wa_meta_live and 'step_1_spot_provisioning' not in _wa_meta_live:
+                        _wa_meta_live['step_1_spot_provisioning'] = _wa_meta_live.get('phase1_completed_at', _wa.started_at.isoformat() if _wa.started_at else datetime.utcnow().isoformat())
                     for _sname, _stype in [
-                        ('step_1_spot_provisioning', _AAT0.PATCH_KARPENTER_NODEPOOL),
                         ('step_2_cordon', _AAT0.CORDON_NODE),
                         ('step_3_draining_pods', _AAT0.DRAIN_NODE),
                     ]:
@@ -2730,8 +1992,10 @@ def execute_rebalancing():
 
                 # ── Record step timestamps for completed agent actions ────────
                 from backend.models.agent_action import AgentActionType as _AAT0
+                # step_1 (Karpenter NodePool update) is done directly — not an agent action.
+                if 'karpenter_nodepool_updated' in _wa_meta and 'step_1_spot_provisioning' not in _wa_meta:
+                    _wa_meta['step_1_spot_provisioning'] = _wa_meta.get('phase1_completed_at', _wa.started_at.isoformat() if _wa.started_at else datetime.utcnow().isoformat())
                 for _sname, _stype in [
-                    ('step_1_spot_provisioning', _AAT0.PATCH_KARPENTER_NODEPOOL),
                     ('step_2_cordon', _AAT0.CORDON_NODE),
                     ('step_3_draining_pods', _AAT0.DRAIN_NODE),
                 ]:
@@ -2746,8 +2010,8 @@ def execute_rebalancing():
                                 _wa_meta[_sname] = ts.isoformat()
 
                 # ── 2-PHASE: WAIT FOR SPOT NODE → CREATE PHASE 2 ACTIONS ──────
-                # After PATCH_NODEPOOL completes (Phase 1), wait for a spot node
-                # to be Ready BEFORE creating CORDON/DRAIN/TERMINATE (Phase 2).
+                # After Phase 1 completes (NodePool update via K8s API), wait for a
+                # spot node to be Ready BEFORE creating CORDON/DRAIN/TERMINATE (Phase 2).
                 # This prevents draining when no replacement exists.
                 # NOTE: This block is intentionally OUTSIDE the 'for _sname, _stype' loop
                 # above. Previously it was incorrectly indented inside the loop, causing
@@ -2763,28 +2027,10 @@ def execute_rebalancing():
                         _wa_opt = db.query(_COSS).filter(_COSS.cluster_id == _wa.cluster_id).first()
                     except Exception:
                         _wa_opt = None
-                    # Fix 1: Use payload-based Karpenter detection — live karpenter_mode can
-                    # change between Phase 1 execution and Phase 2 resolution (race condition).
-                    # If karpenter_mode flips to null between execution and resolution, the old
-                    # live check gives _wa_karpenter_active=False, bypasses the spot wait, and
-                    # creates Phase 2 (CORDON→DRAIN→TERMINATE) immediately — destroying the node
-                    # before a spot replacement joins.  Reading the Phase 1 payload is stable.
-                    _patch_sa_check = db.query(_AA0).filter(
-                        _AA0.payload.contains({"rebalancing_action_id": _wa.id}),
-                        _AA0.action_type == _AAT0.PATCH_KARPENTER_NODEPOOL,
-                    ).first()
-                    _direct_launch = bool(
-                        _patch_sa_check and
-                        (_patch_sa_check.payload or {}).get("direct_ec2_launch")
-                    )
-                    # Karpenter path was used if Phase 1 payload has nodepool_name (not direct EC2)
-                    _karpenter_from_payload = bool(
-                        _patch_sa_check and
-                        (_patch_sa_check.payload or {}).get("nodepool_name") and
-                        not _direct_launch
-                    )
-                    # Wait for spot if: Karpenter path was used (stable payload flag), OR direct EC2 launched
-                    _wa_karpenter_active = _karpenter_from_payload or _direct_launch
+                    # Karpenter detection: Phase 1 now updates NodePool directly via K8s API
+                    # and stores 'karpenter_nodepool_updated' in action_metadata. Use this stable
+                    # metadata flag instead of querying for agent actions.
+                    _wa_karpenter_active = bool(_wa_meta.get('karpenter_nodepool_updated'))
 
                     _spot_count = db.query(Instance).filter(
                         Instance.cluster_id == _wa.cluster_id,
@@ -2995,19 +2241,20 @@ def execute_rebalancing():
 
                     _phase2_exists = _phase2_any
 
-                    # Measure elapsed since PATCH_NODEPOOL completed
-                    _patch_sa = db.query(_AA0).filter(
-                        _AA0.payload.contains({"rebalancing_action_id": _wa.id}),
-                        _AA0.action_type == _AAT0.PATCH_KARPENTER_NODEPOOL,
-                        _AA0.status == _AAS0.COMPLETED,
-                    ).first()
-                    _patch_completed_at = (_patch_sa.completed_at if _patch_sa else None) or _wa.started_at
+                    # Measure elapsed since Phase 1 (NodePool update) completed
+                    _phase1_ts = _wa_meta.get('phase1_completed_at')
+                    if _phase1_ts:
+                        try:
+                            _patch_completed_at = datetime.fromisoformat(_phase1_ts)
+                        except (ValueError, TypeError):
+                            _patch_completed_at = _wa.started_at
+                    else:
+                        _patch_completed_at = _wa.started_at
                     _spot_wait_elapsed = (
                         (datetime.utcnow() - _patch_completed_at).total_seconds()
                         if _patch_completed_at else 9999
                     )
-                    _join_timeout_cfg = getattr(_wa_opt, 'spot_join_timeout_minutes', None) if _wa_opt else None
-                    _SPOT_WAIT_TIMEOUT_S = (_join_timeout_cfg * 60) if (_join_timeout_cfg and _join_timeout_cfg > 0) else (30 * 60)
+                    _SPOT_WAIT_TIMEOUT_S = 30 * 60  # 30 minutes
 
                     # ── Phase 2 creation: NEW spot joined OR timeout ───────────
                     if not _phase2_exists:
@@ -3017,7 +2264,7 @@ def execute_rebalancing():
                             _wa_meta['spot_wait_elapsed_s'] = int(_spot_wait_elapsed)
                             _wa_meta['spot_count_current'] = _spot_count
                             _wa_meta['spot_count_baseline'] = _spot_baseline
-                            _wa_meta['provisioner_type'] = 'karpenter' if _karpenter_from_payload else 'agent'
+                            _wa_meta['provisioner_type'] = 'karpenter'
                             _wa.action_metadata = _wa_meta
                             logger.info(
                                 f"[auto_rebalancer] Action {_wa.id}: Phase 1 done, "
@@ -3181,87 +2428,14 @@ def execute_rebalancing():
                             continue  # outer for _wa loop
 
                         # ── CREATE PHASE 2 ACTIONS ────────────────────────────
-                        # Retrieve instance params stored in Phase 1 payload
-                        _p1_payload = _patch_sa.payload if _patch_sa else {}
-                        _p2 = _p1_payload.get("phase2_params", {})
+                        # Retrieve instance params from action metadata (set in Phase 1)
+                        _p2 = _wa_meta.get("phase2_params", {})
                         _p2_instance_id = _p2.get("instance_id") or _wa_meta.get("instance_id", "")
                         _p2_instance_type = _p2.get("instance_type", "")
                         _p2_az = _p2.get("az", "")
 
-                        # ── Attach-to-ASG (CAST-like mode) ───────────────────────────────
-                        # If attach_to_asg_enabled=True: attach the replacement spot to the
-                        # source ASG before Phase 2. Termination will then use
-                        # ShouldDecrementDesiredCapacity=False so capacity stays constant.
-                        # On attach failure: terminate orphan spot and fail the action.
-                        _attach_mode_enabled = False
-                        _wa_attach_done = _wa_meta.get('attached_to_asg', False)
-                        try:
-                            from backend.models.cluster import ClusterOptimizationSettings as _COSS_ATT
-                            _cos_att = db.query(_COSS_ATT).filter(
-                                _COSS_ATT.cluster_id == _wa.cluster_id
-                            ).first()
-                            _attach_mode_enabled = getattr(_cos_att, 'attach_to_asg_enabled', False) if _cos_att else False
-                        except Exception:
-                            pass
-
-                        _wa_asg_name = _wa_meta.get('asg_name_used')
-                        _wa_repl_id = _wa_meta.get('replacement_spot_instance_id')
-
-                        if _attach_mode_enabled and _wa_asg_name and _wa_repl_id and not _wa_attach_done:
-                            # Attach the replacement spot to the source ASG
-                            _attach_ok = False
-                            try:
-                                import boto3 as _b3_att
-                                from backend.utils.aws.asg import get_assumed_credentials as _gac_att
-                                _wa_cluster_att = db.query(Cluster).filter(
-                                    Cluster.id == _wa.cluster_id
-                                ).first()
-                                _att_creds = _gac_att(_wa_cluster_att, db) if _wa_cluster_att else {}
-                                _att_region = (_wa_cluster_att.region if _wa_cluster_att else None) or "ap-south-1"
-                                _asg_att = _b3_att.client(
-                                    "autoscaling", region_name=_att_region, **_att_creds
-                                )
-                                _asg_att.attach_instances(
-                                    AutoScalingGroupName=_wa_asg_name,
-                                    InstanceIds=[_wa_repl_id],
-                                )
-                                _wa_meta['attached_to_asg'] = True
-                                _wa_meta['attached_to_asg_at'] = datetime.utcnow().isoformat()
-                                _wa.action_metadata = _wa_meta
-                                db.commit()
-                                _attach_ok = True
-                                logger.info(
-                                    f"[auto_rebalancer] Action {_wa.id}: attached replacement "
-                                    f"{_wa_repl_id} to ASG '{_wa_asg_name}' (attach_to_asg_enabled)"
-                                )
-                            except Exception as _att_err:
-                                logger.error(
-                                    f"[auto_rebalancer] Action {_wa.id}: attach_instances "
-                                    f"failed for {_wa_repl_id} → ASG '{_wa_asg_name}': {_att_err} "
-                                    f"— terminating orphan spot and failing action"
-                                )
-                                _wa.status = 'failed'
-                                _wa.error_message = (
-                                    f"Attach to ASG '{_wa_asg_name}' failed: {str(_att_err)[:300]}. "
-                                    f"Orphan spot {_wa_repl_id} terminated."
-                                )
-                                _wa.completed_at = datetime.utcnow()
-                                _wa.duration_seconds = int(
-                                    (_wa.completed_at - _wa.started_at).total_seconds()
-                                ) if _wa.started_at else 0
-                                _wa_meta['current_step'] = 'failed_asg_attach'
-                                _wa.action_metadata = _wa_meta
-                                db.commit()
-                                _do_rollback_terminate_orphan_spot(_wa, _wa_meta, db)
-                                continue
-
-                        # Determine TERMINATE termination_mode for Phase 2:
-                        # - attach mode completed → use asg_no_decrement (keeps desired capacity)
-                        # - non-attach ASG node   → use existing "replacement" (detach-not-decrement)
-                        # - no ASG                → "karpenter" or direct EC2 via fallback
-                        _p2_term_mode = "replacement"
-                        if _attach_mode_enabled and _wa_meta.get('attached_to_asg'):
-                            _p2_term_mode = "asg_no_decrement"
+                        # Karpenter manages node lifecycle — no ASG attach needed.
+                        _p2_term_mode = "karpenter"
                         _wa_meta['termination_mode'] = _p2_term_mode
 
                         if _p2_instance_id:
@@ -3781,6 +2955,14 @@ def execute_rebalancing():
                             if _term_mode == 'replacement' and _wa_meta.get('attached_to_asg'):
                                 _term_mode = 'asg_no_decrement'
                             _should_decrement = _term_mode != 'asg_no_decrement'
+
+                            # karpenter_only_mode: skip ASG path entirely, use direct EC2
+                            _karpenter_only_term = getattr(
+                                getattr(cluster, 'optimization_settings', None),
+                                'karpenter_only_mode', False
+                            )
+                            if _karpenter_only_term:
+                                _stored_asg_for_term = None  # Force direct EC2 path
 
                             if _stored_asg_for_term:
                                 # ── ASG-managed node: terminate via ASG API ───────────────
@@ -4506,23 +3688,34 @@ def execute_rebalancing():
                             Instance.node_name.isnot(None),
                         ).all()
                     )
-                    _stale_ip_count = 0
-                    for _ip_rec in _ip_placeholders:
-                        _ip_prefix = _ip_rec.instance_id  # e.g. 'ip-192-168-70-251'
-                        _matched = any(
-                            nm and (nm == _ip_prefix or nm.startswith(_ip_prefix + '.'))
-                            for nm in _real_node_names
+                    # If there are zero running i-* instances, skip cleanup entirely.
+                    # Without any i-* records to compare against, ALL ip- placeholders
+                    # would be marked stale — which is wrong when the cluster only has
+                    # ip- records (e.g. agent reports K8s hostnames only, or all i-*
+                    # records were terminated by failed rebalancing actions).
+                    if not _real_node_names:
+                        logger.debug(
+                            f"[auto_rebalancer] Skipping stale ip- cleanup for "
+                            f"{cluster.name}: no running i-* instances to compare"
                         )
-                        if not _matched:
-                            _ip_rec.state = 'terminated'
-                            _stale_ip_count += 1
-                    if _stale_ip_count:
-                        db.flush()
-                        logger.info(
-                            f"[auto_rebalancer] Cleaned up {_stale_ip_count} stale ip- "
-                            f"placeholder(s) for cluster {cluster.name} "
-                            f"(no matching running i- node_name)"
-                        )
+                    else:
+                        _stale_ip_count = 0
+                        for _ip_rec in _ip_placeholders:
+                            _ip_prefix = _ip_rec.instance_id  # e.g. 'ip-192-168-70-251'
+                            _matched = any(
+                                nm and (nm == _ip_prefix or nm.startswith(_ip_prefix + '.'))
+                                for nm in _real_node_names
+                            )
+                            if not _matched:
+                                _ip_rec.state = 'terminated'
+                                _stale_ip_count += 1
+                        if _stale_ip_count:
+                            db.flush()
+                            logger.info(
+                                f"[auto_rebalancer] Cleaned up {_stale_ip_count} stale ip- "
+                                f"placeholder(s) for cluster {cluster.name} "
+                                f"(no matching running i- node_name)"
+                            )
             except Exception as _ip_err:
                 logger.warning(f"[auto_rebalancer] Stale ip- cleanup failed for {cluster.name}: {_ip_err}")
             # ── SAFETY GATE: OptimizerCoordinator phase (RC-5) ──────────────
@@ -4739,299 +3932,17 @@ def execute_rebalancing():
                                 f"[auto_rebalancer] Last-node Karpenter NodePool update failed "
                                 f"for {cluster.name}: {_np_err}"
                             )
-                else:
-                    # Non-Karpenter: launch spot instance directly so the cluster
-                    # can grow to 2 nodes and the next cycle can proceed with rebalancing.
-                    # Use a 15-min Redis cooldown to avoid duplicate launches.
-                    _provision_key = f"spot:direct:provision_requested:{cluster.id}"
-                    _launch_failed_key = f"spot:direct:launch_failed:{cluster.id}"
-                    if _redis and not _redis.exists(_provision_key) and not _redis.exists(_launch_failed_key):
-                        try:
-                            from backend.services.pool_ranking_service import PoolRankingService
-                            from backend.services.substitute_manager import _INSTANCE_VCPU_MEM
-                            _any_od = db.query(Instance).filter(
-                                Instance.cluster_id == cluster.id,
-                                Instance.lifecycle == InstanceLifecycle.ON_DEMAND,
-                                Instance.state == 'running',
-                                Instance.instance_id.like('i-%')
-                            ).first()
-                            if _any_od:
-                                _specs_ln = _INSTANCE_VCPU_MEM.get(_any_od.instance_type, (2, 8))
-                                _ranked_ln = PoolRankingService(db, _redis).rank_pools_for_size(
-                                    vcpu=_specs_ln[0], memory_gb=float(_specs_ln[1]),
-                                    region=cluster.region or "ap-south-1", limit=6
-                                )
-                                _types_ln = [p.pool.instance_type for p in (_ranked_ln or [])] or [_any_od.instance_type]
-                                _new_spot_id, _ln_actual_type, _ln_actual_az, _ln_launch_err, _ln_skipped = _launch_spot_instance_direct(
-                                    db, cluster,
-                                    source_instance_id=_any_od.instance_id,
-                                    target_instance_types=_types_ln,
-                                    target_az=_any_od.az,
-                                    region=cluster.region or "ap-south-1",
-                                )
-                                if _new_spot_id:
-                                    if _redis:
-                                        _redis.setex(_provision_key, 900, _new_spot_id)
-                                    logger.info(
-                                        f"[auto_rebalancer] Cluster {cluster.name}: last-node guard "
-                                        f"(non-Karpenter) — launched spot {_new_spot_id} "
-                                        f"({_ln_actual_type} in {_ln_actual_az}). "
-                                        f"Waiting for it to join before draining OD node."
-                                    )
-                                    # Register pool in global EMA tracker (neutral entry)
-                                    try:
-                                        from backend.services.global_ema_service import get_or_create_ema as _goc_ema
-                                        _goc_ema(
-                                            redis=_redis, db=db,
-                                            pool_key=f"{_ln_actual_type}:{_ln_actual_az}",
-                                            instance_type=_ln_actual_type,
-                                            az=_ln_actual_az,
-                                            region=cluster.region or "ap-south-1",
-                                        )
-                                    except Exception:
-                                        pass
-                                    # P-H4 fix: pre-register Instance in DB and set assertion
-                                    # guard key so discovery / RC3 don't misclassify the new
-                                    # spot as OD and trigger spurious rebalancing, and so
-                                    # scan_orphans doesn't terminate it as an orphan.
-                                    try:
-                                        _ln_inst = Instance(
-                                            cluster_id=cluster.id,
-                                            instance_id=_new_spot_id,
-                                            instance_type=_ln_actual_type,
-                                            az=_ln_actual_az,
-                                            region=cluster.region or "ap-south-1",
-                                            lifecycle=InstanceLifecycle.SPOT,
-                                            state='pending',
-                                            launched_by='platform',
-                                        )
-                                        db.add(_ln_inst)
-                                        db.commit()
-                                        logger.debug(
-                                            f"[auto_rebalancer] Last-node guard: pre-registered "
-                                            f"Instance record for {_new_spot_id}"
-                                        )
-                                    except Exception as _ln_reg_err:
-                                        logger.warning(
-                                            f"[auto_rebalancer] Last-node guard: DB pre-register "
-                                            f"failed for {_new_spot_id}: {_ln_reg_err}"
-                                        )
-                                        db.rollback()
-                                    if _redis:
-                                        try:
-                                            _redis.setex(
-                                                f"spot:asserted_spot:{_new_spot_id}", 600, "1"
-                                            )
-                                        except Exception:
-                                            pass
-                                else:
-                                    # Set a 2-min cooldown so we don't retry every 15s
-                                    if _redis:
-                                        _redis.setex(f"spot:direct:launch_failed:{cluster.id}", 120, "1")
-                                    logger.error(
-                                        f"[auto_rebalancer] Cluster {cluster.name}: last-node guard "
-                                        f"— direct spot launch failed. Retrying in 2 min."
-                                    )
-                        except Exception as _ln_err:
-                            logger.warning(
-                                f"[auto_rebalancer] Last-node direct spot launch failed "
-                                f"for {cluster.name}: {_ln_err}"
-                            )
                     else:
-                        _pv = _redis.get(_provision_key) if _redis else None
-                        _pending_id = (_pv.decode() if isinstance(_pv, bytes) else (_pv or ""))
+                        # Non-Karpenter clusters: skip — Karpenter must be installed first.
                         logger.info(
                             f"[auto_rebalancer] Cluster {cluster.name}: only {_total_nodes} total / "
-                            f"{_od_count} OD node(s) — spot provision already requested "
-                            f"({_pending_id or 'cooldown active'}), waiting for it to join"
+                            f"{_od_count} OD node(s) — Karpenter not active, skipping last-node guard. "
+                            f"Install Karpenter to enable spot provisioning."
                         )
                 continue
 
-            # ── SPOT RECOVERY: Replace spot-interrupted direct-EC2 nodes ─────
-            # Directly-launched spot nodes are NOT in the ASG. When AWS issues a spot
-            # interruption, the ASG does not replace them — the cluster silently shrinks.
-            # Karpenter handles this automatically for Karpenter clusters. For non-Karpenter
-            # direct launch, we detect spots we previously launched that AWS has since
-            # terminated (not by our own TERMINATE_NODE action) and relaunch a replacement.
-            #
-            # Flow:
-            #   1. Find all direct-EC2 spots we launched (PATCH_KARPENTER_NODEPOOL with
-            #      direct_ec2_launch=True, containing new_ec2_instance_id) in last 7 days.
-            #   2. For each: if the instance is terminated AND no matching TERMINATE_NODE
-            #      AgentAction exists → AWS terminated it → launch replacement.
-            #   3. 1-hour Redis dedup per instance_id to prevent duplicate launches.
-            if not _karpenter_active:
-                try:
-                    from backend.models.agent_action import (
-                        AgentAction as _AA_REC,
-                        AgentActionType as _AAT_REC,
-                        AgentActionStatus as _AAS_REC,
-                    )
-                    # ── Cluster-level recovery cap: max 1 recovery per cluster per cycle ──
-                    _cluster_recovery_key = f"spot:recovery:cluster:{cluster.id}"
-                    if _redis and _redis.exists(_cluster_recovery_key):
-                        logger.debug(
-                            f"[auto_rebalancer] Spot recovery: cluster {cluster.name} "
-                            f"already has a recovery in progress this cycle — skipping"
-                        )
-                    else:
-                        # Lookback: only check the last 24h (not 7 days) to avoid
-                        # re-triggering recovery for long-stale historical launches.
-                        _direct_launches = db.query(_AA_REC).filter(
-                            _AA_REC.cluster_id == cluster.id,
-                            _AA_REC.action_type == _AAT_REC.PATCH_KARPENTER_NODEPOOL,
-                            _AA_REC.payload.contains({"direct_ec2_launch": True}),
-                            _AA_REC.created_at >= datetime.utcnow() - timedelta(hours=24),
-                        ).order_by(_AA_REC.created_at.desc()).all()
-
-                        for _dl in _direct_launches:
-                            _dl_payload = _dl.payload or {}
-                            _launched_spot_id = _dl_payload.get("new_ec2_instance_id")
-                            if not _launched_spot_id:
-                                continue
-
-                            # Per-instance dedup: recovery already in progress?
-                            _recovery_key = f"spot:recovery:{_launched_spot_id}"
-                            if _redis and _redis.exists(_recovery_key):
-                                continue
-
-                            # Only act if discovery has seen this instance (else still launching)
-                            # Issue #11: lock row before potential state heal write
-                            _spot_inst = db.query(Instance).filter(
-                                Instance.cluster_id == cluster.id,
-                                Instance.instance_id == _launched_spot_id,
-                            ).with_for_update().first()
-                            if not _spot_inst:
-                                continue  # Not yet in DB — still launching
-                            if _spot_inst.state == 'running':
-                                continue  # Still healthy in DB
-
-                            # ── AWS VERIFY: never trust DB alone for termination decision ──
-                            # DB may be stale — confirm the instance is ACTUALLY terminated
-                            # in AWS before launching a replacement. A false positive here
-                            # causes cascade launches (the bug that spawned 5 instances).
-                            try:
-                                from backend.utils.aws.asg import get_assumed_credentials as _gac_verify
-                                import boto3 as _b3_verify
-                                try:
-                                    _vc = _gac_verify(cluster, db)
-                                except Exception:
-                                    _vc = {}
-                                if not _vc:
-                                    # Try platform credentials
-                                    try:
-                                        from backend.models.system_config import SystemConfig as _SC_vc
-                                        _pk_vc = db.query(_SC_vc).filter(_SC_vc.key == "PLATFORM_AWS_ACCESS_KEY").first()
-                                        _ps_vc = db.query(_SC_vc).filter(_SC_vc.key == "PLATFORM_AWS_SECRET").first()
-                                        if _pk_vc and _ps_vc and _pk_vc.value and _ps_vc.value:
-                                            _vc = {'aws_access_key_id': _pk_vc.value, 'aws_secret_access_key': _ps_vc.value}
-                                    except Exception:
-                                        pass
-                                _verify_ec2 = _b3_verify.Session(
-                                    aws_access_key_id=_vc.get('aws_access_key_id') or _vc.get('AccessKeyId'),
-                                    aws_secret_access_key=_vc.get('aws_secret_access_key') or _vc.get('SecretAccessKey'),
-                                    aws_session_token=_vc.get('aws_session_token') or _vc.get('SessionToken'),
-                                ).client("ec2", region_name=cluster.region or "ap-south-1")
-                                _verify_resp = _verify_ec2.describe_instances(
-                                    InstanceIds=[_launched_spot_id]
-                                )
-                                _verify_reservations = _verify_resp.get("Reservations", [])
-                                if _verify_reservations:
-                                    _aws_state = (
-                                        _verify_reservations[0]
-                                        .get("Instances", [{}])[0]
-                                        .get("State", {})
-                                        .get("Name", "unknown")
-                                    )
-                                    if _aws_state == "running":
-                                        # DB is stale — heal it and skip recovery
-                                        _spot_inst.state = "running"
-                                        db.flush()
-                                        logger.info(
-                                            f"[auto_rebalancer] Spot recovery: {_launched_spot_id} "
-                                            f"is RUNNING in AWS (DB was stale) — healed DB, skipping recovery"
-                                        )
-                                        continue
-                                    elif _aws_state not in ("terminated", "shutting-down"):
-                                        # Pending/stopping — give it time, don't recovery yet
-                                        logger.debug(
-                                            f"[auto_rebalancer] Spot recovery: {_launched_spot_id} "
-                                            f"AWS state={_aws_state} — waiting, skip recovery this cycle"
-                                        )
-                                        continue
-                                    # else: AWS confirms terminated → proceed with recovery
-                            except Exception as _verify_err:
-                                logger.warning(
-                                    f"[auto_rebalancer] Spot recovery: AWS verify failed for "
-                                    f"{_launched_spot_id}: {_verify_err} — skipping recovery (conservative)"
-                                )
-                                continue  # Skip if we can't confirm termination
-
-                            # Instance is terminated — was it us (intentional TERMINATE_NODE)?
-                            _our_termination = db.query(_AA_REC).filter(
-                                _AA_REC.cluster_id == cluster.id,
-                                _AA_REC.action_type == _AAT_REC.TERMINATE_NODE,
-                                _AA_REC.payload.contains({"instance_id": _launched_spot_id}),
-                                _AA_REC.status == _AAS_REC.COMPLETED,
-                            ).first()
-                            if _our_termination:
-                                continue  # Intentional replacement — no recovery needed
-
-                            # Find a running instance to clone user-data / subnet / SG from
-                            _ref_od = db.query(Instance).filter(
-                                Instance.cluster_id == cluster.id,
-                                Instance.state == 'running',
-                                Instance.instance_id.like('i-%'),
-                            ).first()
-                            if not _ref_od:
-                                logger.warning(
-                                    f"[auto_rebalancer] Spot recovery: no running reference "
-                                    f"instance for cluster {cluster.name} — skipping"
-                                )
-                                break  # Nothing to clone from; try again next cycle
-
-                            logger.info(
-                                f"[auto_rebalancer] Spot recovery: {_launched_spot_id} confirmed "
-                                f"terminated by AWS — relaunching replacement for {cluster.name}"
-                            )
-                            from backend.services.pool_ranking_service import PoolRankingService
-                            from backend.services.substitute_manager import _INSTANCE_VCPU_MEM
-                            _rec_type = _spot_inst.instance_type or "t3.medium"
-                            _rec_specs = _INSTANCE_VCPU_MEM.get(_rec_type, (2, 8))
-                            _ranked_rec = PoolRankingService(db, _redis).rank_pools_for_size(
-                                vcpu=_rec_specs[0], memory_gb=float(_rec_specs[1]),
-                                region=cluster.region or "ap-south-1", limit=6
-                            )
-                            _types_rec = [p.pool.instance_type for p in (_ranked_rec or [])] or [_rec_type]
-                            _new_spot_id, _rec_actual_type, _rec_actual_az, _rec_launch_err, _rec_skipped = _launch_spot_instance_direct(
-                                db, cluster,
-                                source_instance_id=_ref_od.instance_id,
-                                target_instance_types=_types_rec,
-                                target_az=_spot_inst.az or "",
-                                region=cluster.region or "ap-south-1",
-                            )
-                            if _new_spot_id:
-                                if _redis:
-                                    _redis.setex(_recovery_key, 3600, _new_spot_id)       # 1h per-instance
-                                    _redis.setex(_cluster_recovery_key, 120, _new_spot_id)  # 2 min cluster cap
-                                logger.info(
-                                    f"[auto_rebalancer] Spot recovery: launched {_new_spot_id} "
-                                    f"({_rec_actual_type} in {_rec_actual_az}) "
-                                    f"to replace interrupted spot {_launched_spot_id} "
-                                    f"in cluster {cluster.name}"
-                                )
-                            else:
-                                if _redis:
-                                    _redis.setex(_recovery_key, 300, "failed")  # retry in 5 min
-                                logger.warning(
-                                    f"[auto_rebalancer] Spot recovery: relaunch failed for "
-                                    f"{_launched_spot_id} — will retry in 5 min"
-                                )
-                            break  # Only 1 recovery per cluster per cycle
-                except Exception as _rec_err:
-                    logger.warning(
-                        f"[auto_rebalancer] Spot recovery check failed for {cluster.name}: {_rec_err}"
-                    )
+            # Spot recovery for direct-EC2 launches removed — Karpenter handles
+            # spot interruption recovery automatically via NodePool reconciliation.
 
             logger.info(f"[auto_rebalancer] CHECKPOINT-C cluster={cluster.name}")
             # ── KARPENTER PROVISIONING COOLDOWN ──────────────────────────────
@@ -5145,7 +4056,9 @@ def execute_rebalancing():
                 Instance.lifecycle == InstanceLifecycle.ON_DEMAND,
                 Instance.state == 'running',   # Only target running OD nodes
                 Instance.instance_id.like('i-%'),  # exclude ghost placeholder instances
-                Instance.status.notin_(['UNKNOWN']),  # exclude orphaned nodes (EC2 running but not in K8s)
+                # notin_() excludes NULL rows in SQL — use or_() to include instances
+                # whose status hasn't been set yet (nullable column, defaults to READY).
+                or_(Instance.status.notin_(['UNKNOWN']), Instance.status.is_(None)),
             ).all()
 
             # ── REDIS FALLBACK: seed instances from agent telemetry if DB is empty ──
@@ -5295,8 +4208,67 @@ def execute_rebalancing():
             except Exception as _wi_err:
                 logger.debug(f"[auto_rebalancer] Classification guard skipped: {_wi_err}")
 
+            # ── TARGET SPOT EXPOSURE ENFORCEMENT ────────────────────────────────
+            # Compute current spot ratio and limit the OD→Spot batch to only what
+            # is needed to reach the configured target_spot_exposure_pct.
+            # When target is already met, skip OD→Spot rebalancing entirely.
+            _target_spot_pct = (getattr(_opt_settings, 'target_spot_exposure_pct', 100) or 100) if _opt_settings else 100
+            if _target_spot_pct < 100 and on_demand_instances:
+                _total_running = db.query(Instance).filter(
+                    Instance.cluster_id == cluster.id,
+                    Instance.state == 'running',
+                ).count()
+                _spot_running = db.query(Instance).filter(
+                    Instance.cluster_id == cluster.id,
+                    Instance.state == 'running',
+                    Instance.lifecycle == InstanceLifecycle.SPOT,
+                ).count()
+                _current_spot_pct = (_spot_running / _total_running * 100) if _total_running > 0 else 0
+                if _current_spot_pct >= _target_spot_pct:
+                    logger.info(
+                        f"[auto_rebalancer] Cluster {cluster.name}: spot ratio "
+                        f"{_current_spot_pct:.0f}% already meets target {_target_spot_pct}% "
+                        f"— skipping OD→Spot rebalancing"
+                    )
+                    on_demand_instances = []
+                else:
+                    # Only convert enough OD nodes to reach the target
+                    _od_to_convert = max(1, int(
+                        (_target_spot_pct - _current_spot_pct) / 100 * _total_running
+                    ))
+                    if _od_to_convert < len(on_demand_instances):
+                        logger.info(
+                            f"[auto_rebalancer] Cluster {cluster.name}: limiting OD batch from "
+                            f"{len(on_demand_instances)} to {_od_to_convert} to reach "
+                            f"target {_target_spot_pct}% (current {_current_spot_pct:.0f}%)"
+                        )
+                        on_demand_instances = on_demand_instances[:_od_to_convert]
+
             logger.info(f"[auto_rebalancer] CHECKPOINT-E cluster={cluster.name} od={len(on_demand_instances)}")
             if not on_demand_instances:
+                # ── MIGRATION COMPLETION CHECK ──────────────────────────────────────
+                # If all OD nodes are gone and managed node group hasn't been deleted
+                # yet, trigger the cleanup task to finalize migration.
+                if not getattr(cluster, 'managed_node_group_deleted', False):
+                    _real_od_count = db.query(Instance).filter(
+                        Instance.cluster_id == cluster.id,
+                        Instance.lifecycle == InstanceLifecycle.ON_DEMAND,
+                        Instance.state == 'running',
+                    ).count()
+                    if _real_od_count == 0:
+                        try:
+                            from backend.workers.tasks.cleanup_tasks import cleanup_managed_node_group
+                            cleanup_managed_node_group.delay(cluster.id)
+                            logger.info(
+                                f"[auto_rebalancer] Cluster {cluster.name}: zero OD instances — "
+                                f"triggered cleanup_managed_node_group task"
+                            )
+                        except Exception as _cleanup_err:
+                            logger.warning(
+                                f"[auto_rebalancer] Failed to trigger cleanup task "
+                                f"for {cluster.name}: {_cleanup_err}"
+                            )
+
                 # ── SPOT-TO-SPOT REBALANCING ────────────────────────────────────────
                 # All ON_DEMAND nodes are migrated or in cooldown.
                 # Now check SPOT nodes for:
@@ -5753,7 +4725,48 @@ def execute_rebalancing():
             except Exception:
                 pass
 
-            for instance in on_demand_instances:
+            # ── BATCH SIZE LIMITING (PDB-aware) ─────────────────────────────
+            # Determine how many nodes we can target this cycle based on
+            # rebalance_batch_percent and PDB safety. This caps the iteration
+            # list so we don't create more actions than the batch allows.
+            _batch_percent = 15  # default: 15% of target nodes
+            if _opt_settings and getattr(_opt_settings, 'rebalance_batch_percent', None) is not None:
+                _batch_percent = _opt_settings.rebalance_batch_percent
+                if _batch_percent == 0:
+                    logger.info(f"[auto_rebalancer] Batch percent is 0% for {cluster.name} — skipping rebalance cycle")
+                    continue
+            else:
+                # No user override — use PDB-safe value if respect_pdb_enabled
+                _stateless_rules = getattr(cluster, 'stateless_rules', None)
+                if _stateless_rules and getattr(_stateless_rules, 'respect_pdb_enabled', True):
+                    try:
+                        from backend.services.pdb_service import get_pdb_safe_percent_for_cluster
+                        _pdb_safe = get_pdb_safe_percent_for_cluster(cluster, db)
+                        if _pdb_safe is not None:
+                            _batch_percent = _pdb_safe
+                    except Exception:
+                        pass  # Fall back to default 15%
+
+            # If respect_pdb_enabled, always cap to PDB-safe limit
+            _stateless_rules = getattr(cluster, 'stateless_rules', None)
+            if _stateless_rules and getattr(_stateless_rules, 'respect_pdb_enabled', True):
+                try:
+                    from backend.services.pdb_service import get_pdb_safe_percent_for_cluster
+                    _pdb_cap = get_pdb_safe_percent_for_cluster(cluster, db)
+                    if _pdb_cap is not None:
+                        _batch_percent = min(_batch_percent, _pdb_cap)
+                except Exception:
+                    pass
+
+            _batch_size = max(1, int(len(on_demand_instances) * _batch_percent / 100))
+            _batch_candidates = on_demand_instances[:_batch_size]
+            logger.debug(
+                f"[auto_rebalancer] Batch sizing: {cluster.name} "
+                f"total_od={len(on_demand_instances)} batch_pct={_batch_percent}% "
+                f"batch_size={_batch_size}"
+            )
+
+            for instance in _batch_candidates:
                 # Skip placeholder instances (daemon-set auto-created with ip- hostname as ID).
                 # They don't have real EC2 IDs and can't be used for spot launch.
                 if not instance.instance_id or not instance.instance_id.startswith('i-'):

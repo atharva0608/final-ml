@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
 import { useSearchParams } from 'react-router-dom';
-import { clusterAPI, karpenterAPI, ascpaiAPI, optimizerCoordinatorAPI } from "../../services/api";
+import { clusterAPI, karpenterAPI, ascpaiAPI, optimizerCoordinatorAPI, optimizationAPI } from "../../services/api";
 import { toast } from "react-hot-toast";
 import { FiCheckCircle, FiAlertTriangle, FiAlertCircle, FiClock } from "react-icons/fi";
 import RebalancingTimeline from '../ascpai/RebalancingTimeline';
@@ -837,6 +837,98 @@ function KarpenterConfigPanel({ clusterId, initialConfig, onSaved }) {
   );
 }
 
+// ── Right-Sizing Pod Recommendations Table ───────────────────────────
+function RightSizingRecommendationsTable({ recs, bothActive }) {
+  if (!recs || recs.length === 0) return null;
+  const fmt = v => `$${(v ?? 0).toFixed(2)}`;
+  const totalSavings = recs.reduce((s, r) => s + (r.savings_monthly || 0), 0);
+  const reduceCount = recs.filter(r => r.recommendation_action === 'REDUCE').length;
+  const increaseCount = recs.filter(r => r.recommendation_action === 'INCREASE').length;
+  const noChangeCount = recs.filter(r => r.recommendation_action === 'NO_CHANGE').length;
+
+  const thStyle = { padding: "10px 14px", fontSize: 10, fontWeight: 700, color: T.textFaint, textTransform: "uppercase", letterSpacing: ".06em" };
+  const tdStyle = { padding: "10px 14px", fontSize: 12 };
+
+  const actionBadge = (action) => {
+    const colors = action === 'REDUCE'
+      ? { bg: T.greenLight, color: T.green }
+      : action === 'INCREASE'
+      ? { bg: T.amberLight, color: T.amber }
+      : { bg: T.greyLight, color: T.textMuted };
+    return (
+      <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 4, textTransform: "uppercase", background: colors.bg, color: colors.color }}>
+        {action}
+      </span>
+    );
+  };
+
+  return (
+    <Card style={{ marginBottom: 20 }}>
+      <div style={{ padding: "16px 18px 12px", borderBottom: `1px solid ${T.borderLight}`, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <h3 style={{ fontSize: 15, fontWeight: 700, margin: 0, color: T.text }}>Right-Sizing Recommendations</h3>
+          {bothActive
+            ? <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 4, background: T.greenLight, color: T.green }}>Active — Auto-Applying</span>
+            : <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 4, background: T.amberLight, color: T.amber }}>Recommendations Only</span>}
+        </div>
+        <span style={{ fontSize: 13, fontWeight: 700, color: T.green }}>{fmt(totalSavings)}/mo potential</span>
+      </div>
+      <div style={{ overflowX: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", textAlign: "left" }}>
+          <thead>
+            <tr style={{ background: T.bg, borderBottom: `1px solid ${T.border}` }}>
+              <th style={thStyle}>Workload</th>
+              <th style={thStyle}>Namespace</th>
+              <th style={{ ...thStyle, textAlign: "right" }}>Current CPU</th>
+              <th style={{ ...thStyle, textAlign: "right" }}>Rec. CPU</th>
+              <th style={{ ...thStyle, textAlign: "right" }}>Current Mem</th>
+              <th style={{ ...thStyle, textAlign: "right" }}>Rec. Mem</th>
+              <th style={{ ...thStyle, textAlign: "right" }}>Savings</th>
+              <th style={{ ...thStyle, textAlign: "center" }}>Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            {recs.map((r, i) => (
+              <tr key={i} style={{ borderBottom: i < recs.length - 1 ? `1px solid ${T.borderLight}` : "none" }}>
+                <td style={tdStyle}>
+                  <div>
+                    <div style={{ fontWeight: 700, color: T.textMid, fontFamily: "monospace" }}>{r.controller_name}</div>
+                    <div style={{ fontSize: 9, color: T.textFaint }}>{r.controller_kind} · {r.current_replica_count} replica{r.current_replica_count !== 1 ? 's' : ''}</div>
+                  </div>
+                </td>
+                <td style={{ ...tdStyle, color: T.textMid, fontFamily: "monospace" }}>{r.namespace}</td>
+                <td style={{ ...tdStyle, textAlign: "right", color: T.textMid }}>{r.current_cpu_request_millicores ?? '—'}m</td>
+                <td style={{ ...tdStyle, textAlign: "right", fontWeight: 600, color: T.green }}>{r.recommended_cpu_request_millicores}m</td>
+                <td style={{ ...tdStyle, textAlign: "right", color: T.textMid }}>{r.current_memory_request_mb ?? '—'} MB</td>
+                <td style={{ ...tdStyle, textAlign: "right", fontWeight: 600, color: T.green }}>{r.recommended_memory_request_mb} MB</td>
+                <td style={{ ...tdStyle, textAlign: "right" }}>
+                  <div>
+                    <div style={{ fontWeight: 600, color: T.green }}>{fmt(r.savings_monthly)}/mo</div>
+                    {r.savings_pct > 0 && <div style={{ fontSize: 9, color: T.textFaint }}>↓ {r.savings_pct.toFixed(1)}%</div>}
+                  </div>
+                </td>
+                <td style={{ ...tdStyle, textAlign: "center" }}>{actionBadge(r.recommendation_action)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div style={{ padding: "12px 18px", background: T.greenLight, borderTop: `1px solid ${T.greenBorder}`, display: "flex", justifyContent: "space-between", alignItems: "center", borderRadius: "0 0 10px 10px" }}>
+        <div>
+          <div style={{ fontSize: 10, fontWeight: 700, color: T.textFaint, textTransform: "uppercase", letterSpacing: ".06em" }}>Total Right-Sizing Savings</div>
+          <div style={{ fontSize: 9, color: T.textFaint, marginTop: 2 }}>
+            {reduceCount} reduce · {increaseCount} increase · {noChangeCount} no change
+          </div>
+        </div>
+        <div>
+          <span style={{ fontSize: 20, fontWeight: 800, color: T.green }}>{fmt(totalSavings)}</span>
+          <span style={{ fontSize: 12, color: T.textMuted, marginLeft: 4 }}>/mo</span>
+        </div>
+      </div>
+    </Card>
+  );
+}
+
 // MAIN PAGE
 export default function RightSizingMonitoringDashboard() {
   const [clusters, setClusters] = useState([]);
@@ -867,6 +959,9 @@ export default function RightSizingMonitoringDashboard() {
 
   // Active migrations timeline
   const [rebalancingActions, setRebalancingActions] = useState([]);
+
+  // Right-sizing pod recommendations
+  const [rsRecs, setRsRecs] = useState([]);
 
   // Fetch clusters list
   useEffect(() => {
@@ -999,6 +1094,17 @@ export default function RightSizingMonitoringDashboard() {
     });
   }, [selectedClusterId, retryCount]);
 
+  // Fetch pod-level right-sizing recommendations
+  useEffect(() => {
+    if (selectedClusterId === 'all' || !selectedClusterId) return;
+    optimizationAPI.getRightsizing(selectedClusterId)
+      .then(res => {
+        const data = res.data?.recommendations || res.data || [];
+        setRsRecs(Array.isArray(data) ? data : []);
+      })
+      .catch(() => setRsRecs([]));
+  }, [selectedClusterId, retryCount]);
+
   return (
     <div style={{ fontFamily: "'Inter', 'Segoe UI', system-ui, sans-serif", color: T.text, padding: "24px 28px", maxWidth: 1440, margin: "0 auto" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 24 }}>
@@ -1069,6 +1175,11 @@ export default function RightSizingMonitoringDashboard() {
               <RebalancingTimeline actions={rebalancingActions} />
 
               <ResizeGuardMonitoringPanel />
+
+              {/* Pod-level right-sizing recommendations */}
+              {autoState && rsRecs.length > 0 && (
+                <RightSizingRecommendationsTable recs={rsRecs} bothActive={rebalanceState && autoState} />
+              )}
 
               {/* StatelessSection: AUTO ENABLED badge shows when rebalancing is ON (agent drives spot migration).
                   Apply button hidden when rebalancing is ON (handled automatically). */}

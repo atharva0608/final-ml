@@ -551,11 +551,19 @@ def scan_eks_clusters(account: Account, eks_client, db: Session, credentials: Di
                 total_cost = cluster_monthly_cost
                 logger.info(f"[WORK-DISC-01] Calculated cluster cost from instances: ${total_cost:.2f}/month")
 
-            # Check if cluster already exists
-            existing = db.query(Cluster).filter(
-                Cluster.account_id == account.id,
-                Cluster.name == cluster_name
-            ).first()
+            # Check if cluster already exists — use ARN as primary key (globally unique),
+            # then fall back to (account_id, name) for backward compatibility.
+            _cluster_arn = cluster_data.get('arn')
+            existing = None
+            if _cluster_arn:
+                existing = db.query(Cluster).filter(
+                    Cluster.arn == _cluster_arn
+                ).first()
+            if not existing:
+                existing = db.query(Cluster).filter(
+                    Cluster.account_id == account.id,
+                    Cluster.name == cluster_name
+                ).first()
 
             if existing:
                 # If cluster was dismissed earlier, auto-revive when it is seen in AWS again.
@@ -579,6 +587,11 @@ def scan_eks_clusters(account: Account, eks_client, db: Session, credentials: Di
                     logger.info(f"[WORK-DISC-01] Cluster {cluster_name} restored from DEGRADED → {existing.status.value}")
 
                 # Update existing cluster metadata (but don't change status if it's ACTIVE)
+                # Sync ARN and name in case either changed (e.g., ARN found via name lookup)
+                if _cluster_arn and existing.arn != _cluster_arn:
+                    existing.arn = _cluster_arn
+                if existing.name != cluster_name:
+                    existing.name = cluster_name
                 existing.version = cluster_data.get('version')
                 existing.endpoint = cluster_data.get('endpoint')
                 existing.ca_data = cluster_data.get('certificateAuthority', {}).get('data')

@@ -39,6 +39,7 @@ app = Celery(
         'backend.workers.tasks.health_monitor',              # Pillar 5: health scores + drift detection
         'backend.workers.tasks.cache_builder',               # Global pool rankings cache builder
         'backend.workers.tasks.global_ema_tasks',            # Global EMA: persist + decay
+        'backend.workers.tasks.cleanup_tasks',               # Migration: managed node group cleanup
     ]
 )
 

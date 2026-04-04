@@ -149,13 +149,19 @@ def start_scheduler():
         return
         
     logger.info("Starting background scheduler for Decision Engine v3...")
+
+    # Delay first run by 60s so uvicorn can start serving HTTP before
+    # scheduler jobs consume the thread pool.
+    from datetime import datetime, timedelta
+    first_run = datetime.now() + timedelta(seconds=60)
     
     # 1. Refresh active cluster count (Every 5 minutes)
     scheduler.add_job(
         job_refresh_active_count,
         trigger=IntervalTrigger(minutes=5),
         id="refresh_active_count",
-        replace_existing=True
+        replace_existing=True,
+        next_run_time=first_run,
     )
     
     # 2. Reconcile stuck substitutes (Every 5 minutes)
@@ -163,7 +169,8 @@ def start_scheduler():
         job_reconcile_substitutes,
         trigger=IntervalTrigger(minutes=5),
         id="reconcile_substitutes",
-        replace_existing=True
+        replace_existing=True,
+        next_run_time=first_run,
     )
     
     # 3. Scan clusters for classification (Every 10 minutes)
@@ -171,7 +178,8 @@ def start_scheduler():
         job_scan_clusters,
         trigger=IntervalTrigger(minutes=10),
         id="scan_clusters",
-        replace_existing=True
+        replace_existing=True,
+        next_run_time=first_run + timedelta(seconds=10),
     )
     
     # 4. Check cost drift (Every 30 minutes)
@@ -179,7 +187,8 @@ def start_scheduler():
         job_check_cost_drift,
         trigger=IntervalTrigger(minutes=30),
         id="check_cost_drift",
-        replace_existing=True
+        replace_existing=True,
+        next_run_time=first_run + timedelta(seconds=20),
     )
     
     # 5. Detect Volatility Regimes (Hourly)
@@ -187,7 +196,8 @@ def start_scheduler():
         job_detect_volatility,
         trigger=IntervalTrigger(hours=1),
         id="detect_volatility",
-        replace_existing=True
+        replace_existing=True,
+        next_run_time=first_run + timedelta(seconds=30),
     )
     
     # 6. / 7. Blacklist cleanup and Redis hygiene (Daily at 2 AM)
@@ -195,7 +205,7 @@ def start_scheduler():
         job_cleanup_blacklist,
         trigger=CronTrigger(hour=2, minute=0),
         id="cleanup_blacklist",
-        replace_existing=True
+        replace_existing=True,
     )
     
     scheduler.start()

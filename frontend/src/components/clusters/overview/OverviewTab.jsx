@@ -59,11 +59,34 @@ const NodeRing = ({ pct, color }) => {
 };
 
 /* ─── Config Table ───────────────────────────────────────────────────────── */
-const ConfigTable = ({ rows, title, accent, totalLabel, totalMonthly, totalInstances, totalCpu, totalMem }) => {
+const ConfigTable = ({ rows, title, accent, totalLabel, totalMonthly, totalInstances, totalCpu, totalMem, karpenterSimulation, rightsizingSavings = 0 }) => {
     return (
         <div className="bg-white rounded-lg border border-gray-200 card-shadow overflow-hidden flex flex-col">
             <div className="p-4 border-b border-gray-100 bg-gray-50/50">
                 <h3 className="section-title text-[14px]">{title}</h3>
+                {karpenterSimulation && (
+                    <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                        <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-purple-100 text-purple-700 uppercase tracking-wide">
+                            Karpenter {karpenterSimulation.mode}
+                        </span>
+                        {karpenterSimulation.rightsized && (
+                            <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-green-100 text-green-700 uppercase tracking-wide">
+                                Right-Sized
+                            </span>
+                        )}
+                        {karpenterSimulation.multi_arch && (
+                            <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-700 uppercase tracking-wide">
+                                Multi-Arch
+                            </span>
+                        )}
+                        <span className="text-[10px] text-gray-500">
+                            {karpenterSimulation.total_pods_packed} pods → {karpenterSimulation.total_node_count} nodes
+                            {karpenterSimulation.monthly_savings > 0 && (
+                                <> · <span className="font-semibold text-green-600">{fmtMo(karpenterSimulation.monthly_savings)} savings</span></>
+                            )}
+                        </span>
+                    </div>
+                )}
             </div>
             <div className="overflow-x-auto flex-1">
                 <table className="min-w-full divide-y divide-gray-100">
@@ -91,9 +114,17 @@ const ConfigTable = ({ rows, title, accent, totalLabel, totalMonthly, totalInsta
                                                     {r.isSpot && (
                                                         <span className="bg-gray-800 text-white text-[8px] px-1 rounded">SPOT</span>
                                                     )}
+                                                    {r.architecture && (
+                                                        <span className={`text-[8px] px-1 rounded font-bold ${r.architecture === 'arm64' ? 'bg-orange-100 text-orange-700' : 'bg-blue-100 text-blue-700'}`}>
+                                                            {r.architecture === 'arm64' ? 'ARM64' : 'x86_64'}
+                                                        </span>
+                                                    )}
                                                 </div>
                                                 {(r.vcpu > 0 || r.memGib > 0) && (
                                                     <span className="text-[9px] text-gray-400 uppercase">{r.vcpu > 0 ? `${r.vcpu} CPU` : ''}{r.vcpu > 0 && r.memGib > 0 ? ', ' : ''}{r.memGib > 0 ? `${Math.round(r.memGib)} GIB` : ''}</span>
+                                                )}
+                                                {r.mlScore > 0 && (
+                                                    <span className="text-[9px] text-gray-400">ML Score: {(r.mlScore * 100).toFixed(1)}%</span>
                                                 )}
                                             </div>
                                         </div>
@@ -120,6 +151,9 @@ const ConfigTable = ({ rows, title, accent, totalLabel, totalMonthly, totalInsta
                 <div className="text-right">
                     <span className={`text-xl font-bold ${accent === "border-l-green-500" ? "text-green-600" : "text-slate-800"}`}>{fmtMo(totalMonthly)}</span>
                     <span className="text-xs text-gray-400 ml-1">/mo</span>
+                    {rightsizingSavings > 0 && (
+                        <p className="text-[9px] text-green-600 font-semibold mt-0.5">incl. {fmtMo(rightsizingSavings)} right-sizing savings</p>
+                    )}
                 </div>
             </div>
         </div>
@@ -153,8 +187,8 @@ const CostTooltip = ({ active, payload, label }) => {
    ═══════════════════════════════════════════════════════════════════════════ */
 const OverviewTab = ({
     cluster, metrics, utilization, karpenterInstallStatus,
-    schedule, policy, nodeRecommendations, nodesDetailed,
-    costTrends, rightsizing, onInstallKarpenter, onManagePolicies,
+    schedule, policy, nodeRecommendations, karpenterSimulation, nodesDetailed,
+    costTrends, rightsizing, autoRightsizingEnabled, autoRebalanceEnabled, onInstallKarpenter, onManagePolicies,
 }) => {
     const [trendWindow, setTrendWindow] = useState('24h');
 
@@ -220,7 +254,11 @@ const OverviewTab = ({
     // Prefer live nodeRecommendations data over stale DB values when available
     const totalCost       = calcMonthly > 0 ? calcMonthly : (metrics?.monthly_cost ?? cluster?.monthly_cost ?? 0);
     const realizedSavings = calcRealized > 0 ? calcRealized : (metrics?.realized_savings ?? 0);
-    const addlPotential   = calcSavings > 0 ? calcSavings : (metrics?.estimated_savings ?? cluster?.estimated_savings ?? 0);
+    // When Karpenter simulation is available, its monthly_savings is the authoritative
+    // potential savings figure (bin-packing consolidation vs 1:1 node swap savings).
+    const addlPotential   = (karpenterSimulation?.monthly_savings > 0)
+        ? karpenterSimulation.monthly_savings
+        : calcSavings > 0 ? calcSavings : (metrics?.estimated_savings ?? cluster?.estimated_savings ?? 0);
     // savingsPct = total savings (realized + potential) vs all-OD baseline
     const allODBaseline   = totalCost + realizedSavings;
     const savingsPct      = allODBaseline > 0 ? ((realizedSavings + addlPotential) / allODBaseline) * 100 : 0;
@@ -237,6 +275,7 @@ const OverviewTab = ({
 
     /* ── Karpenter ─────────────────────────────────────────────────────── */
     const karpInstalled = karpenterInstallStatus?.karpenter_installed;
+    const karpIsMissing = karpInstalled === 'missing' || karpenterInstallStatus?.status === 'missing';
     const karpMode = karpenterInstallStatus?.karpenter_mode;
     const karpDetectedVia = karpenterInstallStatus?.detected_via;
 
@@ -285,7 +324,28 @@ const OverviewTab = ({
     const curMem     = currentConfigRows.reduce((s, r) => s + r.qty * r.memGib, 0);
 
     /* ── Optimized config rows ─────────────────────────────────────────── */
+    // When Karpenter simulation is available, use consolidated bin-packed nodes
+    // instead of the 1:1 node-level recommendations.
     const optimizedConfigRows = useMemo(() => {
+        if (karpenterSimulation?.consolidated_nodes?.length > 0) {
+            // Karpenter mode: show consolidated bin-packed nodes
+            return karpenterSimulation.consolidated_nodes
+                .map(n => ({
+                    type: n.instance_type,
+                    qty: n.count,
+                    hourly: n.spot_price || 0,
+                    isSpot: true,
+                    totalHourly: n.count * (n.spot_price || 0),
+                    totalMonthly: n.count * (n.spot_price || 0) * 730,
+                    vcpu: n.vcpu || 0,
+                    memGib: n.memory_gb || 0,
+                    architecture: n.architecture || null,
+                    mlScore: n.ml_score || 0,
+                    odPrice: n.od_price || 0,
+                }))
+                .sort((a, b) => b.totalMonthly - a.totalMonthly);
+        }
+        // Non-Karpenter mode: 1:1 rebalancing (current behavior)
         const byType = {};
         (nodeRecommendations || []).forEach(r => {
             const t = r.target_type || r.current_type;
@@ -304,12 +364,31 @@ const OverviewTab = ({
                 memGib: typeSpecs[type]?.mem || 0,
             }))
             .sort((a, b) => b.totalMonthly - a.totalMonthly);
-    }, [nodeRecommendations, typeSpecs]);
+    }, [nodeRecommendations, typeSpecs, karpenterSimulation]);
 
     const optTotal = optimizedConfigRows.reduce((s, r) => s + r.totalMonthly, 0);
     const optInst  = optimizedConfigRows.reduce((s, r) => s + r.qty, 0);
     const optCpu   = optimizedConfigRows.reduce((s, r) => s + r.qty * r.vcpu, 0);
     const optMem   = optimizedConfigRows.reduce((s, r) => s + r.qty * r.memGib, 0);
+
+    /* ── Right-sizing combined savings (when both toggles ON) ──────── */
+    const bothActive = autoRightsizingEnabled && autoRebalanceEnabled;
+    const rsSavingsTotal = (rightsizing || []).reduce((s, r) => s + (r.savings_monthly || 0), 0);
+    // When both toggles are active, the karpenter_simulation already
+    // accounts for right-sized pod resources (use_rightsized=true on the API).
+    // The optTotal from consolidated_nodes already reflects tighter bin-packing.
+    // We use it directly — no extra subtraction needed.
+
+    /* ── Optimized Config title ────────────────────────────────────── */
+    const optimizedConfigTitle = (() => {
+        if (karpenterSimulation && bothActive)
+            return "Optimized Configuration (Karpenter + Right-Sizing)";
+        if (karpenterSimulation)
+            return "Optimized Cluster Configuration (Karpenter Consolidation)";
+        if (bothActive)
+            return "Optimized Cluster Configuration (Right-Sizing + Rebalance)";
+        return "Optimized Cluster Configuration";
+    })();
 
     /* ── Cost trend chart ──────────────────────────────────────────────── */
     const trendData = useMemo(() => {
@@ -318,22 +397,28 @@ const OverviewTab = ({
         const frac = totalCost > 0 && addlPotential > 0 ? addlPotential / totalCost : 0;
         const now = Date.now();
         const cutoff = trendWindow === '24h' ? now - 86_400_000 : now - 7 * 86_400_000;
-        return pts
-            .filter(p => new Date(p.timestamp).getTime() >= cutoff)
-            .map(p => ({
-                // Daily data points — convert to monthly equivalent (×30) so chart
-                // Y-axis scale matches the $/mo KPI cards above.
-                time: new Date(p.timestamp).toLocaleDateString([], { month: 'numeric', day: 'numeric' }),
-                current: +(p.value * 30).toFixed(2),
-                optimal: +(p.value * (1 - frac) * 30).toFixed(2),
-            }));
+
+        // Backend daily values may use a different pricing source than nodeRecommendations.
+        // Normalise so the chart's average current equals totalCost (single source of truth).
+        const filtered = pts.filter(p => new Date(p.timestamp).getTime() >= cutoff);
+        const rawAvg = filtered.length > 0
+            ? filtered.reduce((s, p) => s + (p.value || 0), 0) / filtered.length
+            : 0;
+        const scale = rawAvg > 0 && totalCost > 0 ? totalCost / (rawAvg * 30) : 1;
+
+        return filtered.map(p => ({
+            time: new Date(p.timestamp).toLocaleDateString([], { month: 'numeric', day: 'numeric' }),
+            current: +(p.value * 30 * scale).toFixed(2),
+            optimal: +(p.value * (1 - frac) * 30 * scale).toFixed(2),
+        }));
     }, [costTrends, trendWindow, totalCost, addlPotential]);
 
-    // trendData values are already $/month (daily × 30); average = avg monthly cost over window.
-    // Fallback uses totalCost/addlPotential directly (already monthly).
-    const avgMonthly      = trendData.length ? trendData.reduce((s, d) => s + d.current, 0) / trendData.length : totalCost;
-    const avgMonthlyOpt   = trendData.length ? trendData.reduce((s, d) => s + d.optimal, 0) / trendData.length : Math.max(0, totalCost - addlPotential);
-    const availSavingsPct = avgMonthly > 0 ? ((avgMonthly - avgMonthlyOpt) / avgMonthly) * 100 : savingsPct;
+    // trendData values are already $/month (daily × 30); chart shows trend shape.
+    // KPI cards always derive from totalCost/addlPotential (nodeRecommendations live data)
+    // to maintain a single source of truth — avoiding drift between pricing helpers.
+    const avgMonthly      = totalCost;
+    const avgMonthlyOpt   = Math.max(0, totalCost - addlPotential);
+    const availSavingsPct = savingsPct;
 
     /* ── Spot analysis rows ────────────────────────────────────────────── */
     const spotAnalysisRows = useMemo(() =>
@@ -352,13 +437,9 @@ const OverviewTab = ({
         })),
     [nodeRecommendations]);
 
-    // Available savings = average projected_savings_pct for OD nodes only (real savings opportunity)
-    const odRows = spotAnalysisRows.filter(r => r.currentType === 'ON DEMAND');
-    const totalAvailSavings = odRows.length > 0
-        ? (odRows.reduce((s, r) => s + r.savings, 0) / odRows.length).toFixed(1)
-        : spotAnalysisRows.length > 0
-            ? (spotAnalysisRows.reduce((s, r) => s + r.savings, 0) / spotAnalysisRows.length).toFixed(1)
-            : '0';
+    // Available savings — single source of truth: dollar-weighted savingsPct
+    // (same value shown in the Cost & Savings donut and chart KPIs)
+    const totalAvailSavings = savingsPct > 0 ? savingsPct.toFixed(1) : '0';
 
     /* ──────────────────────────────────────────────────────────────────── */
     return (
@@ -534,15 +615,23 @@ const OverviewTab = ({
                     </div>
                     {/* Right-Sizing */}
                     <div className="px-5 py-4">
-                        <p className="text-xs font-semibold text-gray-700 mb-1">Right-Sizing</p>
+                        <div className="flex items-center gap-1.5 mb-1">
+                            <p className="text-xs font-semibold text-gray-700">Right-Sizing</p>
+                            {autoRightsizingEnabled && rsCount > 0 && (
+                                bothActive ? (
+                                    <span className="text-[9px] font-bold px-1 py-0.5 rounded bg-green-100 text-green-700 uppercase tracking-wide">Active</span>
+                                ) : (
+                                    <span className="text-[9px] font-bold px-1 py-0.5 rounded bg-yellow-100 text-yellow-700 uppercase tracking-wide">Rec. Only</span>
+                                )
+                            )}
+                        </div>
                         {rsCount > 0 ? (
                             <>
                                 <div className="flex items-center gap-1.5 mb-1">
                                     <span className="w-1.5 h-1.5 rounded-full bg-orange-500" />
-                                    <span className="text-xs text-orange-600 font-medium">Over-provisioned</span>
+                                    <span className="text-xs text-orange-600 font-medium">{rsCount} workload{rsCount !== 1 ? 's' : ''}</span>
                                 </div>
-                                <p className="text-lg font-bold text-gray-800">{rsCount}</p>
-                                <p className="text-[10px] text-gray-400">{formatCurrency(addlPotential)}/mo potential</p>
+                                <p className="text-[10px] text-gray-400">{formatCurrency(rsSavingsTotal)}/mo potential savings</p>
                             </>
                         ) : (
                             <div className="flex items-center gap-1.5">
@@ -573,8 +662,12 @@ const OverviewTab = ({
 
             {/* ── Karpenter Management ────────────────────────────── */}
             <div className="bg-white border border-gray-200 rounded-lg shadow-sm">
-                <div className="px-5 py-3 border-b border-gray-100">
+                <div className="px-5 py-3 border-b border-gray-100 flex items-center justify-between">
                     <p className="text-sm font-semibold text-gray-800">Karpenter Management</p>
+                    <span className="flex items-center gap-1 text-[10px] text-gray-400" title="Status refreshes every 60s">
+                        <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse inline-block" />
+                        live
+                    </span>
                 </div>
                 <div className="px-5 py-4 flex items-center justify-between">
                     <div className="flex items-center gap-3">
@@ -582,20 +675,24 @@ const OverviewTab = ({
                             <div className="flex items-center gap-2 mb-1">
                                 <span className="text-xs text-gray-500">Status</span>
                                 <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded uppercase tracking-wide ${
-                                    karpInstalled
-                                        ? 'bg-green-100 text-green-700'
-                                        : 'bg-gray-100 text-gray-600'
+                                    karpIsMissing
+                                        ? 'bg-red-100 text-red-700'
+                                        : karpInstalled
+                                            ? 'bg-green-100 text-green-700'
+                                            : 'bg-gray-100 text-gray-600'
                                 }`}>
-                                    {karpInstalled ? 'INSTALLED' : 'NOT INSTALLED'}
+                                    {karpIsMissing ? 'MISSING' : karpInstalled ? 'INSTALLED' : 'NOT INSTALLED'}
                                 </span>
-                                {karpInstalled && karpMode && (
+                                {karpInstalled && !karpIsMissing && karpMode && (
                                     <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded uppercase tracking-wide bg-blue-50 text-blue-600 border border-blue-100">
                                         {karpMode}
                                     </span>
                                 )}
                             </div>
                             <p className="text-xs text-gray-500">
-                                {karpInstalled
+                                {karpIsMissing
+                                    ? 'Karpenter pods are not running — reinstall required'
+                                    : karpInstalled
                                     ? spotCount > 0
                                         ? `Active — managing ${spotCount} spot node${spotCount > 1 ? 's' : ''}`
                                         : karpDetectedVia
@@ -605,13 +702,13 @@ const OverviewTab = ({
                             </p>
                         </div>
                     </div>
-                    {!karpInstalled && (
+                    {(karpIsMissing || !karpInstalled) && (
                         <button
                             onClick={onInstallKarpenter}
-                            className="flex items-center gap-1.5 bg-green-600 hover:bg-green-700 text-white text-xs font-semibold px-4 py-2 rounded-lg transition-colors"
+                            className={`flex items-center gap-1.5 ${karpIsMissing ? 'bg-red-600 hover:bg-red-700' : 'bg-green-600 hover:bg-green-700'} text-white text-xs font-semibold px-4 py-2 rounded-lg transition-colors`}
                         >
                             <FiDownload className="w-3.5 h-3.5" />
-                            Install Karpenter
+                            {karpIsMissing ? 'Reinstall Karpenter' : 'Install Karpenter'}
                         </button>
                     )}
                 </div>
@@ -687,13 +784,15 @@ const OverviewTab = ({
                     />
                     <ConfigTable
                         rows={optimizedConfigRows}
-                        title="Optimized Cluster Configuration"
+                        title={optimizedConfigTitle}
                         accent="border-l-green-500"
-                        totalLabel="Optimized Cluster Compute Cost:"
+                        totalLabel={bothActive ? "Optimized Cost (incl. Right-Sizing):" : "Optimized Cluster Compute Cost:"}
                         totalMonthly={optTotal || Math.max(0, totalCost - addlPotential)}
                         totalInstances={optInst}
                         totalCpu={optCpu}
                         totalMem={optMem}
+                        karpenterSimulation={karpenterSimulation}
+                        rightsizingSavings={bothActive ? rsSavingsTotal : 0}
                     />
                 </div>
             )}
