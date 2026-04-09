@@ -44,7 +44,7 @@ const ASCPAiPage = () => {
             {/* Page Header & Cluster Selector */}
             <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
                 <div>
-                    <h1 className="text-2xl font-bold text-gray-900">ASCP.ai</h1>
+                    <h1 className="text-2xl font-bold text-gray-900">Balancekube.ai</h1>
                     <p className="text-sm text-gray-500 mt-1">
                         Spot Cost Prediction · Intelligent Rebalancing · ML Pool Optimizer
                     </p>

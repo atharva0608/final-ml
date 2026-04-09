@@ -102,6 +102,18 @@ class RebalancingStatusResponse(BaseModel):
     original_target_pool: Optional[str]      # Planned pool before capacity fallback
     pool_change_reason: Optional[str]        # Why the pool changed (e.g. InsufficientInstanceCapacity)
     replacement_spot_instance_id: Optional[str]  # EC2 ID of the new spot node launched as replacement
+    # Actual instance type / AZ Karpenter provisioned (may differ from target)
+    actual_instance_type: Optional[str]
+    actual_az: Optional[str]
+    # Realized savings from this migration
+    realized_savings_hr: Optional[float]
+    realized_savings_mo: Optional[float]
+    # Verification flags — True when backend confirmed the step via read-back
+    step_1_verified: Optional[bool]
+    step_2_verified: Optional[bool]
+    step_3_verified: Optional[bool]
+    step_4_verified: Optional[bool]
+    step_5_verified: Optional[bool]
 
 
 # Endpoints
@@ -541,6 +553,20 @@ async def get_rebalancing_status(
         response = []
         for action in actions:
             _meta = action.action_metadata or {}
+
+            # Defensive backfill: if the action is completed/failed but
+            # step_6 or current_step were never written (e.g. prior DB
+            # session corruption), fill them from completed_at so the
+            # frontend timeline renders correctly.
+            _completed_iso = action.completed_at.isoformat() if action.completed_at else None
+            if action.status == 'completed':
+                if not _meta.get('step_6_optimization_complete') and _completed_iso:
+                    _meta['step_6_optimization_complete'] = _completed_iso
+                if not _meta.get('step_5_old_node_terminated') and _completed_iso:
+                    _meta['step_5_old_node_terminated'] = _completed_iso
+                if _meta.get('current_step') != 'optimization_complete':
+                    _meta['current_step'] = 'optimization_complete'
+
             response.append(RebalancingStatusResponse(
                 id=action.id,
                 cluster_id=action.cluster_id,
@@ -565,6 +591,15 @@ async def get_rebalancing_status(
                 original_target_pool=_meta.get("original_target_pool"),
                 pool_change_reason=_meta.get("pool_change_reason"),
                 replacement_spot_instance_id=_meta.get("replacement_spot_instance_id"),
+                actual_instance_type=action.actual_instance_type,
+                actual_az=action.actual_az,
+                realized_savings_hr=action.realized_savings_hr if hasattr(action, 'realized_savings_hr') else None,
+                realized_savings_mo=action.realized_savings_mo if hasattr(action, 'realized_savings_mo') else None,
+                step_1_verified=_meta.get("step_1_verified", True if _meta.get("karpenter_nodepool_updated") else None),
+                step_2_verified=_meta.get("step_2_cordon_verified"),
+                step_3_verified=_meta.get("step_3_draining_pods_verified"),
+                step_4_verified=_meta.get("step_4_verified", True if _meta.get("step_4_new_node_joined") else None),
+                step_5_verified=_meta.get("step_5_verified"),
             ))
 
         return response
@@ -625,6 +660,50 @@ def deny_rebalancing_action(
     db.commit()
     logger.info(f"[deny] Rebalancing action {action_id} denied → failed")
     return {"status": "denied", "action_id": action_id}
+
+
+@router.post("/rebalancing-actions/{action_id}/force-complete")
+def force_complete_rebalancing_action(
+    action_id: int,
+    db: Session = Depends(get_db),
+):
+    """
+    Fix 17: Force-complete a stuck rebalancing action.
+    Sets status to 'completed' and cleans up associated resources.
+    Use when an action is stuck in waiting_agent/in_progress and manual
+    investigation confirms the replacement is healthy or the action is stale.
+    """
+    action = db.query(RebalancingAction).filter(RebalancingAction.id == action_id).first()
+    if not action:
+        raise HTTPException(status_code=404, detail="Rebalancing action not found")
+    if action.status in ('completed', 'failed'):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Action is already '{action.status}' — cannot force-complete"
+        )
+    meta = dict(action.action_metadata or {})
+    meta["force_completed_at"] = datetime.utcnow().isoformat()
+    meta["force_completed_reason"] = "Manual override via API"
+    meta["current_step"] = "completed"
+    action.status = "completed"
+    action.completed_at = datetime.utcnow()
+    action.duration_seconds = int(
+        (action.completed_at - action.started_at).total_seconds()
+    ) if action.started_at else 0
+    action.action_metadata = meta
+
+    # Clean up resources (locks, trigger pods, semaphores)
+    try:
+        from backend.core.redis_client import get_redis_client
+        _redis = get_redis_client()
+        from backend.workers.tasks.auto_rebalancer import _cleanup_rebalancing_resources
+        _cleanup_rebalancing_resources(action, meta, _redis, db)
+    except Exception as _cleanup_err:
+        logger.warning(f"[force-complete] Resource cleanup failed: {_cleanup_err}")
+
+    db.commit()
+    logger.info(f"[force-complete] Rebalancing action {action_id} force-completed")
+    return {"status": "force_completed", "action_id": action_id}
 
 
 class HeatmapCell(BaseModel):
@@ -1405,7 +1484,7 @@ async def get_node_recommendations(
         Instance.instance_type != 'unknown',
         Instance.instance_id.isnot(None),
         Instance.instance_id != '',
-        or_(Instance.status.notin_(['UNKNOWN']), Instance.status.is_(None)),
+        or_(Instance.status.in_(['READY', 'CALIBRATING']), Instance.status.is_(None)),
     ).all()
     _seen: dict = {}
     for _inst in _all_instances:
@@ -1553,6 +1632,15 @@ async def get_node_recommendations(
     risk_tradeoff_pct = (strategy.risk_savings_tradeoff_pct if strategy else 20) or 20
     risk_ceiling = ((strategy.risk_ceiling_percent if strategy else 25) or 25) / 100.0
 
+    # ── Dynamic risk ceiling: apply regional market factor (same as auto_rebalancer) ──
+    _dynamic_risk_ceiling = risk_ceiling
+    try:
+        _mf_raw = redis.get(f"market_factor:{region}")
+        if _mf_raw:
+            _dynamic_risk_ceiling = risk_ceiling * float(_mf_raw)
+    except Exception:
+        pass
+
     # ── Load diversify_pools + architecture_preference settings ────────────────
     opt = cluster.optimization_settings
     _diversify_enabled = bool(getattr(opt, 'diversify_pools', False)) if opt else False
@@ -1619,16 +1707,25 @@ async def get_node_recommendations(
     _migration_map = {}  # source_instance_id → {replacement_id, replacement_type, action_id}
     try:
         from backend.models.rebalancing_action import RebalancingAction as _RA_mig
-        from sqlalchemy import or_ as _or_mig
+        from sqlalchemy import or_ as _or_mig, and_ as _and_mig
+        from datetime import timedelta as _td_mig
         # Include actively-running actions AND recently-failed drain actions where the source
         # EC2 is still alive (current_step='failed_drain_ec2_protected').  These nodes are
         # pending a rebalancer retry and must NOT be shown as "Ready" in the UI.
+        # Bug fix: drain-retry must also be recent (< 30 min) AND status='failed',
+        # otherwise ancient failed actions match current nodes by source_pool fallback.
+        _drain_retry_cutoff = datetime.utcnow() - _td_mig(minutes=30)
         _active_actions = db.query(_RA_mig).filter(
             _RA_mig.cluster_id == cluster_id,
             _or_mig(
                 _RA_mig.status.in_(['in_progress', 'waiting_agent', 'pending']),
                 # Drain-failed: action is 'failed' but source EC2 still running; retry imminent
-                _RA_mig.action_metadata['current_step'].astext == 'failed_drain_ec2_protected',
+                # Only match if the action is recent (< 30 min old) to avoid stale ghosts
+                _and_mig(
+                    _RA_mig.status == 'failed',
+                    _RA_mig.action_metadata['current_step'].astext == 'failed_drain_ec2_protected',
+                    _RA_mig.created_at >= _drain_retry_cutoff,
+                ),
             ),
         ).all()
         for _aa in _active_actions:
@@ -1667,6 +1764,46 @@ async def get_node_recommendations(
     _max_same_type = max(1, round(_total_nodes * (1.0 - _inst_type_div_pct / 100.0))) if _total_nodes > 0 else 1
     _type_counts: dict = {}  # instance_type → count of nodes already assigned that type
 
+    # ── Anchor / stable node detection ────────────────────────────────────
+    # The anchor node hosts Karpenter system pods and must NOT be converted
+    # to spot. It stays at its current OD type + cost in optimized config.
+    _anchor_node_name = None
+    _anchor_instance_id = None
+    try:
+        import os as _os_anc
+        import redis as _redis_anc
+        import json as _json_anc
+        _r_anc = _redis_anc.from_url(_os_anc.getenv("REDIS_URL", "redis://redis:6379/0"))
+        _sn_raw_anc = _r_anc.get(f"spot:stable_node:{cluster_id}")
+        if _sn_raw_anc:
+            _sn_data_anc = _json_anc.loads(_sn_raw_anc)
+            # Normalise to short hostname (split on '.') to match _node_list
+            _anchor_node_name_raw = _sn_data_anc.get('node_name') or ''
+            _anchor_node_name = _anchor_node_name_raw.split('.')[0] if _anchor_node_name_raw else None
+            _anchor_instance_id = _sn_data_anc.get('instance_id')
+    except Exception:
+        pass
+    # Fallback: an OD node classified as SYSTEM_PROTECTED by WorkloadInspector
+    if not _anchor_node_name:
+        for _nd_anc in _node_list:
+            if 'spot' not in _nd_anc['lifecycle'] and node_classification.get(_nd_anc['node_name']) == "SYSTEM_PROTECTED":
+                _anchor_node_name = _nd_anc['node_name']
+                break
+    # Fallback 2: When Karpenter is installed, one OD node MUST remain as anchor
+    # to host Karpenter controller pods (they cannot run on spot).  Pick the
+    # first OD node (sorted by name for determinism).  This covers:
+    #   - All-OD cluster (new install, no spot yet) → 1 anchor + N-1 spot candidates
+    #   - Mixed cluster with multiple OD nodes → still 1 anchor
+    #   - Single OD among all-spot → same as before
+    if not _anchor_node_name:
+        _od_nodes = sorted(
+            [n for n in _node_list if 'spot' not in n['lifecycle']],
+            key=lambda n: n['node_name'],
+        )
+        _karp_installed = getattr(cluster, 'karpenter_mode', None) is not None
+        if _od_nodes and (_karp_installed or len(_od_nodes) == 1):
+            _anchor_node_name = _od_nodes[0]['node_name']
+
     for node in _node_list:
         instance_type = node["instance_type"]
         az = node["az"]
@@ -1675,6 +1812,13 @@ async def get_node_recommendations(
 
         node_name = node["node_name"]
         on_demand_hourly = INSTANCE_HOURLY.get(instance_type, 0.096)
+
+        # ── Anchor node: keep as-is, no spot conversion ─────────────────
+        _is_anchor_node = False
+        if _anchor_node_name and node_name == _anchor_node_name:
+            _is_anchor_node = True
+        elif _anchor_instance_id and node.get("instance_id") == _anchor_instance_id:
+            _is_anchor_node = True
         
         # Original Provisioned Limits
         current_vcpu = VCPU_COUNT.get(instance_type, 2)
@@ -1703,6 +1847,13 @@ async def get_node_recommendations(
             workload_type = "system"
         else:
             workload_type = "stateless"
+
+        # ── Detect source architecture ──────────────────────────────────
+        import re as _arch_re
+        _src_family = instance_type.split(".")[0]
+        _current_arch = "arm64" if (
+            bool(_arch_re.search(r'\dg', _src_family)) or _src_family == "a1"
+        ) else "amd64"
 
         # ── Select safest sized target pool with diversity ──────
         target_type = instance_type  # default: no better pool found
@@ -1755,17 +1906,10 @@ async def get_node_recommendations(
                 spot_savings_pct = 60
                 risk_score = 0.2
 
-        if not is_already_spot and top_pools:
+        if not is_already_spot and not _is_anchor_node and top_pools:
             _total_nodes = len(_node_list)
 
-            # Determine source node architecture using the Graviton naming convention:
-            # Graviton instances have "g" after a generation digit (c6g, m8g, c8gn, r6gd, t4g…).
-            # GPU instances (g4dn, g5, g6) start WITH "g" so they don't match \dg.
-            import re as _arch_re
-            _src_family = instance_type.split(".")[0]
-            _src_arch = "arm64" if (
-                bool(_arch_re.search(r'\dg', _src_family)) or _src_family == "a1"
-            ) else "amd64"
+            _src_arch = _current_arch
 
             # Use unified ranking function — same formula as UI Per-Node Alternatives.
             from backend.services.pool_ranking_service import PoolRankingService as _PRS_action
@@ -1851,6 +1995,23 @@ async def get_node_recommendations(
 
         # ── Check if this node has an active migration ────────────────────
         _node_migration = _migration_map.get(node["instance_id"])
+        # Anchor/stable node must NEVER show as migrating — even if a stale
+        # RebalancingAction references it (e.g. action created before the node
+        # was designated as anchor, or source_pool fallback matched it).
+        # The auto_rebalancer excludes the stable node from batch candidates,
+        # so any matching action is stale and should not affect the UI.
+        if _is_anchor_node and _node_migration:
+            logger.debug(
+                f"node-recommendations: suppressing migration_info for anchor node "
+                f"{node['instance_id']} (action_id={_node_migration.get('action_id')})"
+            )
+            _node_migration = None
+
+        # ── Compute target architecture ──────────────────────────────────
+        _tgt_family = target_type.split(".")[0]
+        _target_arch = "arm64" if (
+            bool(_arch_re.search(r'\dg', _tgt_family)) or _tgt_family == "a1"
+        ) else "amd64"
 
         recommendations.append({
             "instance_id": node["instance_id"],
@@ -1868,7 +2029,11 @@ async def get_node_recommendations(
             "interruption_rate": interruption_rate,
             "workload_type": workload_type,
             "lifecycle": "spot" if is_already_spot else "on_demand",
+            "is_anchor": _is_anchor_node,
             "instance_family": (instance_type or "").split(".")[0],
+            "current_arch": _current_arch,
+            "target_arch": _target_arch,
+            "cross_arch": _current_arch != _target_arch,
             "migration_info": _node_migration,
             # K8s / collector health status. UNKNOWN = EC2 running but not in K8s cluster.
             "node_health_status": node.get("node_health_status") or "READY",
@@ -2115,6 +2280,7 @@ async def get_node_recommendations(
                     status=_nd.get('node_health_status', 'READY'),
                     is_standby=False,
                     node_name=_nd['node_name'],
+                    is_anchor=(_nd['node_name'] == _anchor_node_name),
                 ))
 
             # ── Build candidate SimPool list from top_pools ───────────────────
@@ -2190,6 +2356,7 @@ async def get_node_recommendations(
                 rebalance_batch_percent=getattr(_opt, 'rebalance_batch_percent', None) if _opt else None,
                 risk_ceiling_percent=int(getattr(_strat, 'risk_ceiling_percent', 25) or 25) if _strat else 25,
                 risk_savings_tradeoff_pct=int(getattr(_strat, 'risk_savings_tradeoff_pct', 20) or 20) if _strat else 20,
+                min_topology_spread=int(getattr(_opt, 'min_topology_spread', 1) or 1) if _opt else 1,
             )
 
             # ── Assemble the frozen snapshot ──────────────────────────────────
@@ -2226,6 +2393,7 @@ async def get_node_recommendations(
             import traceback; logger.warning(traceback.format_exc())
             _karpenter_simulation = None
 
+    _has_od_nodes = any(r["lifecycle"] != "spot" for r in recommendations)
     return {
         "recommendations": recommendations,
         "summary": {
@@ -2240,6 +2408,8 @@ async def get_node_recommendations(
         "family_distribution": _pool_shares,  # kept for backward compat — same data
         "diversify_enabled": _diversify_enabled,
         "karpenter_simulation": _karpenter_simulation,
+        "dynamic_risk_ceiling": round(_dynamic_risk_ceiling, 4),
+        "has_od_nodes": _has_od_nodes,
     }
 
 
@@ -2558,20 +2728,35 @@ async def get_rebalancing_context(
             (_now + timedelta(seconds=remaining_seconds)).isoformat() + "Z"
             if cooldown_active and remaining_seconds > 0 else None
         )
-        # next_check_at: use the Redis gate TTL for the cluster's actual check interval.
-        # spot:last_check:{cluster_id} is set by the rebalancer with ex=check_interval-14;
-        # its remaining TTL tells us exactly how many seconds until the next cycle fires.
+        # next_check_at: compute from the last-run timestamp recorded by the
+        # rebalancer plus the configured check interval.  For custom intervals
+        # (> 15s) the Redis gate TTL gives a precise answer.  For the default
+        # 15s interval (where the gate isn't used), we fall back to last_run_ts
+        # which the rebalancer writes on every cycle.
         _last_check_ttl = -1
+        _last_run_ts_raw = None
         try:
             if redis:
                 _last_check_ttl = redis.ttl(f"spot:last_check:{cluster_id}")
+                _last_run_ts_raw = redis.get(f"spot:last_run_ts:{cluster_id}")
         except Exception:
             pass
         if _last_check_ttl and _last_check_ttl > 0:
-            # Gate is active: next cycle fires when this key expires
+            # Custom interval gate is active: next cycle fires when this key expires
             _next_check_at = (_now + timedelta(seconds=_last_check_ttl)).isoformat() + "Z"
+        elif _last_run_ts_raw:
+            # Default 15s interval: compute from last run timestamp
+            try:
+                _last_run_epoch = int(_last_run_ts_raw.decode() if isinstance(_last_run_ts_raw, bytes) else _last_run_ts_raw)
+                _last_run_dt = datetime.utcfromtimestamp(_last_run_epoch)
+                _next_due = _last_run_dt + timedelta(seconds=_check_interval)
+                # If the next-due time is already in the past, the cycle is imminent
+                _secs_until = max(0, (_next_due - _now).total_seconds())
+                _next_check_at = (_now + timedelta(seconds=_secs_until)).isoformat() + "Z"
+            except (ValueError, TypeError):
+                _next_check_at = (_now + timedelta(seconds=min(15, _check_interval))).isoformat() + "Z"
         else:
-            # Gate expired or doesn't exist (default 15s interval): next beat is imminent
+            # No data at all: next beat is imminent
             _next_check_at = (_now + timedelta(seconds=min(15, _check_interval))).isoformat() + "Z"
 
         return {

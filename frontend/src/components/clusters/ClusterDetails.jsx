@@ -144,7 +144,7 @@ const ClusterDetails = ({ clusterId, onClose }) => {
       try {
         heavyCounter++;
         const _ctl = optSettingsRef.current?.automation_controls;
-        const _useRs = !!(_ctl?.auto_rightsizing_enabled && _ctl?.auto_rebalance_enabled);
+        const _useRs = !!_ctl?.auto_rightsizing_enabled;
         const [nodesRes, rebalRes, recRes] = await Promise.allSettled([
           clusterAPI.getNodesDetailed(clusterId),
           ascpaiAPI.getRebalancingStatus(clusterId),
@@ -158,7 +158,7 @@ const ClusterDetails = ({ clusterId, onClose }) => {
           const _recs = recRes.value.data?.recommendations;
           if (Array.isArray(_recs) && _recs.length > 0) setNodeRecommendations(_recs);
           const _sim = recRes.value.data?.karpenter_simulation;
-          if (_sim) setKarpenterSimulation(_sim);
+          setKarpenterSimulation(_sim || null);
         }
 
         // Every 2nd tick (60s): also refresh cluster, metrics, cost trends, and Karpenter status
@@ -300,21 +300,23 @@ const ClusterDetails = ({ clusterId, onClose }) => {
     toast.success('Cluster details refreshed');
   };
 
-  // When both auto-rightsizing + auto-rebalance become active, re-fetch
-  // node-recommendations with right-sized pod values for a more accurate
-  // Karpenter bin-packing "what-if" simulation.
-  const _bothToggles = !!(optSettings?.automation_controls?.auto_rightsizing_enabled && optSettings?.automation_controls?.auto_rebalance_enabled);
+  // When the auto-rightsizing toggle changes, immediately re-fetch
+  // node-recommendations so the Karpenter simulation reflects the correct
+  // pod resource assumptions (right-sized vs. actual).
+  const _rsEnabled = !!optSettings?.automation_controls?.auto_rightsizing_enabled;
   useEffect(() => {
-    if (!clusterId || !_bothToggles) return;
-    ascpaiAPI.getNodeRecommendations(clusterId, { useRightsized: true }).then(res => {
+    if (!clusterId) return;
+    ascpaiAPI.getNodeRecommendations(clusterId, { useRightsized: _rsEnabled }).then(res => {
       if (res.data) {
         const _recs = res.data?.recommendations;
         if (Array.isArray(_recs) && _recs.length > 0) setNodeRecommendations(_recs);
+        // Always update karpenterSimulation — including clearing to null —
+        // so stale rightsized data doesn't persist when the toggle flips.
         const _sim = res.data?.karpenter_simulation;
-        if (_sim) setKarpenterSimulation(_sim);
+        setKarpenterSimulation(_sim || null);
       }
     }).catch(() => {});
-  }, [clusterId, _bothToggles]);
+  }, [clusterId, _rsEnabled]);
 
   const handleOptimize = async () => {
     if (!clusterId) return;
@@ -782,6 +784,35 @@ const ClusterDetails = ({ clusterId, onClose }) => {
                     </label>
                   </div>
 
+                  {/* Min Topology Spread (only visible when rightsizing is on) */}
+                  {!!optSettings?.automation_controls?.auto_rightsizing_enabled && (
+                    <div className="p-3 bg-gradient-to-br from-teal-50 to-cyan-50 rounded-xl border border-teal-200 ml-2">
+                      <div className="flex justify-between items-center mb-2">
+                        <label className="text-xs font-semibold text-gray-800">Min Topology Spread</label>
+                        <span className="text-lg font-bold text-teal-700">
+                          {optSettings?.automation_controls?.min_topology_spread ?? 1}
+                        </span>
+                      </div>
+                      <input
+                        type="range"
+                        min="1"
+                        max="5"
+                        step="1"
+                        value={optSettings?.automation_controls?.min_topology_spread ?? 1}
+                        onChange={e => handleOptConfigChange("automation_controls", "min_topology_spread", +e.target.value)}
+                        className="w-full h-2 bg-teal-200 rounded-lg appearance-none cursor-pointer accent-teal-600"
+                      />
+                      <div className="flex justify-between text-[10px] text-gray-400 mt-1">
+                        <span>1</span>
+                        <span>5</span>
+                      </div>
+                      <p className="text-[11px] text-gray-500 mt-2">
+                        Minimum number of nodes across different availability zones during right-sizing consolidation.
+                        Higher values increase HA but may limit cost savings.
+                      </p>
+                    </div>
+                  )}
+
                   {/* Optimization Target */}
                   {(() => {
                     const _synLocked = !!optSettings?.automation_controls?.auto_rebalance_enabled && !!optSettings?.automation_controls?.auto_rightsizing_enabled;
@@ -904,7 +935,10 @@ const ClusterDetails = ({ clusterId, onClose }) => {
                           <p className="text-[11px] text-gray-500 mt-2">
                             {displayVal === 0
                               ? <span className="text-gray-400">Batch rebalancing disabled (0%). Increase to enable.</span>
-                              : <>Max <strong>{displayVal}%</strong> of on-demand nodes will be rebalanced per cycle.
+                              : <>
+                                <strong>{displayVal}%</strong> of on-demand nodes will be replaced at once during initial migration
+                                {' '}(e.g. {(() => {const n=3; const b=Math.ceil(n*displayVal/100); return `${n} nodes → ${b} in first batch, ${n-b} in next`;})()}).
+                                {' '}After migration, spot-to-spot replacements run sequentially via Karpenter risk thresholds.
                                 {respectPdb && pdbSafe != null
                                   ? <span className="text-orange-600"> Capped to PDB-safe limit ({pdbSafe}%).</span>
                                   : pdbSafe == null

@@ -15,6 +15,7 @@ class ClusterStatus(enum.Enum):
     TERMINATED = "TERMINATED"
     DISCONNECTED = "DISCONNECTED"
     DEGRADED = "DEGRADED"     # Agent installed but cluster no longer found in AWS
+    DELETED = "DELETED"       # Cluster removed — kept for historical metrics
 
 class ClusterType(enum.Enum):
     EKS = "EKS"
@@ -205,6 +206,10 @@ class ClusterOptimizationSettings(Base):
     # NULL = auto (use PDB-safe value when respect_pdb_enabled, else 15%).
     # When set, value is still capped to PDB-safe limit if respect_pdb_enabled is True.
     rebalance_batch_percent = Column(Integer, nullable=True, default=None)
+
+    # Minimum topology spread (number of AZs / distinct nodes) the simulation
+    # must maintain when consolidating.  Default 1 = no spread constraint.
+    min_topology_spread = Column(Integer, default=1, nullable=False, server_default="1")
 
     # attach_to_asg_enabled removed — Karpenter manages all nodes, ASG handling no longer relevant
 

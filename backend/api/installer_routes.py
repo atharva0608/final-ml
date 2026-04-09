@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 router = APIRouter(prefix="/installer", tags=["installer"])
 
 # Agent version — must match charts/spot-optimizer-agent/Chart.yaml appVersion
-CURRENT_AGENT_VERSION = "1.0.1"
+CURRENT_AGENT_VERSION = "1.1.2"
 
 # Path to the install.sh template
 TEMPLATE_PATH = Path(__file__).parent.parent / "templates" / "install.sh"

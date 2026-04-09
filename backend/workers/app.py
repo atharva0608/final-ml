@@ -152,6 +152,11 @@ app.conf.beat_schedule = {
         'task': 'workers.auto_rebalancer',
         'schedule': 15.0,  # 15 seconds
     },
+    # Fix 16: Rebalancer Reconciliation (Every 5 minutes) - Detects and resolves stuck actions
+    'rebalancer-reconciliation-every-5-min': {
+        'task': 'workers.rebalancer_reconciliation',
+        'schedule': 300.0,  # 5 minutes
+    },
     # ASCP Auto-Scaler (Every 30 seconds) - Optional built-in scaler (off by default per cluster)
     'ascp-auto-scaler-every-30-secs': {
         'task': 'workers.auto_scaler.run',

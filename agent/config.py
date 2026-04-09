@@ -36,10 +36,10 @@ class Config:
 
     def load_config(self):
         """Load configuration from environment"""
-        # Required configuration
-        self.api_url = os.getenv('API_URL', '').strip()
+        # Required configuration — accept both legacy and Helm chart env var names
+        self.api_url = (os.getenv('API_URL') or os.getenv('BACKEND_URL') or '').strip()
         self.cluster_id = os.getenv('CLUSTER_ID', '').strip()
-        self.api_token = os.getenv('API_TOKEN', '').strip()
+        self.api_token = (os.getenv('API_TOKEN') or os.getenv('API_KEY') or '').strip()
 
         # Optional configuration with defaults
         self.log_level = os.getenv('LOG_LEVEL', 'INFO').upper()
@@ -54,7 +54,7 @@ class Config:
 
         # Derived configuration
         self.agent_id = f"{self.cluster_id}-agent"
-        self.version = os.getenv('AGENT_VERSION', '1.0.1')
+        self.version = os.getenv('AGENT_VERSION', '1.1.2')
 
         logger.info(f"[AGENT-CFG-01] Configuration loaded")
         logger.info(f"[AGENT-CFG-01]   API URL: {self.api_url}")

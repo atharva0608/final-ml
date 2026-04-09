@@ -26,7 +26,7 @@ def classify_iam_user(
         • Inactive > 90 days + no active keys       → SAFE  (dormant, safe to remove)
         • Active (< 90 days inactive)               → ACTIVE (skip)
     """
-    if days_inactive <= DORMANT_USER_DAYS:
+    if days_inactive is None or days_inactive <= DORMANT_USER_DAYS:
         return RuleVerdict.ACTIVE, "Active IAM user"
 
     if has_active_keys:

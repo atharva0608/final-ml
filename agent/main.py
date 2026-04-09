@@ -19,6 +19,7 @@ import threading
 import asyncio
 from typing import Optional, Dict
 from datetime import datetime
+from http.server import HTTPServer, BaseHTTPRequestHandler
 import requests
 
 # Import agent modules
@@ -36,6 +37,28 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+# ── Lightweight /healthz HTTP server for K8s probes & Docker HEALTHCHECK ──
+class _HealthHandler(BaseHTTPRequestHandler):
+    """Minimal handler: GET /healthz → 200, everything else → 404."""
+    agent_ref = None  # set by Agent after construction
+
+    def do_GET(self):
+        if self.path == '/healthz':
+            ok = self.agent_ref and getattr(self.agent_ref, 'running', False)
+            status = 200 if ok else 503
+            body = b'{"status":"ok"}' if ok else b'{"status":"starting"}'
+            self.send_response(status)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(body)
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+    def log_message(self, *args):
+        pass  # silence per-request logs
+
+
 class Agent:
     """
     Main agent class that coordinates all components.
@@ -50,6 +73,10 @@ class Agent:
         self.backend_ws_url = os.getenv('BACKEND_WS_URL', 'ws://localhost:8000/ws')
         self.api_key = os.getenv('API_KEY')
         self.secret_key = os.getenv('SECRET_KEY')
+
+        # Track the original URL for discover-url fallback
+        self._initial_backend_url = self.backend_url
+        self._last_url_refresh = 0  # epoch timestamp
 
         # Cluster identification
         self.cluster_id = os.getenv('CLUSTER_ID')
@@ -84,6 +111,7 @@ class Agent:
         # State
         self.running = False
         self.shutdown_event = threading.Event()
+        self._health_server = None
 
         # Task-1.8: Thread restart counters and backoff state (Issue #9)
         # Prevents runaway restarts: max 5 attempts per component, then DEAD.
@@ -110,6 +138,82 @@ class Agent:
         unique_id = str(uuid.uuid4())[:8]
 
         return f"{hostname}-{unique_id}"
+
+    # ── Dynamic backend URL discovery ──────────────────────────────────────
+    def _refresh_backend_url(self) -> bool:
+        """
+        Call the backend's /api/v1/agents/discover-url endpoint to get the
+        current public URL.  This handles tunnel URL rotation (ngrok,
+        Cloudflare Tunnel, etc.) without needing to restart pods or update
+        ConfigMaps.
+
+        Returns True if the URL was updated, False otherwise.
+        """
+        url = f"{self.backend_url}/api/v1/agents/discover-url"
+        try:
+            resp = requests.get(url, timeout=10, headers={'ngrok-skip-browser-warning': 'true'})
+            if resp.status_code == 200:
+                data = resp.json()
+                new_url = data.get("backend_url", "").rstrip("/")
+                if new_url and new_url != self.backend_url:
+                    return self._update_backend_url(new_url)
+                self._last_url_refresh = time.time()
+                return False
+        except Exception as e:
+            logger.debug(f"discover-url failed on current URL: {e}")
+
+        # If current URL failed and it's different from the initial, try initial too
+        if self._initial_backend_url != self.backend_url:
+            try:
+                url = f"{self._initial_backend_url}/api/v1/agents/discover-url"
+                resp = requests.get(url, timeout=10, headers={'ngrok-skip-browser-warning': 'true'})
+                if resp.status_code == 200:
+                    data = resp.json()
+                    new_url = data.get("backend_url", "").rstrip("/")
+                    if new_url:
+                        return self._update_backend_url(new_url)
+            except Exception as e:
+                logger.debug(f"discover-url failed on initial URL too: {e}")
+
+        return False
+
+    def _update_backend_url(self, new_url: str) -> bool:
+        """
+        Update the backend URL across the agent and all running components.
+        Called when the discover-url endpoint or registration response
+        reports a different URL than the one we're currently using.
+        """
+        old_url = self.backend_url
+        self.backend_url = new_url
+        new_ws = new_url.replace("https://", "wss://").replace("http://", "ws://")
+        self.backend_ws_url = f"{new_ws}/ws/cluster/{self.cluster_id}"
+        self._last_url_refresh = time.time()
+
+        logger.info(f"[URL-REFRESH] Backend URL changed: {old_url} → {new_url}")
+
+        # Propagate to running components
+        if self.collector:
+            self.collector.backend_url = new_url
+        if self.actuator:
+            self.actuator.backend_url = new_url
+        if self.heartbeat:
+            self.heartbeat.backend_url = new_url
+        if self.pod_metrics_collector:
+            self.pod_metrics_collector.backend_url = new_url
+
+        # WebSocket client needs reconnect with new URL
+        if self.websocket_client:
+            self.websocket_client.backend_ws_url = self.backend_ws_url
+            try:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                loop.run_until_complete(self.websocket_client.stop())
+                loop.close()
+            except Exception:
+                pass
+
+        return True
+    # ────────────────────────────────────────────────────────────────────────
 
     def register_with_backend(self) -> bool:
         """
@@ -140,7 +244,7 @@ class Agent:
                 'action_execution',
                 'websocket_communication'
             ],
-            'version': '1.0.1'
+            'version': '1.1.6'
         }
 
         try:
@@ -156,10 +260,17 @@ class Agent:
             data = response.json()
             logger.info(f"Agent registered successfully: {data}")
 
+            # If the backend returned a different URL, update dynamically
+            returned_url = (data.get("backend_url") or "").rstrip("/")
+            if returned_url and returned_url != self.backend_url:
+                self._update_backend_url(returned_url)
+
             return True
 
         except requests.exceptions.RequestException as e:
             logger.error(f"Failed to register with backend: {e}")
+            # Try to discover the new URL — the tunnel may have rotated
+            self._refresh_backend_url()
             return False
 
     def deregister_from_backend(self) -> bool:
@@ -425,18 +536,27 @@ class Agent:
         """
         Task-1.8 (Issue #9): Restart a dead component thread with exponential backoff.
 
-        Increments the restart counter for `name`. If the counter exceeds 5,
-        the component is marked DEAD and no further restart is attempted.
-        Otherwise, waits ``min(2**count, 60)`` seconds then starts a new thread.
+        Uses a sliding window: restart counter resets after 5 minutes of
+        stable uptime.  This prevents permanent DEAD state from transient
+        failures accumulating across long agent sessions (e.g. ngrok tunnel
+        rotations, brief network blips).
         """
-        MAX_RESTARTS = 5
+        MAX_RESTARTS = 10
+        now = time.time()
+
+        # Reset counter if the component ran for >5 min since last restart
+        last_restart_time = self._restart_backoffs.get(name, 0.0)
+        if last_restart_time and (now - last_restart_time) > 300:
+            self._restart_counts[name] = 0
+
         count = self._restart_counts.get(name, 0) + 1
         self._restart_counts[name] = count
+        self._restart_backoffs[name] = now
 
         if count > MAX_RESTARTS:
             logger.critical(
-                f"[monitor] Component '{name}' has crashed {count} times — marking DEAD, "
-                f"no further restarts. Manual intervention required."
+                f"[monitor] Component '{name}' has crashed {count} times in quick "
+                f"succession — marking DEAD. Manual intervention required."
             )
             return
 
@@ -475,6 +595,13 @@ class Agent:
             if self.pod_metrics_thread and not self.pod_metrics_thread.is_alive():
                 self._restart_thread('pod_metrics', self.pod_metrics_collector.run, 'pod_metrics_thread')
 
+            # Periodic backend URL refresh (every 5 minutes)
+            if time.time() - self._last_url_refresh > 300:
+                try:
+                    self._refresh_backend_url()
+                except Exception as e:
+                    logger.debug(f"Periodic URL refresh failed: {e}")
+
             # Sleep before next check
             time.sleep(30)
 
@@ -488,10 +615,32 @@ class Agent:
         signal.signal(signal.SIGTERM, self.handle_shutdown_signal)
         signal.signal(signal.SIGINT, self.handle_shutdown_signal)
 
-        # Register with backend
-        if not self.register_with_backend():
-            logger.error("Failed to register with backend, exiting...")
-            return 1
+        # Start /healthz HTTP server (port 8080) for K8s probes
+        try:
+            _HealthHandler.agent_ref = self
+            self._health_server = HTTPServer(('0.0.0.0', 8080), _HealthHandler)
+            _ht = threading.Thread(target=self._health_server.serve_forever, daemon=True)
+            _ht.start()
+            logger.info("Health server started on :8080/healthz")
+        except Exception as _he:
+            logger.warning(f"Health server failed to start (non-fatal): {_he}")
+
+        # Register with backend (retry with backoff — never exit on transient failure)
+        _reg_attempt = 0
+        _reg_max_backoff = 120  # cap at 2 minutes between retries
+        while True:
+            if self.register_with_backend():
+                break
+            _reg_attempt += 1
+            _backoff = min(_reg_max_backoff, 5 * (2 ** min(_reg_attempt - 1, 5)))
+            logger.warning(
+                f"Registration attempt {_reg_attempt} failed. "
+                f"Retrying in {_backoff}s... (backend may be restarting or URL may have changed)"
+            )
+            time.sleep(_backoff)
+            if self.shutdown_event.is_set():
+                logger.info("Shutdown requested during registration retry, exiting...")
+                return 1
 
         try:
             # Initialize components
@@ -513,6 +662,10 @@ class Agent:
             return 1
 
         finally:
+            # Stop health server
+            if self._health_server:
+                self._health_server.shutdown()
+
             # Stop components
             self.stop_components()
 

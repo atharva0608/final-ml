@@ -28,6 +28,18 @@ def get_redis():
 
 # ── Redis Key Helpers ──────────────────────────────────────────────────────
 
+def get_backend_public_url() -> str:
+    """Return the live backend public URL (set by middleware on every request).
+    Falls back to BACKEND_PUBLIC_URL env var, then localhost."""
+    try:
+        r = get_redis_client()
+        url = r.get("platform:backend_public_url")
+        if url:
+            return url
+    except Exception:
+        pass
+    return os.getenv("BACKEND_PUBLIC_URL", "https://localhost:8000")
+
 def key_global_pool_rankings(region: str) -> str: return f"global_pool_rankings:{region}"
 def key_market_view_cache(region: str) -> str: return f"market_view_cache:{region}"
 def key_cluster_pools(cluster_id: str) -> str: return f"cluster_pools:{cluster_id}"

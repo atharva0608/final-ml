@@ -17,6 +17,7 @@ Celery Task: Runs every 15 seconds checking for active rebalancing actions
 from datetime import datetime, timedelta
 from typing import Dict, Optional
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 from sqlalchemy import or_
 import hashlib
 
@@ -398,6 +399,37 @@ def _sync_instance_state_from_aws(db: Session, cluster: Cluster):
                     'lifecycle': raw_lc, 'instance_type': itype, 'az': az,
                     'private_ip': private_ip,
                 }
+
+        # Also query Karpenter-managed nodes (tagged karpenter.sh/nodepool, same cluster tag)
+        # Karpenter tags nodes with kubernetes.io/cluster/{name} but may use "" value
+        # instead of "owned"/"shared", so query separately without value constraint.
+        try:
+            _karp_response = ec2.describe_instances(
+                Filters=[
+                    {'Name': 'tag:karpenter.sh/nodepool', 'Values': ['*']},
+                    {'Name': f'tag:kubernetes.io/cluster/{cluster.name}', 'Values': ['*']},
+                    {'Name': 'instance-state-name', 'Values': ['running']},
+                ]
+            )
+            _karp_added = 0
+            for _kr in _karp_response.get('Reservations', []):
+                for _ki in _kr.get('Instances', []):
+                    _kiid = _ki['InstanceId']
+                    if _kiid not in aws_instance_map:
+                        aws_instance_map[_kiid] = {
+                            'lifecycle': _ki.get('InstanceLifecycle', 'on-demand'),
+                            'instance_type': _ki.get('InstanceType', ''),
+                            'az': (_ki.get('Placement') or {}).get('AvailabilityZone', ''),
+                            'private_ip': _ki.get('PrivateIpAddress', ''),
+                        }
+                        _karp_added += 1
+            if _karp_added:
+                logger.info(
+                    f"[aws_sync] Karpenter discovery: found {_karp_added} additional "
+                    f"Karpenter-managed instances for cluster {cluster.name}"
+                )
+        except Exception as _karp_err:
+            logger.debug(f"[aws_sync] Karpenter instance query failed: {_karp_err}")
         aws_lifecycle_map = aws_instance_map  # keep name for backward compat check below
 
         # Build set of instance_ids already in DB for this cluster (needed for both paths below)
@@ -591,7 +623,29 @@ def _sync_instance_state_from_aws(db: Session, cluster: Cluster):
                 )
             elif db_inst.instance_id in aws_running_truncated:
                 # EC2 is running in AWS — sync state.
-                if db_inst.state != 'running':
+                # Fix 14: Do NOT flip terminated→running if the rebalancer just
+                # terminated this instance.  AWS propagates the state change with a
+                # delay (1-10 s); during that window describe_instances still reports
+                # "running", so aws_sync would undo the rebalancer's DB write,
+                # causing the old OD node to re-enter the candidate list and trigger
+                # a SECOND replacement launch → permanent cluster growth.
+                # Guard: check Redis key set by the rebalancer immediately after
+                # calling terminate_instances (TTL 120 s, covers the AWS propagation lag).
+                _skip_state_reset = False
+                if db_inst.state == 'terminated':
+                    try:
+                        from backend.core.redis_client import get_redis_client as _grc_f14
+                        _r_f14 = _grc_f14()
+                        if _r_f14 and _r_f14.exists(f"spot:recently_terminated:{db_inst.instance_id}"):
+                            _skip_state_reset = True
+                            logger.info(
+                                f"[aws_sync] Fix14: {db_inst.instance_id} is terminated in DB "
+                                f"and recently_terminated key exists — NOT resetting to running "
+                                f"(AWS propagation delay)"
+                            )
+                    except Exception:
+                        _skip_state_reset = True  # safe default: don't overwrite
+                if not _skip_state_reset and db_inst.state != 'running':
                     db_inst.state = 'running'
                 # Only reset UNKNOWN→READY if the K8s collector has recently confirmed
                 # this node is in the cluster (fresh last_heartbeat within 10 min).
@@ -633,8 +687,14 @@ def _sync_instance_state_from_aws(db: Session, cluster: Cluster):
 # target instance type, and Karpenter provisions the replacement node.
 
 
-def execute_rebalancing_action(db: Session, action: RebalancingAction):
-        """Execute a single rebalancing action with full cross-system safety gates."""
+def execute_rebalancing_action(db: Session, action: RebalancingAction, _batch_lock_held: bool = False):
+        """Execute a single rebalancing action with full cross-system safety gates.
+        
+        Args:
+            _batch_lock_held: When True, the caller already holds the per-cluster
+                rebalance lock for a parallel batch. Skip lock acquisition/release
+                so all batch actions execute concurrently without deferring each other.
+        """
         from backend.core.redis_client import get_redis_client, key_cluster_cooldown, key_rebalance_lock
         from backend.services.cooldown_controller import CooldownController
         from backend.services.distributed_locks import distributed_lock
@@ -672,9 +732,21 @@ def execute_rebalancing_action(db: Session, action: RebalancingAction):
             # Fix: Set initial TTL to 2700s (45 min) and heartbeat every 60s.
             # NEW-3 fix: Exactly matches the 45-min stale action expiry — lock
             # cannot release before stale detection fires if heartbeat stops.
-            _lock_key = key_rebalance_lock(action.cluster_id)
-            _lock_acquired = _redis.set(_lock_key, str(action.id), nx=True, ex=2700)
-            if _lock_acquired:
+            #
+            # BATCH FIX: When _batch_lock_held=True, the caller (batch execution
+            # loop) already holds the cluster lock. Skip acquisition so all batch
+            # actions run in parallel without deferring each other.
+            if _batch_lock_held:
+                _lock_acquired = True  # caller owns the lock
+                _redis_release = _redis  # needed for cleanup helpers
+                logger.debug(
+                    f"[auto_rebalancer] Action {action.id}: batch lock held by caller — "
+                    f"skipping lock acquisition"
+                )
+            else:
+                _lock_key = key_rebalance_lock(action.cluster_id)
+                _lock_acquired = _redis.set(_lock_key, str(action.id), nx=True, ex=2700)
+            if _lock_acquired and not _batch_lock_held:
                 # Store refs so finally block can always release the lock
                 _lock_key_release = _lock_key
                 _redis_release = _redis
@@ -1170,13 +1242,31 @@ def execute_rebalancing_action(db: Session, action: RebalancingAction):
                                 _redis_kp_key = f"spot:karpenter:installed:{action.cluster_id}"
                                 _redis_kp_val = _redis.get(_redis_kp_key) if _redis else None
                                 if not _redis_kp_val:
-                                    _install_inflight = db.query(AgentAction).filter(
-                                        AgentAction.cluster_id == action.cluster_id,
-                                        AgentAction.action_type == AgentActionType.INSTALL_KARPENTER,
-                                        AgentAction.status.in_([_AAS_P1.PICKED_UP, _AAS_P1.PENDING]),
-                                    ).first()
-                                    if not _install_inflight:
-                                        _karpenter_installed = False
+                                    # ── Direct K8s Karpenter pod check (fallback) ──
+                                    # Agent heartbeats may not reach the backend, so the
+                                    # Redis key never gets refreshed. Check directly.
+                                    _k8s_karp_found = False
+                                    try:
+                                        from backend.services.karpenter_service import KarpenterService as _KS_kp
+                                        from backend.core.redis_client import get_redis_client as _grc_kp
+                                        _ks_kp = _KS_kp(db, _grc_kp())
+                                        _det_result = _ks_kp.detect_karpenter_in_cluster(
+                                            action.cluster_id, db
+                                        )
+                                        _k8s_karp_found = _det_result.get('detected', False)
+                                    except Exception as _k8s_kp_err:
+                                        logger.debug(
+                                            f"[auto_rebalancer] Direct Karpenter detection "
+                                            f"failed: {_k8s_kp_err}"
+                                        )
+                                    if not _k8s_karp_found:
+                                        _install_inflight = db.query(AgentAction).filter(
+                                            AgentAction.cluster_id == action.cluster_id,
+                                            AgentAction.action_type == AgentActionType.INSTALL_KARPENTER,
+                                            AgentAction.status.in_([_AAS_P1.PICKED_UP, _AAS_P1.PENDING]),
+                                        ).first()
+                                        if not _install_inflight:
+                                            _karpenter_installed = False
                         except Exception as _kp_check_err:
                             logger.warning(
                                 f"[auto_rebalancer] Phase 1: NodePool pre-check failed "
@@ -1190,10 +1280,147 @@ def execute_rebalancing_action(db: Session, action: RebalancingAction):
                         )
                         action.status = 'failed'
                         action.error_message = "Karpenter not installed — install Karpenter before rebalancing"
+                        action.completed_at = datetime.utcnow()
+                        action.duration_seconds = int((action.completed_at - action.started_at).total_seconds()) if action.started_at else 0
+                        # Clean up Redis locks so this instance isn't blocked for 24h
+                        try:
+                            _fail_meta_kp = dict(action.action_metadata or {})
+                            _cleanup_rebalancing_resources(
+                                action, _fail_meta_kp, _redis, db,
+                                decr_semaphore=True,
+                            )
+                        except Exception:
+                            pass
                         db.commit()
                         return
 
+                    # ── PRE-FLIGHT: Ensure Karpenter node role has EKS cluster access ──
+                    # Without this, Karpenter-provisioned nodes cannot join the K8s cluster
+                    # (they boot but immediately fail the bootstrap handshake).
+                    # The agent registers this during install_karpenter(), but it can fail
+                    # silently or be deleted.  Verify + auto-fix every Phase 1 run.
+                    _auth_check_key = f"spot:karpenter_auth_verified:{action.cluster_id}"
+                    _auth_cached = _redis.get(_auth_check_key) if _redis else None
+                    if not _auth_cached:
+                        try:
+                            import boto3 as _b3_auth
+                            from backend.utils.aws.asg import get_assumed_credentials as _gac_auth
+                            _auth_creds = _gac_auth(cluster, db)
+                            _auth_region = cluster.region or 'ap-south-1'
+                            _sts_auth = _b3_auth.client('sts', region_name=_auth_region, **_auth_creds)
+                            _auth_account_id = _sts_auth.get_caller_identity()['Account']
+                            _karp_role_arn = f"arn:aws:iam::{_auth_account_id}:role/KarpenterNodeRole-{cluster.name}"
+                            _eks_auth = _b3_auth.client('eks', region_name=_auth_region, **_auth_creds)
+
+                            # Check if EKS access entry exists for the Karpenter node role
+                            _access_entry_ok = False
+                            try:
+                                _eks_auth.describe_access_entry(
+                                    clusterName=cluster.name,
+                                    principalArn=_karp_role_arn
+                                )
+                                _access_entry_ok = True
+                                logger.debug(
+                                    f"[auto_rebalancer] EKS access entry verified for "
+                                    f"{_karp_role_arn}"
+                                )
+                            except _eks_auth.exceptions.ResourceNotFoundException:
+                                pass
+                            except Exception as _ae_desc_err:
+                                logger.debug(
+                                    f"[auto_rebalancer] EKS access entry check failed: "
+                                    f"{_ae_desc_err}"
+                                )
+
+                            if not _access_entry_ok:
+                                # Auto-fix: create EC2_LINUX access entry
+                                try:
+                                    _eks_auth.create_access_entry(
+                                        clusterName=cluster.name,
+                                        principalArn=_karp_role_arn,
+                                        type='EC2_LINUX'
+                                    )
+                                    _access_entry_ok = True
+                                    logger.info(
+                                        f"[auto_rebalancer] AUTO-FIX: Created EC2_LINUX "
+                                        f"access entry for {_karp_role_arn} — Karpenter "
+                                        f"nodes can now join the cluster"
+                                    )
+                                except Exception as _ae_create_err:
+                                    # Access entries API may be unavailable (older EKS or
+                                    # cluster authentication mode = CONFIG_MAP only).
+                                    # Fall back to checking/patching aws-auth ConfigMap.
+                                    logger.warning(
+                                        f"[auto_rebalancer] EKS access entry creation "
+                                        f"failed ({_ae_create_err}). "
+                                        f"Checking aws-auth ConfigMap fallback."
+                                    )
+                                    try:
+                                        from backend.services.karpenter_service import KarpenterService as _KS_AUTH
+                                        _ks_auth = _KS_AUTH(db, _redis)
+                                        _k8s_api_auth = _ks_auth._get_k8s_client(cluster)
+                                        from kubernetes import client as _k8s_auth_cl
+                                        _core_auth = _k8s_auth_cl.CoreV1Api(_k8s_api_auth)
+                                        _cm = _core_auth.read_namespaced_config_map(
+                                            'aws-auth', 'kube-system'
+                                        )
+                                        import yaml as _yaml_auth
+                                        _map_roles = _yaml_auth.safe_load(
+                                            _cm.data.get('mapRoles', '[]')
+                                        ) or []
+                                        _role_present = any(
+                                            _karp_role_arn in (r.get('rolearn', '') or '')
+                                            for r in _map_roles
+                                        )
+                                        if not _role_present:
+                                            _map_roles.append({
+                                                'rolearn': _karp_role_arn,
+                                                'username': 'system:node:{{EC2PrivateDNSName}}',
+                                                'groups': [
+                                                    'system:bootstrappers',
+                                                    'system:nodes',
+                                                ],
+                                            })
+                                            _cm.data['mapRoles'] = _yaml_auth.dump(
+                                                _map_roles, default_flow_style=False
+                                            )
+                                            _core_auth.replace_namespaced_config_map(
+                                                'aws-auth', 'kube-system', _cm
+                                            )
+                                            _access_entry_ok = True
+                                            logger.info(
+                                                f"[auto_rebalancer] AUTO-FIX: Patched "
+                                                f"aws-auth ConfigMap with {_karp_role_arn}"
+                                            )
+                                        else:
+                                            _access_entry_ok = True
+                                            logger.debug(
+                                                f"[auto_rebalancer] aws-auth ConfigMap "
+                                                f"already has {_karp_role_arn}"
+                                            )
+                                    except Exception as _cm_err:
+                                        logger.warning(
+                                            f"[auto_rebalancer] aws-auth ConfigMap "
+                                            f"fallback failed: {_cm_err}"
+                                        )
+
+                            if _access_entry_ok and _redis:
+                                # Cache verification for 1 hour to avoid repeated API calls
+                                _redis.setex(_auth_check_key, 3600, '1')
+                            elif not _access_entry_ok:
+                                logger.error(
+                                    f"[auto_rebalancer] CRITICAL: Cannot verify Karpenter "
+                                    f"node role access for {cluster.name}. Karpenter nodes "
+                                    f"may fail to join the cluster. Proceeding with warning."
+                                )
+                        except Exception as _auth_err:
+                            logger.warning(
+                                f"[auto_rebalancer] Karpenter auth pre-flight check "
+                                f"failed: {_auth_err}. Proceeding without verification."
+                            )
+
                     # Validate capacity via dry-run before updating NodePool
+                    # Enhancement 5: Parallel dry-runs — run uncached checks concurrently
                     try:
                         from backend.core.redis_client import get_redis_client as _grc_dr
                         from backend.utils.aws.dry_run import dry_run_pool as _dr_pool
@@ -1201,22 +1428,48 @@ def execute_rebalancing_action(db: Session, action: RebalancingAction):
                         _verified_types = []
                         _dr_region = cluster.region or "ap-south-1"
                         _dr_max_checks = 5
-                        _dr_api_calls = 0
+
+                        # Separate cached hits from uncached types
+                        _dr_uncached = []
                         for _lt in ml_instance_types:
                             _dr_key = f"dry_run:{_lt}:{target_az}"
                             _dr_cached = _dr_redis.get(_dr_key)
                             if _dr_cached:
                                 _dr_val = _dr_cached.decode() if isinstance(_dr_cached, bytes) else _dr_cached
-                                if _dr_val == "fail":
-                                    continue
-                                _verified_types.append(_lt)
+                                if _dr_val != "fail":
+                                    _verified_types.append(_lt)
                             else:
-                                if _dr_api_calls >= _dr_max_checks:
-                                    _verified_types.append(_lt)
-                                    continue
-                                _dr_api_calls += 1
-                                if _dr_pool(region=_dr_region, instance_type=_lt, az=target_az, redis=_dr_redis):
-                                    _verified_types.append(_lt)
+                                _dr_uncached.append(_lt)
+
+                        # Run uncached dry-runs in parallel (boto3 is thread-safe per-client)
+                        if _dr_uncached:
+                            _dr_uncached = _dr_uncached[:_dr_max_checks]
+                            from concurrent.futures import ThreadPoolExecutor as _TPE_DR, as_completed as _as_completed_dr
+                            def _dr_check(itype):
+                                return itype, _dr_pool(region=_dr_region, instance_type=itype, az=target_az, redis=_dr_redis)
+                            with _TPE_DR(max_workers=min(5, len(_dr_uncached))) as _dr_executor:
+                                _dr_futures = [_dr_executor.submit(_dr_check, t) for t in _dr_uncached]
+                                for _dr_f in _as_completed_dr(_dr_futures):
+                                    try:
+                                        _dr_t, _dr_ok = _dr_f.result()
+                                        if _dr_ok:
+                                            _verified_types.append(_dr_t)
+                                    except Exception:
+                                        pass
+                            # Pass through any uncached types beyond _dr_max_checks (benefit of doubt)
+                            _dr_checked_set = set(_dr_uncached)
+                            for _lt in ml_instance_types:
+                                if _lt not in _dr_checked_set:
+                                    _dr_key2 = f"dry_run:{_lt}:{target_az}"
+                                    _dr_cached2 = _dr_redis.get(_dr_key2)
+                                    if _dr_cached2:
+                                        _dr_val2 = _dr_cached2.decode() if isinstance(_dr_cached2, bytes) else _dr_cached2
+                                        if _dr_val2 != "fail" and _lt not in _verified_types:
+                                            _verified_types.append(_lt)
+                                    elif _lt not in _verified_types:
+                                        # Unchecked (beyond cap) — benefit of doubt
+                                        _verified_types.append(_lt)
+
                         if _verified_types:
                             ml_instance_types = _verified_types
                         else:
@@ -1228,42 +1481,83 @@ def execute_rebalancing_action(db: Session, action: RebalancingAction):
                         logger.warning(f"[auto_rebalancer] Dry run pre-check failed ({_dr_err}) — proceeding")
 
                     # Update Karpenter NodePool directly via K8s API
+                    # ONLY inject types into the 'default' NodePool — NOT all spot NodePools.
+                    # Injecting into 'stateless-spot' (or other secondary pools) causes
+                    # Karpenter to provision unplanned nodes (e.g. c5.large) when pods
+                    # become Pending during drain, because the secondary pool has broader
+                    # types and satisfies the scheduler demand independently.
                     _nodepool_updated = False
+                    _target_nodepool_name = 'default'
+                    _patched_nodepool_names = []
+                    _added_types = []
                     try:
                         from backend.services.karpenter_service import KarpenterService
                         _karp_svc = KarpenterService(db, _redis)
-                        for _kp_itype in ml_instance_types[:8]:
+                        # Ensure the trigger pod's target type is ALWAYS in the list.
+                        # The trigger pod uses target_instance_type from action.target_pool,
+                        # but the ML-ranked list may exclude it (e.g. dry-run filtered it).
+                        # If it's not in the NodePool, the trigger pod gets FailedScheduling.
+                        _types_to_patch = list(dict.fromkeys(
+                            [target_instance_type] + ml_instance_types[:8]
+                        )) if target_instance_type else ml_instance_types[:8]
+                        for _kp_itype in _types_to_patch:
                             _kp_result = _karp_svc.add_allowed_instance_type(
                                 cluster_id=action.cluster_id,
                                 instance_type=_kp_itype,
+                                nodepool_name=_target_nodepool_name,
                             )
                             if _kp_result:
                                 _nodepool_updated = True
-                                logger.info(
-                                    f"[auto_rebalancer] Phase 1: Updated NodePool with {_kp_itype} "
-                                    f"for cluster {cluster.name}"
-                                )
-                                break
+                                if _target_nodepool_name not in _patched_nodepool_names:
+                                    _patched_nodepool_names.append(_target_nodepool_name)
+                                _added_types.append(_kp_itype)
                             else:
                                 logger.warning(
-                                    f"[auto_rebalancer] Phase 1: Failed to add {_kp_itype} to NodePool, "
-                                    f"trying next candidate"
+                                    f"[auto_rebalancer] Phase 1: Failed to add {_kp_itype} to NodePool {_target_nodepool_name}"
                                 )
+                        if _added_types:
+                            logger.info(
+                                f"[auto_rebalancer] Phase 1: Added {len(_added_types)} ML-ranked types "
+                                f"{_added_types} to NodePool '{_target_nodepool_name}' "
+                                f"for cluster {cluster.name}"
+                            )
                     except Exception as _kp_err:
                         logger.error(f"[auto_rebalancer] Phase 1: NodePool update failed: {_kp_err}")
 
                     if not _nodepool_updated:
+                        # Enhancement 8: Non-blocking retry — defer instead of fail
+                        # so the next Celery cycle retries the PATCH (max 3 attempts).
+                        _np_retry = int((action.action_metadata or {}).get('nodepool_patch_retries', 0))
+                        if _np_retry < 3:
+                            _np_meta = dict(action.action_metadata or {})
+                            _np_meta['nodepool_patch_retries'] = _np_retry + 1
+                            action.action_metadata = _np_meta
+                            action.status = 'deferred'
+                            action.error_message = (
+                                f"NodePool PATCH failed (attempt {_np_retry + 1}/3) — retrying next cycle"
+                            )
+                            logger.warning(
+                                f"[auto_rebalancer] Phase 1: NodePool PATCH deferred "
+                                f"(attempt {_np_retry + 1}/3) for action {action.id}"
+                            )
+                            db.commit()
+                            return
                         action.status = 'failed'
                         action.error_message = (
-                            f"Failed to update Karpenter NodePool with any of {ml_instance_types[:3]}"
+                            f"Failed to update Karpenter NodePool with any of {ml_instance_types[:3]} "
+                            f"after 3 attempts"
                         )
                         db.commit()
                         return
 
                     # Store metadata for Phase 2 tracking
                     _meta_update_p1 = dict(action.action_metadata or {})
+                    _meta_update_p1.pop('nodepool_patch_retries', None)  # E8: clear retry counter
+                    _meta_update_p1.pop('nodepool_patch_failed', None)   # E8: clear stale failed flag
                     _meta_update_p1['karpenter_nodepool_updated'] = True
                     _meta_update_p1['karpenter_target_types'] = ml_instance_types[:8]
+                    _meta_update_p1['karpenter_nodepool_name'] = _patched_nodepool_names[0] if _patched_nodepool_names else "default"
+                    _meta_update_p1['karpenter_patched_nodepools'] = _patched_nodepool_names
                     _meta_update_p1['phase1_completed_at'] = datetime.utcnow().isoformat()
                     _meta_update_p1['phase2_params'] = {
                         'instance_id': instance_id_for_action,
@@ -1279,13 +1573,9 @@ def execute_rebalancing_action(db: Session, action: RebalancingAction):
                         f"Source: {source_instance_type}:{source_az}"
                     )
 
-                    # Set 24h cooldown on this instance
-                    if instance_id_for_action:
-                        try:
-                            _cooldown_key = f"spot:rebalanced:instance:{instance_id_for_action}"
-                            _redis.setex(_cooldown_key, 86400, "1")
-                        except Exception as _cd_err:
-                            logger.warning(f"[auto_rebalancer] Failed to set instance cooldown: {_cd_err}")
+                    # NOTE: 24h cooldown key is now set at COMPLETION (Phase 2 done),
+                    # not here at Phase 1.  Setting it early blocked other OD instances
+                    # from being batched in the same cycle if the action was slow or failed.
 
             except RuntimeError as lock_err:
                 logger.warning(f"[auto_rebalancer] Action {action.id} deferred: lock contention — {lock_err}")
@@ -1324,15 +1614,126 @@ def execute_rebalancing_action(db: Session, action: RebalancingAction):
             # Phase 2 trigger uses this to detect that a NEW spot node joined —
             # not just any pre-existing spot instance from a concurrent rebalance.
             try:
-                _spot_baseline = db.query(Instance).filter(
+                _baseline_spots = db.query(Instance).filter(
                     Instance.cluster_id == action.cluster_id,
                     Instance.lifecycle == InstanceLifecycle.SPOT,
                     Instance.state == 'running',
-                ).count()
+                ).all()
+                _spot_baseline = len(_baseline_spots)
                 _meta_update['spot_baseline_count'] = _spot_baseline
+                # Fix #2: Store baseline spot instance IDs for set-diff detection
+                # when baseline=0 the count-based gate is ambiguous.
+                _meta_update['baseline_spot_instance_ids'] = [
+                    s.instance_id for s in _baseline_spots if s.instance_id
+                ]
             except Exception:
                 _meta_update['spot_baseline_count'] = 0
+                _meta_update['baseline_spot_instance_ids'] = []
             action.action_metadata = _meta_update
+
+            # ── Enhancement 3: Create trigger pod at end of Phase 1 ────────
+            # Instead of waiting for the next Celery cycle (15s) to create the trigger
+            # pod in Step 0 of the wait loop, create it now — saves one Celery tick.
+            # The 10s NodePool propagation delay (Enhancement 2) already elapsed:
+            # NodePool PATCH + read-back verification + metadata save takes ~5-15s.
+            try:
+                from backend.services.karpenter_service import KarpenterService as _KS_P1TRIG
+                _ks_p1 = _KS_P1TRIG(db, get_redis_client())
+                _p1_trig_name = f"spot-trigger-{action.id}"
+                _p1_trig_type = ""
+                if action.target_pool and ':' in action.target_pool:
+                    _p1_trig_type = action.target_pool.split(':')[0]
+                elif action.target_pool:
+                    _p1_trig_type = action.target_pool
+
+                # Label existing nodes so trigger pod stays Pending
+                _p1_existing = []
+                try:
+                    _p1_cluster = db.query(Cluster).filter(Cluster.id == action.cluster_id).first()
+                    if _p1_cluster:
+                        _p1_k8s = _ks_p1._get_k8s_client(_p1_cluster)
+                        from kubernetes import client as _k8s_p1c
+                        _p1_core = _k8s_p1c.CoreV1Api(_p1_k8s)
+                        _p1_nodes = _p1_core.list_node().items
+                        _p1_existing = [n.metadata.name for n in _p1_nodes]
+                        _p1_label = {"metadata": {"labels": {"spot-optimizer.io/existing-node": "true"}}}
+                        from concurrent.futures import ThreadPoolExecutor as _TPE_P1
+                        def _label_node_p1(node_name):
+                            try:
+                                _p1_core.patch_node(node_name, _p1_label)
+                            except Exception:
+                                pass
+                        with _TPE_P1(max_workers=10) as _pool_p1:
+                            list(_pool_p1.map(_label_node_p1, _p1_existing))
+                        logger.info(
+                            f"[auto_rebalancer] Phase 1 trigger: labelled {len(_p1_existing)} "
+                            f"existing nodes"
+                        )
+                except Exception as _p1_label_err:
+                    logger.warning(f"[auto_rebalancer] Phase 1 trigger: node labelling error: {_p1_label_err}")
+
+                # Workload-aware sizing (same as wait loop)
+                _p1_cpu = "100m"
+                _p1_mem = "128Mi"
+                try:
+                    _p1_src_id = _meta_update.get("instance_id", "") or (action.source_instance_id or "")
+                    if _p1_src_id:
+                        _p1_src = db.query(Instance).filter(Instance.instance_id == _p1_src_id).first()
+                        _p1_node = _p1_src.node_name if _p1_src else None
+                        if _p1_node:
+                            from backend.models.pod_metric import PodMetric as _PM_P1
+                            from sqlalchemy import func as _sqla_p1
+                            _p1_ts = db.query(_sqla_p1.max(_PM_P1.timestamp)).filter(
+                                _PM_P1.cluster_id == action.cluster_id,
+                                _PM_P1.node_name == _p1_node,
+                            ).scalar()
+                            if _p1_ts:
+                                _p1_pods = db.query(
+                                    _sqla_p1.coalesce(_sqla_p1.sum(_PM_P1.cpu_request_millicores), 0),
+                                    _sqla_p1.coalesce(_sqla_p1.sum(_PM_P1.memory_request_bytes), 0),
+                                ).filter(
+                                    _PM_P1.cluster_id == action.cluster_id,
+                                    _PM_P1.node_name == _p1_node,
+                                    _PM_P1.timestamp == _p1_ts,
+                                    _sqla_p1.coalesce(_PM_P1.controller_kind, '') != 'DaemonSet',
+                                ).first()
+                                if _p1_pods:
+                                    _cpu_m = max(int(int(_p1_pods[0] or 0) * 1.1), 100)
+                                    _mem_mi = max(int((int(_p1_pods[1] or 0) * 1.1) / (1024 * 1024)), 128)
+                                    _p1_cpu = f"{_cpu_m}m"
+                                    _p1_mem = f"{_mem_mi}Mi"
+                except Exception:
+                    pass
+
+                _p1_nodepool = _meta_update.get('karpenter_nodepool_name', 'default')
+                _p1_result = _ks_p1.create_spot_trigger_pod(
+                    cluster_id=action.cluster_id,
+                    pod_name=_p1_trig_name,
+                    target_instance_type=_p1_trig_type,
+                    nodepool_name=_p1_nodepool,
+                    exclude_nodes=_p1_existing,
+                    cpu_request=_p1_cpu,
+                    memory_request=_p1_mem,
+                )
+                if _p1_result:
+                    _meta_update['trigger_pod_created'] = True
+                    _meta_update['trigger_pod_name'] = _p1_trig_name
+                    _meta_update['trigger_pod_instance_type'] = _p1_trig_type
+                    _meta_update['trigger_cpu'] = _p1_cpu
+                    _meta_update['trigger_mem'] = _p1_mem
+                    action.action_metadata = _meta_update
+                    logger.info(
+                        f"[auto_rebalancer] Phase 1: Created trigger pod '{_p1_trig_name}' "
+                        f"immediately (nodepool={_p1_nodepool}, type={_p1_trig_type})"
+                    )
+                else:
+                    logger.warning(
+                        f"[auto_rebalancer] Phase 1: Trigger pod creation failed — "
+                        f"will retry in wait loop"
+                    )
+            except Exception as _p1_trig_err:
+                logger.warning(f"[auto_rebalancer] Phase 1 trigger pod error: {_p1_trig_err}")
+
             db.commit()
 
             logger.info(
@@ -1346,14 +1747,16 @@ def execute_rebalancing_action(db: Session, action: RebalancingAction):
             action.completed_at = datetime.utcnow()
             action.duration_seconds = int((action.completed_at - action.started_at).total_seconds()) if action.started_at else 0
             action.error_message = str(e)
-            # Release semaphore on failure — prevent stale counter from blocking future actions
+            # Fix: Full resource cleanup on Phase 1 exception — prevents stale Redis
+            # keys (node_active_action, active_count) from blocking future actions.
             try:
                 from backend.core.redis_client import get_redis_client as _grc_sem_fail
                 _sem_fail_redis = _grc_sem_fail()
-                _sem_fail_key = f"rebalance:active_count:{action.cluster_id}"
-                _sem_new = _sem_fail_redis.decr(_sem_fail_key)
-                if _sem_new < 0:
-                    _sem_fail_redis.set(_sem_fail_key, 0, ex=300)
+                _fail_meta_cleanup = dict(action.action_metadata or {})
+                _cleanup_rebalancing_resources(
+                    action, _fail_meta_cleanup, _sem_fail_redis, db,
+                    decr_semaphore=True,
+                )
             except Exception:
                 pass
             # Problem #3/#9: On generic failure, terminate any orphaned replacement spot
@@ -1388,6 +1791,21 @@ def execute_rebalancing_action(db: Session, action: RebalancingAction):
                     _cur_str = _cur_val.decode() if isinstance(_cur_val, bytes) else str(_cur_val or "")
                     if _cur_str == str(action.id):
                         _redis_release.delete(_lock_key_release)
+                except Exception:
+                    pass
+            # Fix: On deferred/failed early exit, release node_active_action lock and
+            # DECR semaphore so the instance isn't blocked for 24h. The except block
+            # already handles crash failures; this covers deferred early returns.
+            # _cleanup_rebalancing_resources is idempotent so double-call is safe.
+            if action.status in ('deferred', 'failed'):
+                try:
+                    from backend.core.redis_client import get_redis_client as _grc_defer
+                    _defer_redis = _redis_release or _grc_defer()
+                    _defer_meta = dict(action.action_metadata or {})
+                    _cleanup_rebalancing_resources(
+                        action, _defer_meta, _defer_redis, db,
+                        decr_semaphore=True,
+                    )
                 except Exception:
                     pass
 
@@ -1743,6 +2161,122 @@ def _do_rollback_terminate_orphan_spot(wa, wa_meta, db):
         logger.warning(f"[rollback] Orphan spot terminate failed (action {wa.id}): {_e}")
 
 
+# ── Idempotent cleanup for failed/completed rebalancing actions ───────────────
+# Cleans ALL Redis keys, trigger pods, and cancels orphaned PENDING agent actions.
+# Safe to call multiple times — every operation is idempotent.
+
+def _cleanup_rebalancing_resources(wa, wa_meta, redis_client, db, *, decr_semaphore=True):
+    """Clean up stale Redis keys, trigger pods, and PENDING agent actions.
+
+    Must be called on EVERY exit path (fail or complete) to prevent:
+      - spot:node_active_action stuck for 24h (blocks next rebalancing)
+      - rebalance:active_count stuck >0 (blocks concurrent actions)
+      - Orphan trigger pods wasting cluster resources
+      - Orphan PENDING agent actions never executed
+    """
+    _inst_id = wa_meta.get("instance_id", "") or (getattr(wa, 'source_instance_id', None) or "")
+
+    # 1. Delete per-node active action lock (24h TTL safety net, but explicit is better)
+    if _inst_id and redis_client:
+        try:
+            redis_client.delete(f"spot:node_active_action:{_inst_id}")
+        except Exception:
+            pass
+
+    # 2. DECR concurrent action semaphore (floor at 0)
+    if decr_semaphore and redis_client:
+        try:
+            _sem_key = f"rebalance:active_count:{wa.cluster_id}"
+            _new_val = redis_client.decr(_sem_key)
+            if _new_val < 0:
+                redis_client.set(_sem_key, 0, ex=300)
+        except Exception:
+            pass
+
+    # 3. Clean up trigger pod if one was created (Karpenter mode)
+    # Always try to delete the trigger pod — derive name from action ID as fallback
+    # to prevent orphaned pending pods that Karpenter may later satisfy with random types.
+    _trig_name = wa_meta.get('trigger_pod_name') or f"spot-trigger-{wa.id}"
+    try:
+        from backend.services.karpenter_service import KarpenterService as _KS_CLN
+        _ks = _KS_CLN(db, redis_client)
+        _ks.delete_spot_trigger_pod(cluster_id=wa.cluster_id, pod_name=_trig_name)
+        logger.info(f"[cleanup] Deleted trigger pod '{_trig_name}' for action {wa.id}")
+    except Exception:
+        pass
+
+    # 4. Cancel any remaining PENDING agent actions for this rebalancing action
+    try:
+        from backend.models.agent_action import AgentAction as _AA_CLN, AgentActionStatus as _AAS_CLN
+        from sqlalchemy import or_ as _or_cln
+        _cancelled = db.query(_AA_CLN).filter(
+            _or_cln(
+                _AA_CLN.payload.contains({"rebalancing_action_id": wa.id}),
+                _AA_CLN.payload.contains({"rebalancing_action_id": str(wa.id)}),
+            ),
+            _AA_CLN.status == _AAS_CLN.PENDING,
+        ).update(
+            {"status": "FAILED", "error_message": f"Cancelled: parent action {wa.id} {wa.status}"},
+            synchronize_session=False,
+        )
+        if _cancelled:
+            logger.info(f"[cleanup] Cancelled {_cancelled} PENDING agent actions for action {wa.id}")
+    except Exception:
+        pass
+
+    # 5. KEEP replacement-instance claim alive (do NOT delete) so other actions in the
+    #    same batch cannot reuse the same physical spot via time-based/stagnation fallback.
+    #    The Redis key (TTL 1h) expires naturally long after the batch finishes.
+    _repl_inst = wa_meta.get('replacement_spot_instance_id')
+    if _repl_inst and redis_client:
+        try:
+            _claim_key = f"spot:replacement_claimed:{_repl_inst}"
+            _owner = redis_client.get(_claim_key)
+            _owner_str = _owner.decode() if isinstance(_owner, bytes) else str(_owner) if _owner else ""
+            if _owner_str == str(wa.id):
+                logger.info(f"[cleanup] Retained replacement claim on {_repl_inst} for action {wa.id} (prevents reuse by concurrent actions)")
+        except Exception:
+            pass
+
+    # 6. Immediate NodePool rollback: proactively remove the instance types that
+    #    Phase 1 injected into the NodePool, then clear the 30-min sync cooldown.
+    #    Without this, Karpenter can see the orphan types in the NodePool and
+    #    provision unintended instances for normal scaling events during the
+    #    window before the next background sync beat.
+    _kp_target_types = wa_meta.get('karpenter_target_types', [])
+    _kp_patched_nps = wa_meta.get('karpenter_patched_nodepools', []) or [wa_meta.get('karpenter_nodepool_name', 'default')]
+    if _kp_target_types and db:
+        try:
+            from backend.services.karpenter_service import KarpenterService as _KS_ROLL
+            _ks_roll = _KS_ROLL(db, redis_client)
+            for _rm_type in _kp_target_types:
+                for _rm_np in _kp_patched_nps:
+                    try:
+                        _ks_roll.remove_allowed_instance_type(
+                            cluster_id=wa.cluster_id,
+                            instance_type=_rm_type,
+                            nodepool_name=_rm_np,
+                        )
+                    except Exception:
+                        pass  # best-effort per type per nodepool
+            logger.info(
+                f"[cleanup] Removed {len(_kp_target_types)} Phase-1 injected types "
+                f"from NodePool(s) {_kp_patched_nps} for action {wa.id}: {_kp_target_types[:3]}"
+            )
+        except Exception as _roll_err:
+            logger.warning(f"[cleanup] NodePool type removal failed for action {wa.id}: {_roll_err}")
+    if redis_client:
+        try:
+            _np_cooldown_key = f"spot:karpenter:nodepool_updated:{wa.cluster_id}"
+            redis_client.delete(_np_cooldown_key)
+            logger.info(
+                f"[cleanup] Cleared NodePool sync cooldown for cluster {wa.cluster_id} "
+                f"— background sync will restore ML-ranked types on next beat"
+            )
+        except Exception:
+            pass
+
+
 # ── Issue 6: Skip streak helpers ─────────────────────────────────────────────
 # Track consecutive skips per cluster within a 5-minute window. Emits a warning
 # if a cluster is skipped 20+ times (≈5 min) to detect stalled system states.
@@ -1778,6 +2312,113 @@ def _record_active(redis, cluster_id: str):
 
 # Celery task registration
 from backend.workers.app import app
+
+
+@app.task(name='workers.rebalancer_reconciliation')
+def reconcile_stuck_actions():
+    """Fix 16: Periodic reconciliation task (runs every 5 min via Celery beat).
+
+    Detects and resolves actions stuck in intermediate states:
+    - waiting_for_spot_node > 35 min with no spot detected → fail
+    - cordoning_node/draining_pods > 25 min with no agent heartbeat → fail
+    - Actions where source EC2 is already terminated → auto-complete
+    """
+    db = next(get_db())
+    try:
+        from backend.core.redis_client import get_redis_client as _grc_rec
+        _redis = _grc_rec()
+
+        # Find actions in intermediate states that might be stuck
+        _stuck_cutoff = datetime.utcnow() - timedelta(minutes=35)
+        _stuck_actions = db.query(RebalancingAction).filter(
+            RebalancingAction.status.in_(['in_progress', 'waiting_agent']),
+            RebalancingAction.started_at < _stuck_cutoff,
+        ).all()
+
+        _resolved = 0
+        for _action in _stuck_actions:
+            _meta = dict(_action.action_metadata or {})
+            _inst_id = _meta.get('instance_id', '') or (_action.source_instance_id or '')
+            _cur_step = _meta.get('current_step', '')
+
+            # Check if source EC2 is already terminated in DB
+            if _inst_id:
+                _src = db.query(Instance).filter(
+                    Instance.instance_id == _inst_id
+                ).first()
+                if _src and _src.state == 'terminated':
+                    logger.info(
+                        f"[reconciliation] Action {_action.id}: source {_inst_id[:12]} "
+                        f"already terminated in DB — auto-completing"
+                    )
+                    _action.status = 'completed'
+                    _action.completed_at = datetime.utcnow()
+                    _action.duration_seconds = int(
+                        (_action.completed_at - _action.started_at).total_seconds()
+                    ) if _action.started_at else 0
+                    _meta['current_step'] = 'completed'
+                    _meta['reconciliation_auto_completed'] = True
+                    _action.action_metadata = _meta
+                    # Clean up resources
+                    try:
+                        _cleanup_rebalancing_resources(_action, _meta, _redis, db)
+                    except Exception:
+                        pass
+                    _resolved += 1
+                    continue
+
+            # Clear stale locks for truly stuck actions (>45 min)
+            _elapsed_min = int(
+                (datetime.utcnow() - _action.started_at).total_seconds() / 60
+            ) if _action.started_at else 0
+            if _elapsed_min > 45 and _inst_id and _redis:
+                try:
+                    _redis.delete(f"spot:node_active_action:{_inst_id}")
+                    logger.info(
+                        f"[reconciliation] Cleared stale node_active_action lock "
+                        f"for {_inst_id[:12]} (action {_action.id}, stuck {_elapsed_min}min)"
+                    )
+                except Exception:
+                    pass
+
+        if _resolved:
+            db.commit()
+            logger.info(f"[reconciliation] Resolved {_resolved} stuck action(s)")
+
+        # ── ORPHAN TRIGGER POD SWEEP ──────────────────────────────────────
+        # Find failed/completed/deferred actions whose trigger pods were never
+        # cleaned up (e.g. because AGENT_WENT_OFFLINE path skipped cleanup).
+        # Uses action ID naming convention: trigger pod = spot-trigger-{action_id}.
+        try:
+            _orphan_cutoff = datetime.utcnow() - timedelta(minutes=10)
+            _terminal_with_pods = db.query(RebalancingAction).filter(
+                RebalancingAction.status.in_(['failed', 'completed', 'deferred']),
+                RebalancingAction.started_at >= datetime.utcnow() - timedelta(hours=24),
+            ).all()
+            _cleaned_pods = 0
+            for _oa in _terminal_with_pods:
+                _oa_meta = dict(_oa.action_metadata or {})
+                _pod_name = _oa_meta.get('trigger_pod_name') or f"spot-trigger-{_oa.id}"
+                try:
+                    from backend.services.karpenter_service import KarpenterService as _KS_SWEEP
+                    _ks_sweep = _KS_SWEEP(db, _redis)
+                    _deleted = _ks_sweep.delete_spot_trigger_pod(
+                        cluster_id=_oa.cluster_id, pod_name=_pod_name
+                    )
+                    if _deleted:
+                        _cleaned_pods += 1
+                except Exception:
+                    pass
+            if _cleaned_pods:
+                logger.info(
+                    f"[reconciliation] Cleaned up {_cleaned_pods} orphan trigger pod(s)"
+                )
+        except Exception as _sweep_pod_err:
+            logger.debug(f"[reconciliation] Trigger pod sweep failed: {_sweep_pod_err}")
+    except Exception as e:
+        logger.warning(f"[reconciliation] Reconciliation task failed: {e}")
+    finally:
+        db.close()
 
 @app.task(name='workers.auto_rebalancer')
 def execute_rebalancing():
@@ -1934,7 +2575,31 @@ def execute_rebalancing():
         # Step 0: Resolve waiting_agent actions whose AgentActions have all finished.
         # An action stays 'waiting_agent' until PATCH_NODEPOOL → CORDON → DRAIN → TERMINATE
         # all complete on the agent. This prevents UI showing "completed" prematurely.
-        from backend.models.agent_action import AgentAction as _AA0, AgentActionStatus as _AAS0
+        from backend.models.agent_action import AgentAction as _AA0, AgentActionStatus as _AAS0, AgentActionType as _AAT0
+
+        # ── Stale-resource sweeper ──────────────────────────────────────────
+        # Safety net: Find actions that reached a terminal state (failed/completed/
+        # deferred) but still have spot:node_active_action locks in Redis.
+        # This catches leaks from OOM kills, signal-9, or code paths added later
+        # that forget to call _cleanup_rebalancing_resources().
+        try:
+            _terminal_recent = db.query(RebalancingAction).filter(
+                RebalancingAction.status.in_(['failed', 'deferred']),
+                RebalancingAction.completed_at >= (datetime.utcnow() - timedelta(hours=24)),
+            ).all()
+            for _tr in _terminal_recent:
+                _tr_inst = _tr.source_instance_id or ((_tr.action_metadata or {}).get("instance_id", ""))
+                if _tr_inst and _redis:
+                    _tr_lock = _redis.get(f"spot:node_active_action:{_tr_inst}")
+                    if _tr_lock:
+                        _redis.delete(f"spot:node_active_action:{_tr_inst}")
+                        logger.info(
+                            f"[sweeper] Cleared stale node_active_action lock for "
+                            f"{_tr_inst} (action {_tr.id} is {_tr.status})"
+                        )
+        except Exception as _sweep_err:
+            logger.debug(f"[sweeper] Stale lock sweep failed: {_sweep_err}")
+
         waiting_actions = db.query(RebalancingAction).filter(
             RebalancingAction.status == 'waiting_agent'
         ).all()
@@ -1946,7 +2611,7 @@ def execute_rebalancing():
                 except Exception:
                     pass
                 _still_pending = db.query(_AA0).filter(
-                    _AA0.payload.contains({"rebalancing_action_id": _wa.id}),
+                    _AA0.payload.contains({"rebalancing_action_id": str(_wa.id)}),
                     _AA0.status.in_([_AAS0.PENDING, _AAS0.PICKED_UP])
                 ).count()
                 if _still_pending > 0:
@@ -1955,6 +2620,7 @@ def execute_rebalancing():
                     from backend.models.agent_action import AgentActionType as _AAT0
                     # step_1 (Karpenter NodePool update) is done directly in Phase 1,
                     # not via agent action — timestamp stored in action_metadata.
+                    # Verification: add_allowed_instance_type now does read-back check.
                     if 'karpenter_nodepool_updated' in _wa_meta_live and 'step_1_spot_provisioning' not in _wa_meta_live:
                         _wa_meta_live['step_1_spot_provisioning'] = _wa_meta_live.get('phase1_completed_at', _wa.started_at.isoformat() if _wa.started_at else datetime.utcnow().isoformat())
                     for _sname, _stype in [
@@ -1963,12 +2629,25 @@ def execute_rebalancing():
                     ]:
                         if _sname not in _wa_meta_live:
                             _sa = db.query(_AA0).filter(
-                                _AA0.payload.contains({"rebalancing_action_id": _wa.id}),
+                                _AA0.payload.contains({"rebalancing_action_id": str(_wa.id)}),
                                 _AA0.action_type == _stype,
                                 _AA0.status == _AAS0.COMPLETED,
                             ).first()
                             if _sa and _sa.completed_at:
-                                _wa_meta_live[_sname] = _sa.completed_at.isoformat()
+                                # Only set step timestamp if agent verified the action
+                                _sa_result = _sa.result or {}
+                                _sa_verified = _sa_result.get('verified', False)
+                                if _sa_verified:
+                                    _wa_meta_live[_sname] = _sa.completed_at.isoformat()
+                                    _wa_meta_live[f'{_sname}_verified'] = True
+                                else:
+                                    # Agent completed but didn't verify — still mark but flag
+                                    _wa_meta_live[_sname] = _sa.completed_at.isoformat()
+                                    _wa_meta_live[f'{_sname}_verified'] = False
+                                    logger.warning(
+                                        f"[auto_rebalancer] Action {_wa.id}: {_sname} completed "
+                                        f"but agent verification={_sa_verified} (result={_sa_result})"
+                                    )
                     # Determine current_step from what's done so far
                     if 'step_3_draining_pods' in _wa_meta_live:
                         _wa_meta_live['current_step'] = 'waiting_for_spot_node'
@@ -1980,11 +2659,192 @@ def execute_rebalancing():
                         _wa_meta_live['current_step'] = 'provisioning_spot_pool'
                     _wa.action_metadata = _wa_meta_live
                     db.commit()
-                    continue  # Agent still working — leave as waiting_agent
+
+                    # ── BACKEND-SIDE CORDON/DRAIN BYPASS ──────────────────────
+                    # Safety-net fallback: if inline CORDON+DRAIN at Phase 2
+                    # creation failed and the agent hasn't picked up after 15s,
+                    # execute directly from backend K8s API.
+                    _AGENT_TIMEOUT_S = 15
+                    _pending_cordon = db.query(_AA0).filter(
+                        _AA0.payload.contains({"rebalancing_action_id": str(_wa.id)}),
+                        _AA0.action_type == _AAT0.CORDON_NODE,
+                        _AA0.status == _AAS0.PENDING,
+                    ).first()
+                    _pending_drain = db.query(_AA0).filter(
+                        _AA0.payload.contains({"rebalancing_action_id": str(_wa.id)}),
+                        _AA0.action_type == _AAT0.DRAIN_NODE,
+                        _AA0.status == _AAS0.PENDING,
+                    ).first()
+                    # Use the CORDON action's created_at as the reference timestamp
+                    _oldest_pending = _pending_cordon or _pending_drain
+                    _p2_elapsed = 0
+                    if _oldest_pending and _oldest_pending.created_at:
+                        _p2_elapsed = (datetime.utcnow() - _oldest_pending.created_at).total_seconds()
+                    if _p2_elapsed >= _AGENT_TIMEOUT_S and (_pending_cordon or _pending_drain):
+                                logger.warning(
+                                    f"[auto_rebalancer] Action {_wa.id}: Agent actions PENDING "
+                                    f"for {int(_p2_elapsed)}s — executing cordon/drain directly "
+                                    f"from backend via K8s API"
+                                )
+                                try:
+                                    from backend.services.karpenter_service import KarpenterService as _KS_CD
+                                    from kubernetes import client as _k8s_cd
+                                    _ks_cd = _KS_CD(db, _redis)
+                                    _wa_cluster_cd = db.query(Cluster).filter(Cluster.id == _wa.cluster_id).first()
+                                    if _wa_cluster_cd:
+                                        _k8s_api_cd = _ks_cd._get_k8s_client(_wa_cluster_cd)
+                                        _core_cd = _k8s_cd.CoreV1Api(_k8s_api_cd)
+
+                                        _cd_node_name = None
+                                        if _pending_cordon:
+                                            _cd_node_name = (_pending_cordon.payload or {}).get('node_name')
+                                        elif _pending_drain:
+                                            _cd_node_name = (_pending_drain.payload or {}).get('node_name')
+
+                                        if _cd_node_name:
+                                            # ── CORDON: mark node unschedulable ──
+                                            if _pending_cordon:
+                                                try:
+                                                    _core_cd.patch_node(_cd_node_name, {"spec": {"unschedulable": True}})
+                                                    _pending_cordon.status = _AAS0.COMPLETED
+                                                    _pending_cordon.completed_at = datetime.utcnow()
+                                                    _pending_cordon.result = {"backend_executed": True, "verified": True}
+                                                    db.flush()
+                                                    logger.info(
+                                                        f"[auto_rebalancer] Action {_wa.id}: Backend cordon "
+                                                        f"of {_cd_node_name} succeeded"
+                                                    )
+                                                except Exception as _cordon_err:
+                                                    logger.error(
+                                                        f"[auto_rebalancer] Action {_wa.id}: Backend cordon "
+                                                        f"failed for {_cd_node_name}: {_cordon_err}"
+                                                    )
+                                                    _pending_cordon.status = _AAS0.FAILED
+                                                    _pending_cordon.error_message = str(_cordon_err)
+                                                    db.flush()
+
+                                            # ── DRAIN: evict non-DaemonSet pods ──
+                                            if _pending_drain and (not _pending_cordon or _pending_cordon.status == _AAS0.COMPLETED):
+                                                try:
+                                                    _drain_force = (_pending_drain.payload or {}).get('force', True)
+                                                    _drain_grace = (_pending_drain.payload or {}).get('grace_period_seconds', 60)
+                                                    _drain_ignore_ds = (_pending_drain.payload or {}).get('ignore_daemonsets', True)
+
+                                                    _pods_on_node = _core_cd.list_namespaced_pod(
+                                                        namespace="",
+                                                        field_selector=f"spec.nodeName={_cd_node_name}"
+                                                    ).items
+                                                    # Filter: skip DaemonSet pods and mirror pods
+                                                    _evictable = []
+                                                    for _pod in _pods_on_node:
+                                                        _owner_refs = _pod.metadata.owner_references or []
+                                                        _is_ds = any(o.kind == 'DaemonSet' for o in _owner_refs)
+                                                        _is_mirror = bool((_pod.metadata.annotations or {}).get('kubernetes.io/config.mirror'))
+                                                        if _drain_ignore_ds and _is_ds:
+                                                            continue
+                                                        if _is_mirror:
+                                                            continue
+                                                        _evictable.append(_pod)
+
+                                                    logger.info(
+                                                        f"[auto_rebalancer] Action {_wa.id}: Backend drain — "
+                                                        f"evicting {len(_evictable)} pods from {_cd_node_name}"
+                                                    )
+                                                    _evict_errors = []
+                                                    for _epod in _evictable:
+                                                        try:
+                                                            _eviction = _k8s_cd.V1Eviction(
+                                                                metadata=_k8s_cd.V1ObjectMeta(
+                                                                    name=_epod.metadata.name,
+                                                                    namespace=_epod.metadata.namespace,
+                                                                ),
+                                                                delete_options=_k8s_cd.V1DeleteOptions(
+                                                                    grace_period_seconds=_drain_grace,
+                                                                ),
+                                                            )
+                                                            _core_cd.create_namespaced_pod_eviction(
+                                                                name=_epod.metadata.name,
+                                                                namespace=_epod.metadata.namespace,
+                                                                body=_eviction,
+                                                            )
+                                                        except _k8s_cd.ApiException as _evict_exc:
+                                                            if _evict_exc.status == 404:
+                                                                pass  # Pod already gone
+                                                            elif _evict_exc.status == 429 and not _drain_force:
+                                                                _evict_errors.append(f"{_epod.metadata.namespace}/{_epod.metadata.name}: PDB blocked")
+                                                            else:
+                                                                _evict_errors.append(f"{_epod.metadata.namespace}/{_epod.metadata.name}: {_evict_exc.reason}")
+                                                        except Exception as _evict_gen:
+                                                            _evict_errors.append(f"{_epod.metadata.namespace}/{_epod.metadata.name}: {_evict_gen}")
+
+                                                    if _evict_errors and not _drain_force:
+                                                        _pending_drain.status = _AAS0.FAILED
+                                                        _pending_drain.error_message = f"PDB/eviction blocked: {_evict_errors[:5]}"
+                                                    else:
+                                                        _pending_drain.status = _AAS0.COMPLETED
+                                                        _pending_drain.completed_at = datetime.utcnow()
+                                                        _pending_drain.result = {
+                                                            "backend_executed": True,
+                                                            "verified": True,
+                                                            "pods_evicted": len(_evictable),
+                                                            "evict_errors": _evict_errors[:5] if _evict_errors else [],
+                                                        }
+                                                    db.flush()
+                                                    logger.info(
+                                                        f"[auto_rebalancer] Action {_wa.id}: Backend drain "
+                                                        f"of {_cd_node_name} done — {len(_evictable)} pods evicted, "
+                                                        f"{len(_evict_errors)} errors"
+                                                    )
+                                                except Exception as _drain_err:
+                                                    logger.error(
+                                                        f"[auto_rebalancer] Action {_wa.id}: Backend drain "
+                                                        f"failed for {_cd_node_name}: {_drain_err}"
+                                                    )
+                                                    _pending_drain.status = _AAS0.FAILED
+                                                    _pending_drain.error_message = str(_drain_err)
+                                                    db.flush()
+
+                                            # Also mark TERMINATE_NODE as COMPLETED — backend
+                                            # handles termination directly via AWS API below
+                                            _pending_term = db.query(_AA0).filter(
+                                                _AA0.payload.contains({"rebalancing_action_id": str(_wa.id)}),
+                                                _AA0.action_type == _AAT0.TERMINATE_NODE,
+                                                _AA0.status == _AAS0.PENDING,
+                                            ).first()
+                                            if _pending_term:
+                                                _pending_term.status = _AAS0.COMPLETED
+                                                _pending_term.completed_at = datetime.utcnow()
+                                                _pending_term.result = {"backend_will_terminate": True}
+                                                db.flush()
+
+                                            db.commit()
+                                            # Don't continue — fall through to let the
+                                            # readiness + AWS terminate logic execute
+                                        else:
+                                            logger.warning(
+                                                f"[auto_rebalancer] Action {_wa.id}: No node_name in "
+                                                f"CORDON/DRAIN payload — cannot execute backend-side"
+                                            )
+                                            continue
+                                    else:
+                                        logger.warning(
+                                            f"[auto_rebalancer] Action {_wa.id}: Cluster not found "
+                                            f"for backend-side cordon/drain"
+                                        )
+                                        continue
+                                except Exception as _cd_err:
+                                    logger.error(
+                                        f"[auto_rebalancer] Action {_wa.id}: Backend cordon/drain "
+                                        f"error: {_cd_err}"
+                                    )
+                                    continue
+                    else:
+                        continue  # Agent still working or no PENDING actions — leave as waiting_agent
 
                 _failed = db.query(_AA0).filter(
-                    _AA0.payload.contains({"rebalancing_action_id": _wa.id}),
-                    _AA0.status == _AAS0.FAILED
+                    _AA0.payload.contains({"rebalancing_action_id": str(_wa.id)}),
+                    _AA0.status == _AAS0.FAILED,
+                    _AA0.action_type != _AAT0.LABEL_NODE,  # LABEL_NODE (do-not-disrupt annotation) is non-critical; exclude from failure count
                 ).count()
 
                 _wa_meta = dict(_wa.action_metadata or {})
@@ -2001,13 +2861,21 @@ def execute_rebalancing():
                 ]:
                     if _sname not in _wa_meta:
                         _sa = db.query(_AA0).filter(
-                            _AA0.payload.contains({"rebalancing_action_id": _wa.id}),
+                            _AA0.payload.contains({"rebalancing_action_id": str(_wa.id)}),
                             _AA0.action_type == _stype,
                         ).first()
                         if _sa:
                             ts = (_sa.completed_at or _sa.created_at)
                             if ts:
+                                _sa_result = _sa.result or {}
+                                _sa_verified = _sa_result.get('verified', False)
                                 _wa_meta[_sname] = ts.isoformat()
+                                _wa_meta[f'{_sname}_verified'] = _sa_verified
+                                if not _sa_verified:
+                                    logger.warning(
+                                        f"[auto_rebalancer] Action {_wa.id}: {_sname} completed "
+                                        f"but agent verification={_sa_verified}"
+                                    )
 
                 # ── 2-PHASE: WAIT FOR SPOT NODE → CREATE PHASE 2 ACTIONS ──────
                 # After Phase 1 completes (NodePool update via K8s API), wait for a
@@ -2031,6 +2899,123 @@ def execute_rebalancing():
                     # and stores 'karpenter_nodepool_updated' in action_metadata. Use this stable
                     # metadata flag instead of querying for agent actions.
                     _wa_karpenter_active = bool(_wa_meta.get('karpenter_nodepool_updated'))
+                    _direct_launch = bool(_wa_meta.get('replacement_spot_instance_id')) and not _wa_karpenter_active
+
+                    # Extract expected target instance type (Fix #4, must be before E9 arch
+                    # check — _expected_instance_type is derived from _wa.target_pool).
+                    _expected_instance_type = None
+                    if _wa.target_pool and ':' in _wa.target_pool:
+                        _expected_instance_type = _wa.target_pool.split(':')[0]
+                    elif _wa.target_pool:
+                        _expected_instance_type = _wa.target_pool
+
+                    # Fix 1: After escalation, the trigger pod instance type changes
+                    # but _expected_instance_type still points to the original target.
+                    # Count-based detection then filters out the new spot node because
+                    # its type doesn't match. Update _expected_instance_type to match
+                    # the current trigger pod type (set by escalation logic).
+                    _esc_trigger_type = _wa_meta.get('trigger_pod_instance_type')
+                    if _esc_trigger_type and _esc_trigger_type != _expected_instance_type:
+                        logger.debug(
+                            f"[auto_rebalancer] Action {_wa.id}: Fix1 — updating "
+                            f"_expected_instance_type from {_expected_instance_type} "
+                            f"to {_esc_trigger_type} (escalation active)"
+                        )
+                        _expected_instance_type = _esc_trigger_type
+                    # If broad escalation removed the type constraint, accept any spot type
+                    if _wa_meta.get('esc_broad_done'):
+                        _expected_instance_type = None
+
+                    # ── Early compute _spot_wait_elapsed ──────────────────────
+                    # Needed by Fix9 safety fallback (L3282) which runs inside the
+                    # readiness gate block, BEFORE the main spot-wait section where
+                    # it was originally defined.
+                    _phase1_ts_early = _wa_meta.get('phase1_completed_at')
+                    if _phase1_ts_early:
+                        try:
+                            _patch_completed_early = datetime.fromisoformat(_phase1_ts_early)
+                        except (ValueError, TypeError):
+                            _patch_completed_early = _wa.started_at
+                    else:
+                        _patch_completed_early = _wa.started_at
+                    _spot_wait_elapsed = (
+                        (datetime.utcnow() - _patch_completed_early).total_seconds()
+                        if _patch_completed_early else 9999
+                    )
+
+                    # ── Enhancement 9: Standby fast-path ──────────────────────
+                    # If a ready standby exists, find_ready_standby() now atomically
+                    # claims it (Redis NX) and checks architecture inside the function.
+                    # On success: pin the replacement ID in metadata and `continue` to
+                    # skip the count-based detection.  The pinned-ID path handles Phase 2
+                    # on the next Celery cycle (15 s later).
+                    if not _wa_meta.get('standby_claimed') and not _wa_meta.get('replacement_spot_instance_id'):
+                        try:
+                            from backend.workers.tasks.standby import find_ready_standby
+                            _standby = find_ready_standby(
+                                db,
+                                _wa.cluster_id,
+                                redis_client=_redis,
+                                source_instance_type=_expected_instance_type,
+                                action_id=str(_wa.id),
+                            )
+                            if _standby and _standby.node_name and _standby.instance_id:
+                                logger.info(
+                                    f"[auto_rebalancer] Action {_wa.id}: STANDBY FAST-PATH — "
+                                    f"using pre-warmed standby {_standby.instance_id[:12]} "
+                                    f"(node={_standby.node_name}, type={_standby.instance_type})"
+                                )
+                                # Uncordon the standby node so pods can schedule on it
+                                try:
+                                    if _wa_cluster_obj:
+                                        from backend.services.karpenter_service import KarpenterService as _KS_SB
+                                        _ks_sb = _KS_SB(db, _redis)
+                                        _sb_api = _ks_sb._get_k8s_client(_wa_cluster_obj)
+                                        from kubernetes import client as _k8s_sb_c
+                                        _sb_v1 = _k8s_sb_c.CoreV1Api(_sb_api)
+                                        _sb_v1.patch_node(_standby.node_name, {
+                                            "spec": {"unschedulable": None}
+                                        })
+                                        logger.info(
+                                            f"[auto_rebalancer] Action {_wa.id}: Uncordoned standby "
+                                            f"node {_standby.node_name}"
+                                        )
+                                except Exception as _sb_uncordon_err:
+                                    logger.warning(
+                                        f"[auto_rebalancer] Action {_wa.id}: Failed to uncordon "
+                                        f"standby: {_sb_uncordon_err}"
+                                    )
+
+                                # Record the standby as this action's replacement.
+                                # Set status=READY explicitly so the readiness gate in the
+                                # count/pinned-ID detection below passes on this same cycle
+                                # without needing a K8s live round-trip (standby was already
+                                # running and cordoned — it IS Ready).
+                                _standby.standby = False
+                                _standby.status = 'READY'
+                                _wa_meta['replacement_spot_instance_id'] = _standby.instance_id
+                                _wa_meta['replacement_spot_node_name'] = _standby.node_name
+                                _wa_meta['standby_claimed'] = True
+                                _wa_meta['used_standby'] = True
+                                _wa_meta['standby_claimed_at'] = datetime.utcnow().isoformat()
+                                _wa.action_metadata = _wa_meta
+                                _wa.actual_instance_type = _standby.instance_type
+                                _wa.actual_az = getattr(_standby, 'az', None) or ''
+                                db.commit()
+
+                                # Trigger new standby provisioning to replace the one we used
+                                try:
+                                    from backend.workers.tasks.standby import launch_standby_node
+                                    launch_standby_node.delay(_wa.cluster_id)
+                                except Exception:
+                                    pass
+
+                                # Fall through to the count/pinned-ID detection below so Phase 2
+                                # is created in THIS cycle (zero-lag).  replacement_spot_instance_id
+                                # is already set in _wa_meta so the pinned-ID path picks it up and
+                                # the readiness gate passes because we set status=READY above.
+                        except Exception as _sb_err:
+                            logger.debug(f"[auto_rebalancer] Standby check: {_sb_err}")
 
                     _spot_count = db.query(Instance).filter(
                         Instance.cluster_id == _wa.cluster_id,
@@ -2044,7 +3029,7 @@ def execute_rebalancing():
                     # spot nodes, changing the baseline independently of this action's replacement.
                     _spot_baseline = int(_wa_meta.get('spot_baseline_count', 0))
                     _new_spot_joined = False
-                    _SPOT_STABILIZE_S = 90
+                    _SPOT_STABILIZE_S = 30
                     _replacement_id_pinned = _wa_meta.get('replacement_spot_instance_id')
                     _newest_spot = None
 
@@ -2066,18 +3051,44 @@ def execute_rebalancing():
                             ).first()
                             _p12_joined = False
                             if _p12_inst and _p12_inst.node_name:
-                                # Agent reported a node_name — consider it joined
-                                _p12_joined = True
-                                logger.info(
-                                    f"[auto_rebalancer] Action {_wa.id}: pinned replacement "
-                                    f"{_replacement_id_pinned[:12]} has node_name={_p12_inst.node_name} "
-                                    f"(state={_p12_inst.state}) — proactive join detection"
-                                )
-                                # Update state to running if needed
-                                if _p12_inst.state != 'running':
-                                    _p12_inst.state = 'running'
+                                # Safety: if the instance is terminated/shutting-down, do NOT
+                                # treat it as joined — another action's rollback may have killed it.
+                                if _p12_inst.state in ('terminated', 'shutting-down', 'stopped'):
+                                    logger.warning(
+                                        f"[auto_rebalancer] Action {_wa.id}: pinned replacement "
+                                        f"{_replacement_id_pinned[:12]} has node_name={_p12_inst.node_name} "
+                                        f"but state={_p12_inst.state} — NOT treating as joined"
+                                    )
+                                    # Clear stale pin so the rebalancer can look for a new
+                                    # spot node or create a fresh trigger pod instead of
+                                    # looping on a terminated instance forever.
+                                    _wa_meta.pop('replacement_spot_instance_id', None)
+                                    _wa_meta.pop('replacement_spot_node_name', None)
+                                    _wa_meta['trigger_pod_created'] = False
+                                    _wa_meta.pop('esc_alt1_done', None)
+                                    _wa_meta.pop('esc_alt2_done', None)
+                                    _wa_meta.pop('esc_broad_done', None)
+                                    _wa_meta.pop('step_entered_waiting_for_spot_node', None)
+                                    _wa.action_metadata = _wa_meta
                                     db.commit()
-                                _newest_spot = _p12_inst
+                                    logger.warning(
+                                        f"[auto_rebalancer] Action {_wa.id}: cleared stale pin "
+                                        f"{_replacement_id_pinned[:12]} — will create fresh trigger pod"
+                                    )
+                                    # Do NOT set _p12_joined or _newest_spot
+                                else:
+                                    # Agent reported a node_name — consider it joined
+                                    _p12_joined = True
+                                    logger.info(
+                                        f"[auto_rebalancer] Action {_wa.id}: pinned replacement "
+                                        f"{_replacement_id_pinned[:12]} has node_name={_p12_inst.node_name} "
+                                        f"(state={_p12_inst.state}) — proactive join detection"
+                                    )
+                                    # Update state to running if needed
+                                    if _p12_inst.state != 'running':
+                                        _p12_inst.state = 'running'
+                                        db.commit()
+                                    _newest_spot = _p12_inst
                             if not _p12_joined:
                                 try:
                                     _p12_nj_key = f"node_joined:{_replacement_id_pinned}"
@@ -2099,48 +3110,326 @@ def execute_rebalancing():
                                 continue
                     elif _spot_count > _spot_baseline:
                         # Fallback: count-based trigger (legacy path when Phase 1 did not pin an ID).
-                        # Log a warning so we can track how often this happens.
                         logger.warning(
                             f"[auto_rebalancer] Action {_wa.id}: Phase 2 count-fallback "
                             f"(spot_count={_spot_count} > baseline={_spot_baseline}) — "
                             f"no replacement_spot_instance_id in metadata (Phase 1 may be old)"
                         )
-                        _newest_spot = db.query(Instance).filter(
+                        # Fix #2: ID-set-diff detection — find spots NOT in baseline snapshot.
+                        # More reliable than pure count comparison, especially when baseline=0.
+                        _baseline_ids = set(_wa_meta.get('baseline_spot_instance_ids', []))
+                        _count_fb_query = db.query(Instance).filter(
                             Instance.cluster_id == _wa.cluster_id,
                             Instance.lifecycle == InstanceLifecycle.SPOT,
                             Instance.state == 'running',
-                        ).order_by(Instance.created_at.desc()).first()
+                        )
+                        if _expected_instance_type:
+                            _count_fb_query = _count_fb_query.filter(
+                                Instance.instance_type == _expected_instance_type,
+                            )
+                        if _baseline_ids:
+                            _count_fb_query = _count_fb_query.filter(
+                                Instance.instance_id.notin_(_baseline_ids),
+                            )
+                        # Fix: Batch-parallel claim — find first UNCLAIMED spot among all
+                        # candidates, not just .first().  When 3 actions run concurrently,
+                        # each must pick a different replacement.
+                        _count_fb_candidates = _count_fb_query.order_by(Instance.created_at.desc()).all()
+                        _newest_spot = None
+                        for _cfb_candidate in _count_fb_candidates:
+                            _cfb_claim_key = f"spot:replacement_claimed:{_cfb_candidate.instance_id}"
+                            if _redis and _redis.exists(_cfb_claim_key):
+                                _cfb_owner = _redis.get(_cfb_claim_key)
+                                _cfb_owner_str = _cfb_owner.decode() if isinstance(_cfb_owner, bytes) else str(_cfb_owner)
+                                if _cfb_owner_str != str(_wa.id):
+                                    logger.debug(
+                                        f"[auto_rebalancer] Action {_wa.id}: skipping "
+                                        f"{_cfb_candidate.instance_id[:12]} — already claimed "
+                                        f"by action {_cfb_owner_str}"
+                                    )
+                                    continue
+                            _newest_spot = _cfb_candidate
+                            break
+                        if _newest_spot:
+                            logger.info(
+                                f"[auto_rebalancer] Action {_wa.id}: ID-set-diff found unclaimed spot "
+                                f"{_newest_spot.instance_id[:12]} (type={_newest_spot.instance_type}) "
+                                f"not in baseline set of {len(_baseline_ids)} IDs "
+                                f"(checked {len(_count_fb_candidates)} candidates)"
+                            )
+                        elif not _newest_spot and _expected_instance_type:
+                            logger.info(
+                                f"[auto_rebalancer] Action {_wa.id}: count-fallback found no "
+                                f"{_expected_instance_type} spot — ignoring non-matching spot nodes"
+                            )
+                    elif _spot_count >= 1 and _spot_count <= _spot_baseline and _wa.started_at:
+                        # Bug #12b: Count stagnation fallback — a new spot was provisioned
+                        # but an old spot died simultaneously, so net count didn't increase.
+                        # Detect by finding a spot created AFTER the action started.
+                        _stag_fb_query = db.query(Instance).filter(
+                            Instance.cluster_id == _wa.cluster_id,
+                            Instance.lifecycle == InstanceLifecycle.SPOT,
+                            Instance.state == 'running',
+                            Instance.created_at > _wa.started_at,
+                        )
+                        # Fix #4: Also filter by expected type in stagnation fallback
+                        if _expected_instance_type:
+                            _stag_fb_query = _stag_fb_query.filter(
+                                Instance.instance_type == _expected_instance_type,
+                            )
+                        _post_action_spot = None
+                        _stag_candidates = _stag_fb_query.order_by(Instance.created_at.desc()).all()
+                        for _stag_cand in _stag_candidates:
+                            _stag_claim_key = f"spot:replacement_claimed:{_stag_cand.instance_id}"
+                            if _redis and _redis.exists(_stag_claim_key):
+                                _stag_owner = _redis.get(_stag_claim_key)
+                                _stag_owner_str = _stag_owner.decode() if isinstance(_stag_owner, bytes) else str(_stag_owner)
+                                if _stag_owner_str != str(_wa.id):
+                                    continue
+                            _post_action_spot = _stag_cand
+                            break
+                        if _post_action_spot:
+                            logger.warning(
+                                f"[auto_rebalancer] Action {_wa.id}: time-based fallback — "
+                                f"spot {_post_action_spot.instance_id[:12]} created after action start "
+                                f"(type={_post_action_spot.instance_type}, "
+                                f"count={_spot_count} <= baseline={_spot_baseline} due to churn)"
+                            )
+                            _newest_spot = _post_action_spot
+
+                    if _newest_spot:
+                        # Fix #4: Instance type validation — reject nodes whose instance_type
+                        # doesn't match the action's target.  This prevents accepting a
+                        # random Karpenter-provisioned node (e.g. c5a.large from normal
+                        # workload scaling) as the rebalancing replacement for c7g.medium.
+                        # Only applies to unpinned paths (count/time fallbacks); the pinned
+                        # path already resolves by exact instance ID.
+                        if (
+                            _expected_instance_type
+                            and not _replacement_id_pinned
+                            and _newest_spot.instance_type
+                            and _newest_spot.instance_type != _expected_instance_type
+                        ):
+                            logger.warning(
+                                f"[auto_rebalancer] Action {_wa.id}: candidate spot "
+                                f"{_newest_spot.instance_id[:12]} is {_newest_spot.instance_type} "
+                                f"but action targets {_expected_instance_type} — ignoring "
+                                f"(likely a normal scaling event, not our replacement)"
+                            )
+                            _newest_spot = None
+
+                    # ── Enhancement 1: K8s direct node detection (bypass aws_sync) ──
+                    # If DB-based detection found nothing, query K8s API directly.
+                    # aws_sync runs every 5 min — this live query saves up to 300s.
+                    if not _newest_spot and not _replacement_id_pinned and _wa_karpenter_active:
+                        try:
+                            _k8s_detect_cluster = _wa_cluster_obj
+                            if _k8s_detect_cluster:
+                                from backend.services.karpenter_service import KarpenterService as _KS_DETECT
+                                _ks_detect = _KS_DETECT(db, _redis)
+                                _k8s_detect_api = _ks_detect._get_k8s_client(_k8s_detect_cluster)
+                                from kubernetes import client as _k8s_detect_c
+                                _core_detect = _k8s_detect_c.CoreV1Api(_k8s_detect_api)
+
+                                # Determine target AZ
+                                _detect_az = ''
+                                if _wa.target_pool and ':' in _wa.target_pool:
+                                    _detect_az = _wa.target_pool.split(':')[1]
+
+                                # Phase 1 completion time for filtering
+                                _detect_p1_ts = _wa_meta.get('phase1_completed_at')
+                                _detect_p1_dt = None
+                                if _detect_p1_ts:
+                                    try:
+                                        _detect_p1_dt = datetime.fromisoformat(_detect_p1_ts)
+                                    except (ValueError, TypeError):
+                                        pass
+
+                                # Query K8s nodes filtered by labels
+                                _k8s_nodes = _core_detect.list_node().items
+                                for _k8s_node in _k8s_nodes:
+                                    _k8s_labels = _k8s_node.metadata.labels or {}
+                                    _k8s_node_type = _k8s_labels.get('node.kubernetes.io/instance-type', '')
+                                    _k8s_node_az = _k8s_labels.get('topology.kubernetes.io/zone', '')
+                                    _k8s_cap_type = _k8s_labels.get('karpenter.sh/capacity-type', '')
+                                    _k8s_created = _k8s_node.metadata.creation_timestamp
+
+                                    # Filter: must be spot, correct type, correct AZ (if known),
+                                    # created after Phase 1
+                                    if _k8s_cap_type != 'spot':
+                                        continue
+                                    if _expected_instance_type and _k8s_node_type != _expected_instance_type:
+                                        # Also accept the current escalation target type
+                                        _esc_trig_type = _wa_meta.get('trigger_pod_instance_type', '')
+                                        if _esc_trig_type and _k8s_node_type != _esc_trig_type:
+                                            continue
+                                        elif not _esc_trig_type:
+                                            continue
+                                    if _detect_az and _k8s_node_az != _detect_az:
+                                        continue
+                                    if _detect_p1_dt and _k8s_created:
+                                        # Strip timezone from K8s timestamp to match
+                                        # naive _detect_p1_dt (both are UTC)
+                                        _k8s_ts = _k8s_created.replace(tzinfo=None) if hasattr(_k8s_created, 'tzinfo') and _k8s_created.tzinfo else _k8s_created
+                                        if _k8s_ts < _detect_p1_dt:
+                                            continue
+
+                                    # Check Ready condition
+                                    _k8s_ready = False
+                                    for _cond in (_k8s_node.status.conditions or []):
+                                        if _cond.type == 'Ready' and _cond.status == 'True':
+                                            _k8s_ready = True
+                                            break
+                                    if not _k8s_ready:
+                                        continue
+
+                                    # Skip nodes already labelled as existing
+                                    if _k8s_labels.get('spot-optimizer.io/existing-node') == 'true':
+                                        continue
+
+                                    _k8s_node_name = _k8s_node.metadata.name
+                                    logger.info(
+                                        f"[auto_rebalancer] Action {_wa.id}: K8s DIRECT detection — "
+                                        f"node {_k8s_node_name} ({_k8s_node_type}, {_k8s_node_az}) "
+                                        f"is Ready, bypassing aws_sync wait"
+                                    )
+
+                                    # Try to find or create matching Instance in DB
+                                    # Look up by node_name first (agent collector may have it)
+                                    _k8s_inst = db.query(Instance).filter(
+                                        Instance.cluster_id == _wa.cluster_id,
+                                        Instance.node_name == _k8s_node_name,
+                                        Instance.state == 'running',
+                                    ).first()
+                                    if not _k8s_inst:
+                                        # Also try by provider ID label
+                                        _provider_id = (_k8s_node.spec.provider_id or '') if _k8s_node.spec else ''
+                                        _ec2_id = ''
+                                        if _provider_id and '/' in _provider_id:
+                                            _ec2_id = _provider_id.rsplit('/', 1)[-1]
+                                        if _ec2_id:
+                                            _k8s_inst = db.query(Instance).filter(
+                                                Instance.instance_id == _ec2_id,
+                                            ).first()
+                                    if _k8s_inst:
+                                        # Claim-aware check: skip spots already claimed by other actions
+                                        _k8s_claim_key = f"spot:replacement_claimed:{_k8s_inst.instance_id}"
+                                        if _redis and _redis.exists(_k8s_claim_key):
+                                            _k8s_owner = _redis.get(_k8s_claim_key)
+                                            _k8s_owner_str = _k8s_owner.decode() if isinstance(_k8s_owner, bytes) else str(_k8s_owner)
+                                            if _k8s_owner_str != str(_wa.id):
+                                                logger.info(
+                                                    f"[auto_rebalancer] Action {_wa.id}: K8s detected "
+                                                    f"{_k8s_node_name} ({_k8s_inst.instance_id[:12]}) "
+                                                    f"already claimed by action {_k8s_owner_str} — skipping"
+                                                )
+                                                continue  # Try next K8s node
+                                        _newest_spot = _k8s_inst
+                                        # Ensure it has node_name set
+                                        if not _k8s_inst.node_name:
+                                            _k8s_inst.node_name = _k8s_node_name
+                                        # Override status to allow stabilization gate
+                                        if _k8s_inst.status not in ('READY', 'CALIBRATING'):
+                                            _k8s_inst.status = 'READY'
+                                        db.commit()
+                                        break  # Found an unclaimed matching node
+                                    else:
+                                        # aws_sync hasn't created the record yet.
+                                        # Don't create one — just record in metadata so
+                                        # the next cycle can match via node_name.
+                                        _wa_meta['k8s_detected_node'] = _k8s_node_name
+                                        _wa_meta['k8s_detected_type'] = _k8s_node_type
+                                        _wa_meta['k8s_detected_az'] = _k8s_node_az
+                                        logger.info(
+                                            f"[auto_rebalancer] Action {_wa.id}: K8s detected "
+                                            f"{_k8s_node_name} but no DB record yet — "
+                                            f"waiting for aws_sync or collector"
+                                        )
+                                        break  # No DB record yet, wait for next cycle
+                        except Exception as _k8s_detect_err:
+                            logger.debug(
+                                f"[auto_rebalancer] Action {_wa.id}: K8s direct detection failed: "
+                                f"{_k8s_detect_err}"
+                            )
 
                     if _newest_spot:
                         _spot_age_s = (
                             (datetime.utcnow() - _newest_spot.created_at).total_seconds()
                             if _newest_spot.created_at else 0
                         )
-                        if _spot_age_s >= _SPOT_STABILIZE_S and _newest_spot.node_name:
-                            # Safety gate: only proceed to Phase 2 (CORDON→DRAIN→TERMINATE) once
-                            # the collector has confirmed the new spot node is Ready in K8s.
-                            # status='READY' is set by the agent collector when K8s Ready condition
-                            # is True. This prevents draining the old node when the new node is
-                            # still initializing (Not-Ready) and cannot accept evicted pods.
-                            _repl_status = getattr(_newest_spot, 'status', None) or 'READY'
+                        # Enhancement 4: Readiness gate — replaces flat 30s timer.
+                        # Proceed to Phase 2 when ALL conditions met:
+                        # 1. node_name is set (kubelet joined K8s)
+                        # 2. At least 10s elapsed since node appeared (hard floor)
+                        # 3. Node status = READY or CALIBRATING (collector confirmed)
+                        # 4. For K8s-detected nodes, also verify DaemonSets are running
+                        _SPOT_STABILIZE_FLOOR_S = 10  # Hard minimum, non-negotiable
+                        if _spot_age_s >= _SPOT_STABILIZE_FLOOR_S and _newest_spot.node_name:
+                            _repl_status = getattr(_newest_spot, 'status', None) or ''
+                            if _repl_status not in ('READY', 'CALIBRATING'):
+                                # Try live K8s check if collector hasn't confirmed yet
+                                _k8s_ready_live = False
+                                try:
+                                    if _wa_cluster_obj:
+                                        from backend.services.karpenter_service import KarpenterService as _KS_READY
+                                        _ks_ready = _KS_READY(db, _redis)
+                                        _ready_api = _ks_ready._get_k8s_client(_wa_cluster_obj)
+                                        from kubernetes import client as _k8s_ready_c
+                                        _ready_v1 = _k8s_ready_c.CoreV1Api(_ready_api)
+                                        _ready_node = _ready_v1.read_node(_newest_spot.node_name)
+                                        for _cond in (_ready_node.status.conditions or []):
+                                            if _cond.type == 'Ready' and _cond.status == 'True':
+                                                _k8s_ready_live = True
+                                                break
+                                        if _k8s_ready_live:
+                                            # Update DB status so next cycle doesn't re-check
+                                            _newest_spot.status = 'READY'
+                                            db.commit()
+                                            _repl_status = 'READY'
+                                except Exception:
+                                    pass
+
                             if _repl_status not in ('READY', 'CALIBRATING'):
                                 logger.info(
                                     f"[auto_rebalancer] Action {_wa.id}: replacement "
                                     f"{_newest_spot.instance_id[:12]} node_name={_newest_spot.node_name} "
-                                    f"status={_repl_status} — waiting for K8s Ready condition"
+                                    f"status={_repl_status or 'UNKNOWN'} — waiting for K8s Ready condition"
                                 )
-                                # Don't set _new_spot_joined — wait for collector to confirm Ready
                             else:
                                 _new_spot_joined = True
                                 # Pin replacement ID for rollback reliability
                                 if _newest_spot.instance_id and not _wa_meta.get('replacement_spot_instance_id'):
                                     _wa_meta['replacement_spot_instance_id'] = _newest_spot.instance_id
                                     _wa.action_metadata = _wa_meta
+                                    flag_modified(_wa, 'action_metadata')
                                 # Pin node_name so it survives loop iterations
                                 if _newest_spot.node_name and not _wa_meta.get('replacement_spot_node_name'):
                                     _wa_meta['replacement_spot_node_name'] = _newest_spot.node_name
                                     _wa.action_metadata = _wa_meta
-                        elif _spot_age_s >= _SPOT_STABILIZE_S and not _newest_spot.node_name:
+                                    flag_modified(_wa, 'action_metadata')
+                                # Populate actual_instance_type/az on the rebalancing_action row
+                                if _newest_spot.instance_type and not _wa.actual_instance_type:
+                                    _wa.actual_instance_type = _newest_spot.instance_type
+                                    _wa.actual_az = getattr(_newest_spot, 'az', None) or ''
+
+                                # Fix 3: Architecture validation — ensure replacement spot
+                                # matches the source OD node architecture (arm64 vs amd64).
+                                # Detect from K8s label 'kubernetes.io/arch' if available,
+                                # otherwise from instance type family naming convention.
+                                _src_arch = _wa_meta.get('source_architecture', '')
+                                _repl_arch = getattr(_newest_spot, 'architecture', '') or ''
+                                if _src_arch and _repl_arch and _src_arch != _repl_arch:
+                                    logger.warning(
+                                        f"[auto_rebalancer] Action {_wa.id}: Fix3 ARCH MISMATCH — "
+                                        f"source={_src_arch}, replacement={_repl_arch} "
+                                        f"({_newest_spot.instance_type}). Replacement may fail "
+                                        f"to schedule pods built for {_src_arch}. Proceeding anyway "
+                                        f"(operator should verify workload compatibility)."
+                                    )
+                                    _wa_meta['arch_mismatch_warning'] = (
+                                        f"source={_src_arch}, replacement={_repl_arch}"
+                                    )
+                        elif _spot_age_s >= _SPOT_STABILIZE_FLOOR_S and not _newest_spot.node_name:
                             logger.debug(
                                 f"[auto_rebalancer] Action {_wa.id}: new spot EC2 up "
                                 f"{int(_spot_age_s)}s but node_name not set yet (kubelet not joined k8s) — waiting"
@@ -2148,20 +3437,71 @@ def execute_rebalancing():
                         else:
                             logger.info(
                                 f"[auto_rebalancer] Action {_wa.id}: new spot appeared but "
-                                f"only {int(_spot_age_s)}s old (need {_SPOT_STABILIZE_S}s) — "
-                                f"waiting for node to stabilize before Phase 2"
+                                f"only {int(_spot_age_s)}s old (need {_SPOT_STABILIZE_FLOOR_S}s) — "
+                                f"waiting for readiness gate"
                             )
 
+                    # Fix 9: Safety fallback — if _newest_spot exists, is READY,
+                    # has a node_name, and the spot wait has been going for >60s,
+                    # force _new_spot_joined = True.  This catches edge cases where
+                    # the readiness gate's status check failed due to stale DB status
+                    # but K8s live check wasn't attempted (e.g., K8s API unavailable
+                    # on that cycle).  The 60s floor prevents premature triggers.
+                    # FIX: Always verify node ACTUALLY exists in K8s before proceeding.
+                    # DB node_name can be set (from EC2 private DNS) before the kubelet
+                    # has registered the node in the K8s API server → 404 on LABEL_NODE.
+                    if (
+                        not _new_spot_joined
+                        and _newest_spot
+                        and _newest_spot.node_name
+                        and _newest_spot.status in ('READY', 'CALIBRATING')
+                        and _spot_wait_elapsed > 60
+                    ):
+                        # Verify node is LIVE in K8s before proceeding
+                        _fix9_node_live = False
+                        try:
+                            if _wa_cluster_obj:
+                                from backend.services.karpenter_service import KarpenterService as _KS_F9
+                                _ks_f9 = _KS_F9(db, _redis)
+                                _f9_api = _ks_f9._get_k8s_client(_wa_cluster_obj)
+                                from kubernetes import client as _k8s_f9
+                                _f9_v1 = _k8s_f9.CoreV1Api(_f9_api)
+                                _f9_v1.read_node(_newest_spot.node_name)
+                                _fix9_node_live = True
+                        except Exception as _f9_err:
+                            logger.info(
+                                f"[auto_rebalancer] Action {_wa.id}: Fix9 — node "
+                                f"{_newest_spot.node_name} NOT in K8s yet ({_f9_err}), "
+                                f"deferring _new_spot_joined"
+                            )
+
+                        if _fix9_node_live:
+                            _new_spot_joined = True
+                            logger.info(
+                                f"[auto_rebalancer] Action {_wa.id}: Fix9 safety fallback — "
+                                f"_newest_spot {_newest_spot.instance_id[:12]} is "
+                                f"{_newest_spot.status} with node_name={_newest_spot.node_name} "
+                                f"and wait={int(_spot_wait_elapsed)}s > 60s — forcing _new_spot_joined=True"
+                            )
+                            # Pin replacement ID
+                            if _newest_spot.instance_id and not _wa_meta.get('replacement_spot_instance_id'):
+                                _wa_meta['replacement_spot_instance_id'] = _newest_spot.instance_id
+                                _wa.action_metadata = _wa_meta
+                            if _newest_spot.node_name and not _wa_meta.get('replacement_spot_node_name'):
+                                _wa_meta['replacement_spot_node_name'] = _newest_spot.node_name
+                                _wa.action_metadata = _wa_meta
+
                     # Check if Phase 2 actions exist yet.
-                    # EXPIRED actions don't count — they were never executed (agent restarted).
-                    # If Phase 2 existed but all expired, we need to either auto-complete
-                    # (source EC2 already terminated) or re-queue them fresh.
+                    # EXPIRED and FAILED actions don't count — they were never successfully
+                    # executed. Fix 4: previously FAILED CORDON actions counted as "existing",
+                    # preventing Phase 2 re-creation after a transient K8s API failure.
                     _phase2_any = db.query(_AA0).filter(
-                        _AA0.payload.contains({"rebalancing_action_id": _wa.id}),
+                        _AA0.payload.contains({"rebalancing_action_id": str(_wa.id)}),
                         _AA0.action_type == _AAT0.CORDON_NODE,
+                        _AA0.status.notin_([_AAS0.EXPIRED, _AAS0.FAILED]),
                     ).count() > 0
                     _phase2_active = db.query(_AA0).filter(
-                        _AA0.payload.contains({"rebalancing_action_id": _wa.id}),
+                        _AA0.payload.contains({"rebalancing_action_id": str(_wa.id)}),
                         _AA0.action_type == _AAT0.CORDON_NODE,
                         _AA0.status.notin_([_AAS0.EXPIRED, _AAS0.FAILED]),
                     ).count() > 0
@@ -2171,9 +3511,15 @@ def execute_rebalancing():
                     # check the source EC2 state in AWS:
                     #   • Already terminated → auto-complete (replacement succeeded in real world)
                     #   • Still running → delete expired actions and re-queue Phase 2 fresh
-                    if _phase2_any and not _phase2_active:
+                    # Fix 4: Use a separate query that includes expired/failed to detect
+                    # whether Phase 2 was EVER created (even if all actions are now terminal).
+                    _phase2_ever_existed = db.query(_AA0).filter(
+                        _AA0.payload.contains({"rebalancing_action_id": str(_wa.id)}),
+                        _AA0.action_type == _AAT0.CORDON_NODE,
+                    ).count() > 0
+                    if _phase2_ever_existed and not _phase2_active:
                         _expired_count = db.query(_AA0).filter(
-                            _AA0.payload.contains({"rebalancing_action_id": _wa.id}),
+                            _AA0.payload.contains({"rebalancing_action_id": str(_wa.id)}),
                             _AA0.status == _AAS0.EXPIRED,
                             _AA0.action_type.in_([_AAT0.CORDON_NODE, _AAT0.DRAIN_NODE, _AAT0.TERMINATE_NODE]),
                         ).count()
@@ -2216,11 +3562,7 @@ def execute_rebalancing():
                                     f"EC2 {_wa_instance_id} was already terminated — auto-completed"
                                 )
                                 _wa.action_metadata = _wa_meta
-                                if _wa_instance_id and _redis:
-                                    try:
-                                        _redis.delete(f"spot:node_active_action:{_wa_instance_id}")
-                                    except Exception:
-                                        pass
+                                _cleanup_rebalancing_resources(_wa, _wa_meta, _redis, db)
                                 db.commit()
                                 continue
                             else:
@@ -2231,7 +3573,7 @@ def execute_rebalancing():
                                     f"source EC2 {_wa_instance_id} still running — re-queuing Phase 2"
                                 )
                                 db.query(_AA0).filter(
-                                    _AA0.payload.contains({"rebalancing_action_id": _wa.id}),
+                                    _AA0.payload.contains({"rebalancing_action_id": str(_wa.id)}),
                                     _AA0.status == _AAS0.EXPIRED,
                                     _AA0.action_type.in_([_AAT0.CORDON_NODE, _AAT0.DRAIN_NODE, _AAT0.TERMINATE_NODE]),
                                 ).delete(synchronize_session=False)
@@ -2240,6 +3582,11 @@ def execute_rebalancing():
                                 _phase2_active = False
 
                     _phase2_exists = _phase2_any
+                    # Ghost terminate has no CORDON action (TERMINATE-only path) —
+                    # treat as Phase 2 existing so we skip the spot-wait block and
+                    # route through the ghost_terminate bypass below.
+                    if _wa_meta.get('ghost_terminate'):
+                        _phase2_exists = True
 
                     # Measure elapsed since Phase 1 (NodePool update) completed
                     _phase1_ts = _wa_meta.get('phase1_completed_at')
@@ -2254,27 +3601,552 @@ def execute_rebalancing():
                         (datetime.utcnow() - _patch_completed_at).total_seconds()
                         if _patch_completed_at else 9999
                     )
-                    _SPOT_WAIT_TIMEOUT_S = 30 * 60  # 30 minutes
+                    _SPOT_WAIT_TIMEOUT_S = 30 * 60  # 30 minutes default
+                    # Fix 2: Configurable Phase 1 hard timeout from cluster settings.
+                    # spot_join_timeout_minutes overrides the default 30-min timeout.
+                    if _wa_opt and getattr(_wa_opt, 'spot_join_timeout_minutes', None):
+                        _SPOT_WAIT_TIMEOUT_S = int(_wa_opt.spot_join_timeout_minutes) * 60
+
+                    # ── GHOST NODE EARLY FAST-PATH ──────────────────────────────
+                    # If the target is ASG-backed but not in K8s (ghost node), skip
+                    # Phase 1 spot-wait entirely — no pods to drain, no replacement
+                    # spot node needed. Detect here so we never create a trigger pod.
+                    if (
+                        _wa_meta.get('asg_name_used')
+                        and not _wa_meta.get('ghost_terminate')
+                        and not _wa_meta.get('phase2_created_at')
+                    ):
+                        _ghfp_node = _wa_meta.get('target_node_name', '')
+                        _ghfp_inst = _wa_instance_id
+                        _ghfp_is_ghost = False
+                        try:
+                            if _wa_cluster_obj:
+                                from backend.services.karpenter_service import KarpenterService as _KS_GHFP
+                                _ks_ghfp = _KS_GHFP(db, _redis)
+                                _ghfp_api = _ks_ghfp._get_k8s_client(_wa_cluster_obj)
+                                from kubernetes import client as _k8s_ghfp
+                                _ghfp_names = {n.metadata.name for n in _k8s_ghfp.CoreV1Api(_ghfp_api).list_node().items}
+                                if _ghfp_node and _ghfp_node not in _ghfp_names:
+                                    _ghfp_is_ghost = True
+                                    logger.info(
+                                        f"[auto_rebalancer] Action {_wa.id}: Ghost fast-path "
+                                        f"— {_ghfp_node} ({_ghfp_inst[:12]}) not in K8s, "
+                                        f"ASG={_wa_meta['asg_name_used'][:25]}. Skipping Phase 1."
+                                    )
+                        except Exception as _ghfp_err:
+                            logger.warning(
+                                f"[auto_rebalancer] Action {_wa.id}: Ghost fast-path K8s check failed: {_ghfp_err}"
+                            )
+                        if _ghfp_is_ghost:
+                            # Delete trigger pod if already created (not needed for ghost)
+                            _ghfp_trig = _wa_meta.get('trigger_pod_name', f"spot-trigger-{_wa.id}")
+                            if _wa_meta.get('trigger_pod_created') and _wa_cluster_obj:
+                                try:
+                                    from backend.services.karpenter_service import KarpenterService as _KS_GHFP2
+                                    _KS_GHFP2(db, _redis).delete_spot_trigger_pod(
+                                        cluster_id=_wa.cluster_id, pod_name=_ghfp_trig,
+                                    )
+                                    logger.info(
+                                        f"[auto_rebalancer] Action {_wa.id}: Deleted trigger pod "
+                                        f"'{_ghfp_trig}' (ghost fast-path, not needed)"
+                                    )
+                                except Exception:
+                                    pass
+                            # Create TERMINATE-only agent action — no cordon/drain needed
+                            from backend.models.agent_action import AgentAction as _AA_GHFP
+                            from backend.models.agent_action import AgentActionType as _AAT_GHFP
+                            _ghfp_term_action = _AA_GHFP(
+                                cluster_id=_wa.cluster_id,
+                                action_type=_AAT_GHFP.TERMINATE_NODE,
+                                payload={
+                                    "instance_id": _ghfp_inst,
+                                    "node_name": None,
+                                    "rebalancing_action_id": str(_wa.id),
+                                    "zero_downtime_step": 4,
+                                    "termination_mode": "scaledown",
+                                    "asg_name": _wa_meta.get("asg_name_used"),
+                                    "asg_min_at_start": _wa_meta.get("asg_min_at_start"),
+                                    "asg_desired_at_start": _wa_meta.get("asg_desired_at_start"),
+                                    "ghost_node": True,
+                                },
+                            )
+                            db.add(_ghfp_term_action)
+                            db.flush()
+                            _wa_meta['ghost_terminate'] = True
+                            _wa_meta['termination_mode'] = 'scaledown'
+                            _wa_meta['phase2_created_at'] = datetime.utcnow().isoformat()
+                            _wa_meta['current_step'] = 'ghost_terminate_pending'
+                            _wa.action_metadata = _wa_meta
+                            db.commit()
+                            logger.info(
+                                f"[auto_rebalancer] Action {_wa.id}: Ghost fast-path — "
+                                f"TERMINATE-only action created for {_ghfp_inst[:12]}, "
+                                f"skipping spot wait"
+                            )
+                            continue  # Next cycle: TERMINATE pending → agent picks up
 
                     # ── Phase 2 creation: NEW spot joined OR timeout ───────────
                     if not _phase2_exists:
                         if _wa_karpenter_active and not _new_spot_joined and _spot_wait_elapsed < _SPOT_WAIT_TIMEOUT_S:
+                            # Karpenter only provisions nodes when there are pending pods.
+                            # EKS managed node group nodes are NOT managed by Karpenter, so
+                            # consolidation won't trigger.  After 10s of 0 spot nodes, create
+                            # a lightweight "trigger" pod that requests spot capacity.  Karpenter
+                            # sees the pending pod and provisions a spot node.  The trigger pod
+                            # is cleaned up once a spot node joins.
+                            # Enhancement 2: Cut from 60s → 10s (NodePool propagation to Karpenter
+                            # controller cache is 5-10s; 10s is a safe floor).
+                            if _spot_count <= _spot_baseline and _spot_wait_elapsed >= 10 and not _wa_meta.get('trigger_pod_created'):
+                                try:
+                                    from backend.services.karpenter_service import KarpenterService as _KS_TRIG
+                                    _ks_trig = _KS_TRIG(db, _redis)
+                                    _trig_name = f"spot-trigger-{_wa.id}"
+                                    # Extract target instance type from action's target_pool
+                                    # (format: "instance_type:az", e.g. "c7g.medium:ap-south-1a")
+                                    _trig_instance_type = ""
+                                    if _wa.target_pool and ':' in _wa.target_pool:
+                                        _trig_instance_type = _wa.target_pool.split(':')[0]
+                                    elif _wa.target_pool:
+                                        _trig_instance_type = _wa.target_pool
+                                    # Label every existing node with
+                                    # 'spot-optimizer.io/existing-node=true' so
+                                    # the trigger pod's DoesNotExist nodeAffinity
+                                    # keeps it Pending, forcing Karpenter to
+                                    # provision a brand-new spot node.
+                                    # (kubernetes.io/hostname is a restricted label
+                                    #  in Karpenter and cannot be used.)
+                                    _existing_nodes = []
+                                    try:
+                                        _ks_cluster = db.query(Cluster).filter(Cluster.id == _wa.cluster_id).first()
+                                        if _ks_cluster:
+                                            _k8s_api = _ks_trig._get_k8s_client(_ks_cluster)
+                                            from kubernetes import client as _k8s_c
+                                            _core_v1 = _k8s_c.CoreV1Api(_k8s_api)
+                                            _all_nodes = _core_v1.list_node().items
+                                            _existing_nodes = [n.metadata.name for n in _all_nodes]
+                                            # Enhancement 6: Parallel node labelling + Redis cache
+                                            _label_body = {"metadata": {"labels": {"spot-optimizer.io/existing-node": "true"}}}
+                                            _label_cache_key = f"spot:nodes_labelled:{_wa.cluster_id}"
+                                            _already_labelled = set()
+                                            try:
+                                                _cached_labels = _redis.smembers(_label_cache_key)
+                                                _already_labelled = {
+                                                    (v.decode() if isinstance(v, bytes) else v) for v in _cached_labels
+                                                } if _cached_labels else set()
+                                            except Exception:
+                                                pass
+                                            _to_label = [n for n in _existing_nodes if n not in _already_labelled]
+                                            if _to_label:
+                                                from concurrent.futures import ThreadPoolExecutor as _TPE_LBL
+                                                def _label_node(_n):
+                                                    try:
+                                                        _core_v1.patch_node(_n, _label_body)
+                                                        return _n
+                                                    except Exception:
+                                                        return None
+                                                with _TPE_LBL(max_workers=min(10, len(_to_label))) as _lbl_pool:
+                                                    _labelled = list(_lbl_pool.map(_label_node, _to_label))
+                                                _newly_labelled = [n for n in _labelled if n]
+                                                if _newly_labelled:
+                                                    try:
+                                                        _redis.sadd(_label_cache_key, *_newly_labelled)
+                                                        _redis.expire(_label_cache_key, 3600)
+                                                    except Exception:
+                                                        pass
+                                            logger.info(
+                                                f"[auto_rebalancer] Action {_wa.id}: Labelled {len(_to_label)} "
+                                                f"nodes ({len(_already_labelled)} cached) with spot-optimizer.io/existing-node=true"
+                                            )
+                                    except Exception as _node_err:
+                                        logger.warning(
+                                            f"[auto_rebalancer] Action {_wa.id}: Could not list nodes "
+                                            f"for exclusion: {_node_err}"
+                                        )
+                                    # ── Workload-aware trigger pod sizing ──
+                                    # Query the source OD node's aggregate pod requests so the
+                                    # trigger pod reserves enough capacity for Karpenter to pick
+                                    # an instance size that can actually host the drained workloads.
+                                    _trig_cpu = "100m"
+                                    _trig_mem = "128Mi"
+                                    try:
+                                        _src_inst_id = _wa_meta.get("instance_id", "") or (_wa.source_instance_id or "")
+                                        if _src_inst_id:
+                                            _src_inst = db.query(Instance).filter(
+                                                Instance.instance_id == _src_inst_id
+                                            ).first()
+                                            _src_node = _src_inst.node_name if _src_inst else None
+                                            if _src_node:
+                                                from backend.models.pod_metric import PodMetric as _PM
+                                                from sqlalchemy import func as _sqla_func
+                                                # Latest metric snapshot per pod on this node
+                                                # (exclude DaemonSet pods — they exist on every node)
+                                                _latest_ts = db.query(
+                                                    _sqla_func.max(_PM.timestamp)
+                                                ).filter(
+                                                    _PM.cluster_id == _wa.cluster_id,
+                                                    _PM.node_name == _src_node,
+                                                ).scalar()
+                                                if _latest_ts:
+                                                    _node_pods = db.query(
+                                                        _sqla_func.coalesce(_sqla_func.sum(_PM.cpu_request_millicores), 0),
+                                                        _sqla_func.coalesce(_sqla_func.sum(_PM.memory_request_bytes), 0),
+                                                    ).filter(
+                                                        _PM.cluster_id == _wa.cluster_id,
+                                                        _PM.node_name == _src_node,
+                                                        _PM.timestamp == _latest_ts,
+                                                        _sqla_func.coalesce(_PM.controller_kind, '') != 'DaemonSet',
+                                                    ).first()
+                                                    if _node_pods:
+                                                        _total_cpu_m = int(_node_pods[0] or 0)
+                                                        _total_mem_b = int(_node_pods[1] or 0)
+                                                        # Apply 10% safety margin, enforce minimums
+                                                        _total_cpu_m = max(int(_total_cpu_m * 1.1), 100)
+                                                        _total_mem_mi = max(int((_total_mem_b * 1.1) / (1024 * 1024)), 128)
+                                                        _trig_cpu = f"{_total_cpu_m}m"
+                                                        _trig_mem = f"{_total_mem_mi}Mi"
+                                                        logger.info(
+                                                            f"[auto_rebalancer] Action {_wa.id}: Trigger pod sized "
+                                                            f"from node {_src_node} workload: cpu={_trig_cpu}, mem={_trig_mem}"
+                                                        )
+                                    except Exception as _sizing_err:
+                                        logger.warning(
+                                            f"[auto_rebalancer] Action {_wa.id}: Workload sizing failed, "
+                                            f"using defaults: {_sizing_err}"
+                                        )
+                                    _trig_nodepool = _wa_meta.get('karpenter_nodepool_name', 'default')
+                                    _trig_result = _ks_trig.create_spot_trigger_pod(
+                                        cluster_id=_wa.cluster_id,
+                                        pod_name=_trig_name,
+                                        target_instance_type=_trig_instance_type,
+                                        nodepool_name=_trig_nodepool,
+                                        exclude_nodes=_existing_nodes,
+                                        cpu_request=_trig_cpu,
+                                        memory_request=_trig_mem,
+                                    )
+                                    if _trig_result:
+                                        _wa_meta['trigger_pod_created'] = True
+                                        _wa_meta['trigger_pod_name'] = _trig_name
+                                        _wa_meta['trigger_pod_instance_type'] = _trig_instance_type
+                                        _wa_meta['trigger_cpu'] = _trig_cpu
+                                        _wa_meta['trigger_mem'] = _trig_mem
+                                        logger.info(
+                                            f"[auto_rebalancer] Action {_wa.id}: Created spot trigger pod "
+                                            f"'{_trig_name}' (nodepool={_trig_nodepool}, type={_trig_instance_type}) "
+                                            f"to force Karpenter provisioning"
+                                        )
+                                    else:
+                                        logger.warning(
+                                            f"[auto_rebalancer] Action {_wa.id}: Failed to create trigger pod"
+                                        )
+                                except Exception as _trig_err:
+                                    logger.warning(
+                                        f"[auto_rebalancer] Action {_wa.id}: Trigger pod error: {_trig_err}"
+                                    )
+
+                            # Enhancement 7: Active trigger pod verification EVERY CYCLE.
+                            # Check if trigger pod still exists, is Pending (normal), Failed,
+                            # or vanished. Recreate immediately instead of waiting 120s.
+                            elif _spot_count <= _spot_baseline and _wa_meta.get('trigger_pod_created'):
+                                _trig_name_check = _wa_meta.get('trigger_pod_name', f"spot-trigger-{_wa.id}")
+                                _trig_state = 'unknown'  # unknown|pending|failed|missing
+                                try:
+                                    from backend.services.karpenter_service import KarpenterService as _KS_TRIG2
+                                    _ks_trig2 = _KS_TRIG2(db, _redis)
+                                    _wa_cluster_trig = db.query(Cluster).filter(Cluster.id == _wa.cluster_id).first()
+                                    if _wa_cluster_trig:
+                                        _k8s_api_trig = _ks_trig2._get_k8s_client(_wa_cluster_trig)
+                                        from kubernetes import client as _k8s_trig
+                                        _core_trig = _k8s_trig.CoreV1Api(_k8s_api_trig)
+                                        try:
+                                            _trig_pod = _core_trig.read_namespaced_pod(_trig_name_check, 'default')
+                                            _trig_phase = (_trig_pod.status.phase or '').lower()
+                                            if _trig_phase == 'pending':
+                                                _trig_state = 'pending'
+                                            elif _trig_phase == 'failed':
+                                                _trig_state = 'failed'
+                                            elif _trig_phase == 'running':
+                                                _trig_state = 'running'
+                                            elif _trig_phase == 'succeeded':
+                                                _trig_state = 'succeeded'
+                                            else:
+                                                _trig_state = 'pending'
+                                        except Exception:
+                                            _trig_state = 'missing'
+                                except Exception:
+                                    _trig_state = 'unknown'  # K8s API error, don't spam recreate
+
+                                if _trig_state == 'missing':
+                                    logger.warning(
+                                        f"[auto_rebalancer] Action {_wa.id}: Trigger pod "
+                                        f"'{_trig_name_check}' vanished — recreating immediately"
+                                    )
+                                    _wa_meta['trigger_pod_created'] = False
+                                    # Will be re-created on next cycle (trigger_pod_created=False)
+                                elif _trig_state == 'failed':
+                                    logger.warning(
+                                        f"[auto_rebalancer] Action {_wa.id}: Trigger pod "
+                                        f"'{_trig_name_check}' in Failed state — deleting and recreating"
+                                    )
+                                    try:
+                                        _core_trig.delete_namespaced_pod(_trig_name_check, 'default')
+                                    except Exception:
+                                        pass
+                                    _wa_meta['trigger_pod_created'] = False
+                                elif _trig_state == 'pending' and _spot_wait_elapsed >= 300:
+                                    # Pending for > 5 min — suspect wrong NodePool or stale config.
+                                    # Re-verify NodePool has the target type and recreate.
+                                    if not _wa_meta.get('trig_np_reverified'):
+                                        logger.warning(
+                                            f"[auto_rebalancer] Action {_wa.id}: Trigger pod Pending "
+                                            f"for {int(_spot_wait_elapsed)}s — re-verifying NodePool"
+                                        )
+                                        try:
+                                            from backend.services.karpenter_service import KarpenterService as _KS_VERIFY
+                                            _ks_verify = _KS_VERIFY(db, _redis)
+                                            _trig_type_v = _wa_meta.get('trigger_pod_instance_type', '')
+                                            if _trig_type_v:
+                                                _ks_verify.add_allowed_instance_type_all_spot(
+                                                    cluster_id=_wa.cluster_id,
+                                                    instance_type=_trig_type_v,
+                                                )
+                                            _wa_meta['trig_np_reverified'] = True
+                                        except Exception as _np_rev_err:
+                                            logger.debug(f"[auto_rebalancer] NodePool re-verify failed: {_np_rev_err}")
+
+                            # ── Escalation logic for baseline=0 stalls ──────────────
+                            # When spot_count=0 and baseline=0, the trigger pod may be
+                            # Pending because Karpenter can't get capacity for the target
+                            # type. Progressively try alternative instance types.
+                            # DISABLED: User requires strict ML-recommended type only.
+                            # The rebalancer will wait for the ML-recommended type or
+                            # timeout — no fallback to alternative instance types.
+                            _ESC_ALT1_S = 300   # 5 min — try 2nd alternative type
+                            _ESC_ALT2_S = 600   # 10 min — try 3rd alternative type
+                            _ESC_BROAD_S = 900  # 15 min — broaden to any NodePool type
+                            _ranked_alts = _wa_meta.get('ranked_alternatives', [])
+                            _current_trig_type = _wa_meta.get('trigger_pod_instance_type') or _expected_instance_type or ''
+
+                            if False and (
+                                _spot_count == 0
+                                and _spot_baseline == 0
+                                and _wa_meta.get('trigger_pod_created')
+                                and _ranked_alts
+                            ):
+                                _esc_action_needed = None
+                                if _spot_wait_elapsed >= _ESC_BROAD_S and not _wa_meta.get('esc_broad_done'):
+                                    _esc_action_needed = 'broad'
+                                elif _spot_wait_elapsed >= _ESC_ALT2_S and not _wa_meta.get('esc_alt2_done'):
+                                    # Pick 3rd alternative (index 2) or fall through
+                                    if len(_ranked_alts) > 2 and _ranked_alts[2] != _current_trig_type:
+                                        _esc_action_needed = 'alt2'
+                                elif _spot_wait_elapsed >= _ESC_ALT1_S and not _wa_meta.get('esc_alt1_done'):
+                                    # Pick 2nd alternative (index 1) or fall through
+                                    if len(_ranked_alts) > 1 and _ranked_alts[1] != _current_trig_type:
+                                        _esc_action_needed = 'alt1'
+
+                                if _esc_action_needed:
+                                    try:
+                                        from backend.services.karpenter_service import KarpenterService as _KS_ESC
+                                        _ks_esc = _KS_ESC(db, _redis)
+                                        _esc_cluster = db.query(Cluster).filter(Cluster.id == _wa.cluster_id).first()
+                                        if _esc_cluster:
+                                            _k8s_esc = _ks_esc._get_k8s_client(_esc_cluster)
+                                            from kubernetes import client as _k8s_esc_c
+                                            _core_esc = _k8s_esc_c.CoreV1Api(_k8s_esc)
+                                            # Delete current trigger pod
+                                            _trig_del_name = _wa_meta.get('trigger_pod_name', f"spot-trigger-{_wa.id}")
+                                            try:
+                                                _core_esc.delete_namespaced_pod(_trig_del_name, 'default')
+                                            except Exception:
+                                                pass  # may already be gone
+
+                                            if _esc_action_needed == 'broad':
+                                                # Broaden: don't constrain instance type — let Karpenter choose
+                                                _esc_type = ''
+                                                _wa_meta['esc_broad_done'] = True
+                                                logger.warning(
+                                                    f"[auto_rebalancer] Action {_wa.id}: ESCALATION 15min — "
+                                                    f"recreating trigger pod with NO instance-type constraint "
+                                                    f"(letting Karpenter choose from entire NodePool)"
+                                                )
+                                            elif _esc_action_needed == 'alt2':
+                                                _esc_type = _ranked_alts[2]
+                                                _wa_meta['esc_alt2_done'] = True
+                                                logger.warning(
+                                                    f"[auto_rebalancer] Action {_wa.id}: ESCALATION 10min — "
+                                                    f"switching trigger pod from {_current_trig_type} to "
+                                                    f"alternative type {_esc_type}"
+                                                )
+                                            else:  # alt1
+                                                _esc_type = _ranked_alts[1]
+                                                _wa_meta['esc_alt1_done'] = True
+                                                logger.warning(
+                                                    f"[auto_rebalancer] Action {_wa.id}: ESCALATION 5min — "
+                                                    f"switching trigger pod from {_current_trig_type} to "
+                                                    f"alternative type {_esc_type}"
+                                                )
+
+                                            # Re-label existing nodes for new trigger pod (parallel)
+                                            _label_body_esc = {"metadata": {"labels": {"spot-optimizer.io/existing-node": "true"}}}
+                                            _existing_esc = []
+                                            try:
+                                                _all_esc = _core_esc.list_node().items
+                                                _existing_esc = [n.metadata.name for n in _all_esc]
+                                                from concurrent.futures import ThreadPoolExecutor as _TPE_ESC
+                                                def _label_esc_node(_n):
+                                                    try:
+                                                        _core_esc.patch_node(_n, _label_body_esc)
+                                                    except Exception:
+                                                        pass
+                                                with _TPE_ESC(max_workers=min(10, max(1, len(_existing_esc)))) as _esc_pool:
+                                                    list(_esc_pool.map(_label_esc_node, _existing_esc))
+                                            except Exception:
+                                                pass
+
+                                            _trig_nodepool_esc = _wa_meta.get('karpenter_nodepool_name', 'default')
+
+                                            # Add the escalation instance type to the
+                                            # NodePool BEFORE creating the trigger pod
+                                            # so Karpenter can actually provision it.
+                                            if _esc_type:
+                                                try:
+                                                    _ks_esc.add_allowed_instance_type_all_spot(
+                                                        cluster_id=_wa.cluster_id,
+                                                        instance_type=_esc_type,
+                                                    )
+                                                    logger.info(
+                                                        f"[auto_rebalancer] Action {_wa.id}: Added {_esc_type} "
+                                                        f"to spot NodePool(s) for escalation"
+                                                    )
+                                                except Exception as _np_esc_err:
+                                                    logger.warning(
+                                                        f"[auto_rebalancer] Action {_wa.id}: Failed to add "
+                                                        f"{_esc_type} to NodePool: {_np_esc_err}"
+                                                    )
+
+                                            _trig_result_esc = _ks_esc.create_spot_trigger_pod(
+                                                cluster_id=_wa.cluster_id,
+                                                pod_name=_trig_del_name,
+                                                target_instance_type=_esc_type,
+                                                nodepool_name=_trig_nodepool_esc,
+                                                exclude_nodes=_existing_esc,
+                                                cpu_request=_wa_meta.get('trigger_cpu', '100m'),
+                                                memory_request=_wa_meta.get('trigger_mem', '128Mi'),
+                                            )
+                                            if _trig_result_esc:
+                                                _wa_meta['trigger_pod_instance_type'] = _esc_type
+                                                logger.info(
+                                                    f"[auto_rebalancer] Action {_wa.id}: Escalation trigger pod "
+                                                    f"created (type={'ANY' if not _esc_type else _esc_type})"
+                                                )
+                                            else:
+                                                logger.warning(
+                                                    f"[auto_rebalancer] Action {_wa.id}: Escalation trigger pod "
+                                                    f"creation failed"
+                                                )
+                                    except Exception as _esc_err:
+                                        logger.warning(
+                                            f"[auto_rebalancer] Action {_wa.id}: Escalation error: {_esc_err}"
+                                        )
+
                             # Still waiting for THIS action's spot replacement — do NOT create drain actions yet
-                            _wa_meta['current_step'] = 'waiting_for_spot_node'
-                            _wa_meta['spot_wait_elapsed_s'] = int(_spot_wait_elapsed)
-                            _wa_meta['spot_count_current'] = _spot_count
-                            _wa_meta['spot_count_baseline'] = _spot_baseline
-                            _wa_meta['provisioner_type'] = 'karpenter'
-                            _wa.action_metadata = _wa_meta
-                            logger.info(
-                                f"[auto_rebalancer] Action {_wa.id}: Phase 1 done, "
-                                f"waiting for NEW spot node (current={_spot_count}, baseline={_spot_baseline}, "
-                                f"{int(_spot_wait_elapsed)}s elapsed, timeout {_SPOT_WAIT_TIMEOUT_S}s)"
-                            )
-                            db.commit()
-                            continue  # Re-check next cycle (outer for _wa loop)
+                            # Fix 5: Safety escape — if a spot node exists with a node_name
+                            # and we've been waiting >5 min, force Phase 2 creation.
+                            # This catches cases where the readiness gate can't pass
+                            # (status=UNKNOWN, K8s API unreachable) but the node is actually
+                            # running and Ready in K8s.
+                            if (
+                                _newest_spot
+                                and _newest_spot.node_name
+                                and _newest_spot.instance_id
+                                and _spot_wait_elapsed > 300
+                            ):
+                                # FIX: Verify node actually exists in K8s before forcing Phase 2.
+                                # DB node_name may be set from EC2 private DNS before kubelet
+                                # registers → LABEL_NODE will 404 if we proceed prematurely.
+                                _fix5_node_live = False
+                                try:
+                                    if _wa_cluster_obj:
+                                        from backend.services.karpenter_service import KarpenterService as _KS_F5
+                                        _ks_f5 = _KS_F5(db, _redis)
+                                        _f5_api = _ks_f5._get_k8s_client(_wa_cluster_obj)
+                                        from kubernetes import client as _k8s_f5
+                                        _f5_v1 = _k8s_f5.CoreV1Api(_f5_api)
+                                        _f5_v1.read_node(_newest_spot.node_name)
+                                        _fix5_node_live = True
+                                except Exception as _f5_err:
+                                    logger.info(
+                                        f"[auto_rebalancer] Action {_wa.id}: Fix5 — node "
+                                        f"{_newest_spot.node_name} NOT in K8s yet ({_f5_err}), "
+                                        f"deferring _new_spot_joined"
+                                    )
+
+                                if _fix5_node_live:
+                                    logger.warning(
+                                        f"[auto_rebalancer] Action {_wa.id}: Fix5 safety escape — "
+                                        f"spot {_newest_spot.instance_id[:12]} has node_name="
+                                        f"{_newest_spot.node_name} but readiness gate stuck for "
+                                        f"{int(_spot_wait_elapsed)}s. Forcing _new_spot_joined=True."
+                                    )
+                                    _new_spot_joined = True
+                                    # Pin replacement ID
+                                    if not _wa_meta.get('replacement_spot_instance_id'):
+                                        _wa_meta['replacement_spot_instance_id'] = _newest_spot.instance_id
+                                    if not _wa_meta.get('replacement_spot_node_name'):
+                                        _wa_meta['replacement_spot_node_name'] = _newest_spot.node_name
+                                    _wa.action_metadata = _wa_meta
+                                    # Don't continue — fall through to Phase 2 creation below
+                            else:
+                                _wa_meta['current_step'] = 'waiting_for_spot_node'
+                                # Fix 15: Set step_entered timestamp for per-state timeout tracking
+                                if 'step_entered_waiting_for_spot_node' not in _wa_meta:
+                                    _wa_meta['step_entered_waiting_for_spot_node'] = datetime.utcnow().isoformat()
+                                _wa_meta['spot_wait_elapsed_s'] = int(_spot_wait_elapsed)
+                                _wa_meta['spot_count_current'] = _spot_count
+                                _wa_meta['spot_count_baseline'] = _spot_baseline
+                                _wa_meta['provisioner_type'] = 'karpenter'
+                                _wa.action_metadata = _wa_meta
+                                # Progressive log severity: INFO < 5min, WARNING 5-20min, ERROR > 20min
+                                _wait_msg = (
+                                    f"[auto_rebalancer] Action {_wa.id}: Phase 1 done, "
+                                    f"waiting for NEW spot node (current={_spot_count}, baseline={_spot_baseline}, "
+                                    f"{int(_spot_wait_elapsed)}s elapsed, timeout {_SPOT_WAIT_TIMEOUT_S}s)"
+                                )
+                                if _spot_wait_elapsed >= 1200:
+                                    logger.error(_wait_msg)
+                                elif _spot_wait_elapsed >= 300:
+                                    logger.warning(_wait_msg)
+                                else:
+                                    logger.info(_wait_msg)
+                                db.commit()
+                                continue  # Re-check next cycle (outer for _wa loop)
 
                         if _new_spot_joined:
+                            # ── ATOMIC CLAIM: Prevent two actions from sharing one replacement ──
+                            # Use Redis SET NX to atomically claim this replacement instance.
+                            # If another action already claimed it, this action must wait for
+                            # a new spot node instead of proceeding with Phase 2.
+                            _claim_inst_id = _newest_spot.instance_id if _newest_spot else None
+                            if _claim_inst_id and _redis:
+                                _claim_key = f"spot:replacement_claimed:{_claim_inst_id}"
+                                _claimed = _redis.set(_claim_key, str(_wa.id), nx=True, ex=3600)
+                                if not _claimed:
+                                    _existing_claim = _redis.get(_claim_key)
+                                    _existing_claim_str = _existing_claim.decode() if isinstance(_existing_claim, bytes) else str(_existing_claim)
+                                    if _existing_claim_str != str(_wa.id):
+                                        logger.warning(
+                                            f"[auto_rebalancer] Action {_wa.id}: replacement "
+                                            f"{_claim_inst_id[:12]} already claimed by action "
+                                            f"{_existing_claim_str} — waiting for a new spot node"
+                                        )
+                                        _new_spot_joined = False
+                                        # Reset and wait for next cycle
+                                        _wa_meta['current_step'] = 'waiting_for_spot_node'
+                                        _wa_meta['spot_wait_elapsed_s'] = int(_spot_wait_elapsed)
+                                        _wa.action_metadata = _wa_meta
+                                        db.commit()
+                                        continue
+
                             logger.info(
                                 f"[auto_rebalancer] Action {_wa.id}: NEW spot node joined! "
                                 f"(count {_spot_baseline} → {_spot_count}) "
@@ -2282,37 +4154,193 @@ def execute_rebalancing():
                             )
                             _wa_meta['step_4_new_node_joined'] = datetime.utcnow().isoformat()
 
+                            # ── TAG SPOT INSTANCE: Copy Name tag from source OD instance ──
+                            # Karpenter-provisioned spots don't inherit the ASG Name tag.
+                            # Copy it from the original OD instance so the spot shows a
+                            # proper Name in the AWS console instead of blank.
+                            _tag_src_id = _wa_meta.get("instance_id", "") or (_wa.source_instance_id or "")
+                            _tag_repl_id = _wa_meta.get('replacement_spot_instance_id', '')
+                            if _tag_src_id and _tag_repl_id and _tag_src_id.startswith("i-") and _tag_repl_id.startswith("i-"):
+                                try:
+                                    import boto3 as _b3tag
+                                    from backend.models.system_config import SystemConfig as _SC_TAG
+                                    _tag_cluster = db.query(Cluster).filter(Cluster.id == _wa.cluster_id).first()
+                                    _tag_region = (_tag_cluster.region if _tag_cluster else None) or "ap-south-1"
+
+                                    _pk_t = db.query(_SC_TAG).filter(_SC_TAG.key == "PLATFORM_AWS_ACCESS_KEY").first()
+                                    _ps_t = db.query(_SC_TAG).filter(_SC_TAG.key == "PLATFORM_AWS_SECRET").first()
+                                    _plat_key_t = (_pk_t.value if _pk_t and _pk_t.value else None)
+                                    _plat_secret_t = (_ps_t.value if _ps_t and _ps_t.value else None)
+
+                                    _tag_creds = {}
+                                    _tag_role = (_tag_cluster.aws_role_arn if _tag_cluster else None)
+                                    _tag_ext = (_tag_cluster.aws_external_id if _tag_cluster else None)
+                                    if not _tag_role and _tag_cluster and _tag_cluster.account_id:
+                                        try:
+                                            from backend.models.account import Account as _Acct_TAG
+                                            _acct_t = db.query(_Acct_TAG).filter(_Acct_TAG.id == _tag_cluster.account_id).first()
+                                            if _acct_t:
+                                                _tag_role = _acct_t.role_arn
+                                                _tag_ext = _acct_t.external_id
+                                        except Exception:
+                                            pass
+
+                                    if _tag_role and _plat_key_t and _plat_secret_t:
+                                        _sts_t = _b3tag.client("sts", aws_access_key_id=_plat_key_t,
+                                                               aws_secret_access_key=_plat_secret_t, region_name=_tag_region)
+                                        _assume_kw = {"RoleArn": _tag_role, "RoleSessionName": "spot-rebalancer-tag"}
+                                        if _tag_ext:
+                                            _assume_kw["ExternalId"] = _tag_ext
+                                        _assumed_t = _sts_t.assume_role(**_assume_kw)
+                                        _ct = _assumed_t["Credentials"]
+                                        _tag_creds = {
+                                            "aws_access_key_id": _ct["AccessKeyId"],
+                                            "aws_secret_access_key": _ct["SecretAccessKey"],
+                                            "aws_session_token": _ct["SessionToken"],
+                                        }
+                                    elif _plat_key_t and _plat_secret_t:
+                                        _tag_creds = {"aws_access_key_id": _plat_key_t,
+                                                      "aws_secret_access_key": _plat_secret_t}
+
+                                    if _tag_creds:
+                                        _ec2_tag = _b3tag.client("ec2", region_name=_tag_region, **_tag_creds)
+
+                                        # Read Name tag from source OD instance
+                                        _src_tags_resp = _ec2_tag.describe_tags(Filters=[
+                                            {"Name": "resource-id", "Values": [_tag_src_id]},
+                                            {"Name": "key", "Values": ["Name"]},
+                                        ])
+                                        _src_name = ""
+                                        for _t in _src_tags_resp.get("Tags", []):
+                                            if _t.get("Key") == "Name":
+                                                _src_name = _t.get("Value", "")
+                                                break
+
+                                        if not _src_name:
+                                            _src_name = f"{_tag_cluster.name}-spot-node" if _tag_cluster else "spot-node"
+
+                                        # Apply Name tag + cluster Name tag to the replacement spot
+                                        _new_tags = [
+                                            {"Key": "Name", "Value": _src_name},
+                                        ]
+                                        _ec2_tag.create_tags(Resources=[_tag_repl_id], Tags=_new_tags)
+                                        _wa_meta['spot_name_tag_applied'] = _src_name
+                                        logger.info(
+                                            f"[auto_rebalancer] Action {_wa.id}: Tagged spot "
+                                            f"{_tag_repl_id[:12]} with Name='{_src_name}'"
+                                        )
+                                except Exception as _tag_err:
+                                    logger.warning(
+                                        f"[auto_rebalancer] Action {_wa.id}: Failed to tag "
+                                        f"spot instance: {_tag_err}"
+                                    )
+
+                            # Clean up trigger pod if one was created
+                            _trig_pod_name = _wa_meta.get('trigger_pod_name')
+                            if _trig_pod_name:
+                                try:
+                                    from backend.services.karpenter_service import KarpenterService as _KS_CLEAN
+                                    _ks_clean = _KS_CLEAN(db, _redis)
+                                    _ks_clean.delete_spot_trigger_pod(
+                                        cluster_id=_wa.cluster_id,
+                                        pod_name=_trig_pod_name,
+                                    )
+                                    logger.info(
+                                        f"[auto_rebalancer] Action {_wa.id}: Cleaned up trigger pod '{_trig_pod_name}'"
+                                    )
+                                except Exception as _trig_clean_err:
+                                    logger.warning(
+                                        f"[auto_rebalancer] Action {_wa.id}: Trigger pod cleanup failed: {_trig_clean_err}"
+                                    )
+
                             # Apply karpenter.sh/do-not-disrupt=true to the new spot node.
                             # This prevents Karpenter's consolidation/expiry loop from
                             # terminating the replacement node while pods are still draining
                             # onto it.  The annotation is removed after Phase 2 completes.
                             if _newest_spot and _newest_spot.node_name:
+                                # CRITICAL: Apply annotation DIRECTLY via backend K8s API
+                                # instead of (or in addition to) an agent action, because
+                                # the agent may be unreachable and the LABEL_NODE action
+                                # stays PENDING → Karpenter kills the unprotected spot.
+                                _dnd_applied = False
                                 try:
-                                    from backend.models.agent_action import AgentAction as _AA_ANN, AgentActionType as _AAT_ANN, AgentActionStatus as _AAS_ANN
-                                    _kp_annotate = _AA_ANN(
-                                        cluster_id=_wa.cluster_id,
-                                        action_type=_AAT_ANN.LABEL_NODE,
-                                        status=_AAS_ANN.PENDING,
-                                        payload={
-                                            "node_name": _newest_spot.node_name,
-                                            "labels": {},
-                                            "annotations": {
-                                                "karpenter.sh/do-not-disrupt": "true"
-                                            },
-                                            "rebalancing_action_id": str(_wa.id),
-                                            "purpose": "protect_replacement_node",
-                                        },
-                                    )
-                                    db.add(_kp_annotate)
-                                    db.flush()
-                                    logger.info(
-                                        f"[auto_rebalancer] Queued karpenter.sh/do-not-disrupt=true "
-                                        f"on {_newest_spot.node_name} (action {_wa.id})"
-                                    )
-                                except Exception as _ann_err:
+                                    from backend.services.karpenter_service import KarpenterService as _KS_DND
+                                    _ks_dnd = _KS_DND(db=db)
+                                    _wa_cluster_dnd = db.query(Cluster).filter(
+                                        Cluster.id == _wa.cluster_id
+                                    ).first()
+                                    if _wa_cluster_dnd:
+                                        _k8s_api_dnd = _ks_dnd._get_k8s_client(_wa_cluster_dnd)
+                                        from kubernetes import client as _k8s_dnd
+                                        _core_dnd = _k8s_dnd.CoreV1Api(_k8s_api_dnd)
+                                        # Retry with backoff: node may still be registering
+                                        # in K8s after EC2 launch (404 = not found yet).
+                                        import time as _time_dnd
+                                        _DND_MAX_RETRIES = 6
+                                        _DND_RETRY_INTERVAL_S = 5  # 6 x 5s = 30s max wait
+                                        for _dnd_attempt in range(1, _DND_MAX_RETRIES + 1):
+                                            try:
+                                                _core_dnd.patch_node(
+                                                    _newest_spot.node_name,
+                                                    {"metadata": {"annotations": {
+                                                        "karpenter.sh/do-not-disrupt": "true"
+                                                    }}}
+                                                )
+                                                _dnd_applied = True
+                                                logger.info(
+                                                    f"[auto_rebalancer] Action {_wa.id}: Applied "
+                                                    f"karpenter.sh/do-not-disrupt=true DIRECTLY on "
+                                                    f"{_newest_spot.node_name} via backend K8s API"
+                                                    f" (attempt {_dnd_attempt}/{_DND_MAX_RETRIES})"
+                                                )
+                                                break  # success
+                                            except _k8s_dnd.ApiException as _dnd_api_err:
+                                                if _dnd_api_err.status == 404 and _dnd_attempt < _DND_MAX_RETRIES:
+                                                    logger.info(
+                                                        f"[auto_rebalancer] Action {_wa.id}: Node "
+                                                        f"{_newest_spot.node_name} not found in K8s yet "
+                                                        f"(attempt {_dnd_attempt}/{_DND_MAX_RETRIES}), "
+                                                        f"retrying in {_DND_RETRY_INTERVAL_S}s..."
+                                                    )
+                                                    _time_dnd.sleep(_DND_RETRY_INTERVAL_S)
+                                                else:
+                                                    raise  # non-404 or last attempt → bubble up
+                                except Exception as _dnd_err:
                                     logger.warning(
-                                        f"[auto_rebalancer] Failed to queue do-not-disrupt annotation: {_ann_err}"
+                                        f"[auto_rebalancer] Action {_wa.id}: Direct do-not-disrupt "
+                                        f"annotation failed: {_dnd_err} — falling back to agent action"
                                     )
+
+                                # Also queue the agent action as a backup (agent may apply it
+                                # if the direct path failed or when it eventually reconnects)
+                                if not _dnd_applied:
+                                    try:
+                                        from backend.models.agent_action import AgentAction as _AA_ANN, AgentActionType as _AAT_ANN, AgentActionStatus as _AAS_ANN
+                                        _kp_annotate = _AA_ANN(
+                                            cluster_id=_wa.cluster_id,
+                                            action_type=_AAT_ANN.LABEL_NODE,
+                                            status=_AAS_ANN.PENDING,
+                                            payload={
+                                                "node_name": _newest_spot.node_name,
+                                                "labels": {},
+                                                "annotations": {
+                                                    "karpenter.sh/do-not-disrupt": "true"
+                                                },
+                                                "rebalancing_action_id": str(_wa.id),
+                                                "purpose": "protect_replacement_node",
+                                                "zero_downtime_step": 1,
+                                            },
+                                        )
+                                        db.add(_kp_annotate)
+                                        db.flush()
+                                        logger.info(
+                                            f"[auto_rebalancer] Queued karpenter.sh/do-not-disrupt=true "
+                                            f"on {_newest_spot.node_name} (action {_wa.id}) [fallback]"
+                                        )
+                                    except Exception as _ann_err:
+                                        logger.warning(
+                                            f"[auto_rebalancer] Failed to queue do-not-disrupt annotation: {_ann_err}"
+                                        )
                         elif _spot_wait_elapsed >= _SPOT_WAIT_TIMEOUT_S and _wa_karpenter_active:
                             # Timeout: spot replacement did not join K8s in time.
                             # For direct EC2 launch (non-Karpenter S2S): the replacement EC2
@@ -2352,6 +4380,7 @@ def execute_rebalancing():
                                 _wa.duration_seconds = int(
                                     (_wa.completed_at - _wa.started_at).total_seconds()
                                 ) if _wa.started_at else 0
+                                _cleanup_rebalancing_resources(_wa, _wa_meta, _redis, db)
                                 db.commit()
                                 continue
 
@@ -2378,6 +4407,7 @@ def execute_rebalancing():
                                 _wa.duration_seconds = int(
                                     (_wa.completed_at - _wa.started_at).total_seconds()
                                 ) if _wa.started_at else 0
+                                _cleanup_rebalancing_resources(_wa, _wa_meta, _redis, db)
                                 db.commit()
                                 continue
                             # P-H1 fix: other nodes exist but Karpenter never provisioned a
@@ -2404,6 +4434,7 @@ def execute_rebalancing():
                             _wa.duration_seconds = int(
                                 (_wa.completed_at - _wa.started_at).total_seconds()
                             ) if _wa.started_at else 0
+                            _cleanup_rebalancing_resources(_wa, _wa_meta, _redis, db)
                             db.commit()
                             continue
                         elif _spot_wait_elapsed >= _SPOT_WAIT_TIMEOUT_S and not _wa_karpenter_active:
@@ -2424,21 +4455,202 @@ def execute_rebalancing():
                             _wa.duration_seconds = int(
                                 (_wa.completed_at - _wa.started_at).total_seconds()
                             ) if _wa.started_at else 0
+                            _cleanup_rebalancing_resources(_wa, _wa_meta, _redis, db)
                             db.commit()
                             continue  # outer for _wa loop
 
                         # ── CREATE PHASE 2 ACTIONS ────────────────────────────
                         # Retrieve instance params from action metadata (set in Phase 1)
                         _p2 = _wa_meta.get("phase2_params", {})
-                        _p2_instance_id = _p2.get("instance_id") or _wa_meta.get("instance_id", "")
+                        # Fix 12: Instance ID fallback chain — phase2_params → metadata → model field
+                        _p2_instance_id = (
+                            _p2.get("instance_id")
+                            or _wa_meta.get("instance_id", "")
+                            or (_wa.source_instance_id or "")
+                        )
                         _p2_instance_type = _p2.get("instance_type", "")
                         _p2_az = _p2.get("az", "")
 
+                        # ── Source-alive gate: abort if the OD instance was already
+                        #    terminated (e.g. by ASG AZ-rebalancing) while we waited ──
+                        if _p2_instance_id:
+                            from backend.models.instance import Instance as _InstAlive
+                            _src_alive = db.query(_InstAlive).filter(
+                                _InstAlive.instance_id == _p2_instance_id,
+                                _InstAlive.state == 'running',
+                            ).first()
+                            if not _src_alive:
+                                logger.warning(
+                                    f"[auto_rebalancer] Action {_wa.id}: source OD "
+                                    f"{_p2_instance_id} is no longer running (terminated by "
+                                    f"ASG or externally). Aborting — no node to replace."
+                                )
+                                _wa.status = 'cancelled'
+                                _wa.error_message = (
+                                    f"Source instance {_p2_instance_id} terminated externally "
+                                    f"before Phase 2 could start."
+                                )
+                                _wa.completed_at = datetime.utcnow()
+                                _wa.duration_seconds = int(
+                                    (_wa.completed_at - _wa.started_at).total_seconds()
+                                ) if _wa.started_at else 0
+                                _cleanup_rebalancing_resources(_wa, _wa_meta, _redis, db)
+                                db.commit()
+                                continue  # outer for _wa loop
+
                         # Karpenter manages node lifecycle — no ASG attach needed.
-                        _p2_term_mode = "karpenter"
+                        # Fix #6: If the source OD node belongs to an ASG (detected in
+                        # Phase 1 and stored in metadata), use "scaledown" mode so the
+                        # agent calls terminate_instance_in_auto_scaling_group with
+                        # ShouldDecrementDesiredCapacity=True.  This prevents the ASG
+                        # from auto-healing by launching a new OD instance to replace
+                        # the one we just terminated.
+                        _p2_asg_name = _wa_meta.get("asg_name_used")
+                        if _p2_asg_name:
+                            _p2_term_mode = "scaledown"
+                            logger.info(
+                                f"[auto_rebalancer] Action {_wa.id}: source OD node is ASG-backed "
+                                f"(asg={_p2_asg_name}) — using termination_mode='scaledown' "
+                                f"(ShouldDecrementDesiredCapacity=True)"
+                            )
+                        else:
+                            _p2_term_mode = "karpenter"
                         _wa_meta['termination_mode'] = _p2_term_mode
 
+                        # Bug #8 fix: Resolve node_name from DB and verify the
+                        # target OD instance is actually registered in K8s before
+                        # creating CORDON/DRAIN actions.  Without this, the agent
+                        # may resolve the wrong node via type+AZ fallback.
+                        _p2_node_name = None
                         if _p2_instance_id:
+                            from backend.models.instance import Instance as _InstP2
+                            _p2_inst_obj = db.query(_InstP2).filter(
+                                _InstP2.cluster_id == _wa.cluster_id,
+                                _InstP2.instance_id == _p2_instance_id,
+                            ).first()
+                            _p2_node_name = getattr(_p2_inst_obj, 'node_name', None) if _p2_inst_obj else None
+                            # Fix 6: providerID fallback — if DB node_name is empty,
+                            # query K8s nodes by spec.providerID to find the node name.
+                            # This handles nodes where aws_sync or collector hasn't
+                            # populated node_name yet but the node IS in K8s.
+                            if not _p2_node_name and _wa_cluster_obj and _p2_instance_id:
+                                try:
+                                    from backend.services.karpenter_service import KarpenterService as _KS_F6
+                                    _ks_f6 = _KS_F6(db, _redis)
+                                    _f6_api = _ks_f6._get_k8s_client(_wa_cluster_obj)
+                                    from kubernetes import client as _k8s_f6
+                                    _f6_v1 = _k8s_f6.CoreV1Api(_f6_api)
+                                    for _f6_node in _f6_v1.list_node().items:
+                                        _f6_pid = (_f6_node.spec.provider_id or '') if _f6_node.spec else ''
+                                        if _p2_instance_id in _f6_pid:
+                                            _p2_node_name = _f6_node.metadata.name
+                                            # Update DB so we don't have to do this again
+                                            if _p2_inst_obj:
+                                                _p2_inst_obj.node_name = _p2_node_name
+                                                db.flush()
+                                            logger.info(
+                                                f"[auto_rebalancer] Action {_wa.id}: Fix6 — "
+                                                f"resolved node_name={_p2_node_name} via "
+                                                f"providerID for {_p2_instance_id[:12]}"
+                                            )
+                                            break
+                                except Exception as _f6_err:
+                                    logger.debug(
+                                        f"[auto_rebalancer] Action {_wa.id}: Fix6 providerID "
+                                        f"lookup failed: {_f6_err}"
+                                    )
+                            # Also check action metadata for target_node_name
+                            if not _p2_node_name:
+                                _p2_node_name = _wa_meta.get('target_node_name')
+                            # Verify the node actually exists in K8s via the backend K8s client.
+                            # If the node is MISSING from K8s but the instance is ASG-backed,
+                            # skip cordon/drain (no pods to drain) and go straight to ASG
+                            # terminate+decrement.  This handles the common case where the
+                            # kubelet crashed or the node was removed but EC2 is still running.
+                            _p2_skip_cordon_drain = False
+                            if _p2_node_name:
+                                try:
+                                    from backend.services.karpenter_service import KarpenterService as _KS_p2v
+                                    from kubernetes import client as _k8s_client_p2v
+                                    _ks_p2v = _KS_p2v(db=db)
+                                    _wa_cluster_obj = db.query(Cluster).filter(Cluster.id == _wa.cluster_id).first()
+                                    if _wa_cluster_obj:
+                                        _k8s_api = _ks_p2v._get_k8s_client(_wa_cluster_obj)
+                                        _core_v1 = _k8s_client_p2v.CoreV1Api(_k8s_api)
+                                        _k8s_nodes_p2v = _core_v1.list_node()
+                                        _p2v_names = {n.metadata.name for n in _k8s_nodes_p2v.items}
+                                        if _p2_node_name not in _p2v_names:
+                                            _p2_asg_for_ghost = _wa_meta.get("asg_name_used")
+                                            if _p2_asg_for_ghost:
+                                                # Node gone from K8s but EC2 still in ASG —
+                                                # skip cordon/drain, go straight to terminate+decrement.
+                                                logger.warning(
+                                                    f"[auto_rebalancer] Action {_wa.id}: target node "
+                                                    f"{_p2_node_name} ({_p2_instance_id}) NOT in K8s "
+                                                    f"(known: {_p2v_names}) but instance is ASG-backed "
+                                                    f"(asg={_p2_asg_for_ghost}). Skipping cordon/drain, "
+                                                    f"will terminate+decrement ASG directly."
+                                                )
+                                                _p2_skip_cordon_drain = True
+                                            else:
+                                                # Not ASG-backed and not in K8s — nothing to do.
+                                                logger.warning(
+                                                    f"[auto_rebalancer] Action {_wa.id}: target node "
+                                                    f"{_p2_node_name} ({_p2_instance_id}) NOT registered in K8s "
+                                                    f"(known: {_p2v_names}) and not ASG-backed. Marking failed."
+                                                )
+                                                _wa.status = 'failed'
+                                                _wa.error_message = (
+                                                    f"Target instance {_p2_instance_id} node {_p2_node_name} "
+                                                    f"is not registered in Kubernetes. Cannot cordon/drain."
+                                                )
+                                                _wa.completed_at = datetime.utcnow()
+                                                _cleanup_rebalancing_resources(_wa, _wa_meta, _redis, db)
+                                                db.commit()
+                                                continue
+                                except Exception as _p2v_err:
+                                    logger.warning(
+                                        f"[auto_rebalancer] Action {_wa.id}: K8s node verification "
+                                        f"failed: {_p2v_err} — proceeding with node_name from DB"
+                                    )
+
+                        if _p2_instance_id and _p2_skip_cordon_drain:
+                            # Node not in K8s but instance in ASG — skip cordon/drain (no pods
+                            # to drain) and create ONLY the TERMINATE agent action so the
+                            # existing backend-side terminate logic (with full credential
+                            # resolution and ASG decrement) handles it.
+                            from backend.models.agent_action import AgentAction as _AA_P2G
+                            from backend.models.agent_action import AgentActionType as _AAT0G
+                            terminate_ghost = _AA_P2G(
+                                cluster_id=_wa.cluster_id,
+                                action_type=_AAT0G.TERMINATE_NODE,
+                                payload={
+                                    "instance_id": _p2_instance_id,
+                                    "node_name": None,
+                                    "rebalancing_action_id": str(_wa.id),
+                                    "zero_downtime_step": 4,
+                                    "termination_mode": "scaledown",
+                                    "asg_name": _wa_meta.get("asg_name_used"),
+                                    "asg_min_at_start": _wa_meta.get("asg_min_at_start"),
+                                    "asg_desired_at_start": _wa_meta.get("asg_desired_at_start"),
+                                    "ghost_node": True,
+                                }
+                            )
+                            db.add(terminate_ghost)
+                            db.flush()
+                            _wa_meta['current_step'] = 'ghost_terminate_pending'
+                            _wa_meta['ghost_terminate'] = True
+                            _wa_meta['termination_mode'] = 'scaledown'
+                            _wa_meta['phase2_created_at'] = datetime.utcnow().isoformat()
+                            _wa.action_metadata = _wa_meta
+                            flag_modified(_wa, 'action_metadata')
+                            db.commit()
+                            logger.info(
+                                f"[auto_rebalancer] Action {_wa.id}: Created TERMINATE-only action "
+                                f"for ghost OD node {_p2_instance_id} (skipping cordon/drain — "
+                                f"node not in K8s)"
+                            )
+                        elif _p2_instance_id:
                             from backend.models.agent_action import AgentAction as _AA_P2
                             # N1 fix: Read respect_pdb_enabled from cluster settings.
                             # force=True means ignore PDB; respect_pdb_enabled=True means obey PDB → force=False
@@ -2456,9 +4668,10 @@ def execute_rebalancing():
                                 action_type=_AAT0.CORDON_NODE,
                                 payload={
                                     "instance_id": _p2_instance_id,
+                                    "node_name": _p2_node_name,
                                     "instance_type": _p2_instance_type,
                                     "az": _p2_az,
-                                    "rebalancing_action_id": _wa.id,
+                                    "rebalancing_action_id": str(_wa.id),
                                     "zero_downtime_step": 2,
                                 }
                             )
@@ -2467,12 +4680,13 @@ def execute_rebalancing():
                                 action_type=_AAT0.DRAIN_NODE,
                                 payload={
                                     "instance_id": _p2_instance_id,
+                                    "node_name": _p2_node_name,
                                     "instance_type": _p2_instance_type,
                                     "az": _p2_az,
                                     "ignore_daemonsets": True,
                                     "grace_period_seconds": 60,
                                     "force": _n1_force_drain,
-                                    "rebalancing_action_id": _wa.id,
+                                    "rebalancing_action_id": str(_wa.id),
                                     "zero_downtime_step": 3,
                                 }
                             )
@@ -2482,7 +4696,7 @@ def execute_rebalancing():
                                 payload={
                                     "instance_id": _p2_instance_id,
                                     "node_name": None,
-                                    "rebalancing_action_id": _wa.id,
+                                    "rebalancing_action_id": str(_wa.id),
                                     "zero_downtime_step": 4,
                                     # termination_mode routing:
                                     # "asg_no_decrement" → attach mode: terminate_instance_in_auto_scaling_group(ShouldDecrementDesiredCapacity=False)
@@ -2498,18 +4712,179 @@ def execute_rebalancing():
                             db.add(terminate_p2)
                             db.flush()
                             _wa_meta['current_step'] = 'cordoning_node'
+                            _wa_meta['step_entered_cordoning_node'] = datetime.utcnow().isoformat()
                             _wa_meta['phase2_created_at'] = datetime.utcnow().isoformat()
                             _wa.action_metadata = _wa_meta
+                            flag_modified(_wa, 'action_metadata')
                             db.commit()
                             logger.info(
                                 f"[auto_rebalancer] Action {_wa.id}: Phase 2 created "
                                 f"(CORDON→DRAIN→TERMINATE for {_p2_instance_id})"
                             )
-                        continue  # Wait for Phase 2 to complete (outer for _wa loop)
+
+                            # ── INLINE CORDON+DRAIN: execute immediately from backend ──
+                            # The agent often takes 90+ seconds to pick up actions due to
+                            # step-gating and polling intervals.  Backend has direct K8s API
+                            # access and can complete CORDON+DRAIN in 1-3 seconds.
+                            _inline_ok = False
+                            _inline_t0 = datetime.utcnow()
+                            try:
+                                from backend.services.karpenter_service import KarpenterService as _KS_INL
+                                from kubernetes import client as _k8s_inl
+                                _ks_inl = _KS_INL(db, _redis)
+                                _wa_cluster_inl = db.query(Cluster).filter(
+                                    Cluster.id == _wa.cluster_id
+                                ).first()
+                                if _wa_cluster_inl and _p2_node_name:
+                                    _k8s_api_inl = _ks_inl._get_k8s_client(_wa_cluster_inl)
+                                    _core_inl = _k8s_inl.CoreV1Api(_k8s_api_inl)
+
+                                    # ── CORDON ──
+                                    _core_inl.patch_node(
+                                        _p2_node_name,
+                                        {"spec": {"unschedulable": True}}
+                                    )
+                                    cordon_p2.status = _AAS0.COMPLETED
+                                    cordon_p2.completed_at = datetime.utcnow()
+                                    cordon_p2.result = {
+                                        "backend_executed": True,
+                                        "inline": True,
+                                        "verified": True,
+                                    }
+                                    db.flush()
+                                    _wa_meta['step_2_cordon'] = datetime.utcnow().isoformat()
+                                    _wa_meta['step_2_cordon_verified'] = True
+                                    logger.info(
+                                        f"[auto_rebalancer] Action {_wa.id}: "
+                                        f"Inline CORDON of {_p2_node_name} succeeded"
+                                    )
+
+                                    # ── DRAIN ──
+                                    _pods_on_node = _core_inl.list_namespaced_pod(
+                                        namespace="",
+                                        field_selector=f"spec.nodeName={_p2_node_name}",
+                                    ).items
+                                    _evictable_inl = []
+                                    for _pod_inl in _pods_on_node:
+                                        _owner_refs_inl = _pod_inl.metadata.owner_references or []
+                                        _is_ds_inl = any(
+                                            o.kind == 'DaemonSet' for o in _owner_refs_inl
+                                        )
+                                        _is_mirror_inl = bool(
+                                            (_pod_inl.metadata.annotations or {}).get(
+                                                'kubernetes.io/config.mirror'
+                                            )
+                                        )
+                                        if _is_ds_inl or _is_mirror_inl:
+                                            continue
+                                        _evictable_inl.append(_pod_inl)
+
+                                    _evict_errs_inl = []
+                                    for _ep_inl in _evictable_inl:
+                                        try:
+                                            _core_inl.create_namespaced_pod_eviction(
+                                                name=_ep_inl.metadata.name,
+                                                namespace=_ep_inl.metadata.namespace,
+                                                body=_k8s_inl.V1Eviction(
+                                                    metadata=_k8s_inl.V1ObjectMeta(
+                                                        name=_ep_inl.metadata.name,
+                                                        namespace=_ep_inl.metadata.namespace,
+                                                    ),
+                                                    delete_options=_k8s_inl.V1DeleteOptions(
+                                                        grace_period_seconds=60,
+                                                    ),
+                                                ),
+                                            )
+                                        except _k8s_inl.ApiException as _ev_exc:
+                                            if _ev_exc.status == 404:
+                                                pass  # Pod already gone
+                                            else:
+                                                _evict_errs_inl.append(
+                                                    f"{_ep_inl.metadata.namespace}/"
+                                                    f"{_ep_inl.metadata.name}: {_ev_exc.reason}"
+                                                )
+                                        except Exception as _ev_gen:
+                                            _evict_errs_inl.append(str(_ev_gen)[:100])
+
+                                    drain_p2.status = _AAS0.COMPLETED
+                                    drain_p2.completed_at = datetime.utcnow()
+                                    drain_p2.result = {
+                                        "backend_executed": True,
+                                        "inline": True,
+                                        "verified": True,
+                                        "pods_evicted": len(_evictable_inl),
+                                        "evict_errors": _evict_errs_inl[:5],
+                                    }
+                                    _wa_meta['step_3_draining_pods'] = datetime.utcnow().isoformat()
+                                    _wa_meta['step_3_draining_pods_verified'] = True
+
+                                    # Mark TERMINATE as backend-will-handle
+                                    terminate_p2.status = _AAS0.COMPLETED
+                                    terminate_p2.completed_at = datetime.utcnow()
+                                    terminate_p2.result = {
+                                        "backend_will_terminate": True,
+                                        "inline": True,
+                                    }
+                                    db.flush()
+
+                                    _inl_elapsed = (
+                                        datetime.utcnow() - _inline_t0
+                                    ).total_seconds()
+                                    logger.info(
+                                        f"[auto_rebalancer] Action {_wa.id}: "
+                                        f"Inline CORDON+DRAIN completed in {_inl_elapsed:.1f}s "
+                                        f"({len(_evictable_inl)} pods evicted, "
+                                        f"{len(_evict_errs_inl)} errors)"
+                                    )
+                                    if _evict_errs_inl:
+                                        logger.warning(
+                                            f"[auto_rebalancer] Action {_wa.id}: "
+                                            f"Eviction errors: {_evict_errs_inl[:3]}"
+                                        )
+
+                                    _wa_meta['current_step'] = 'draining_pods'
+                                    _wa_meta['inline_cordon_drain'] = True
+                                    _wa.action_metadata = _wa_meta
+                                    flag_modified(_wa, 'action_metadata')
+                                    db.commit()
+                                    _inline_ok = True
+                                else:
+                                    logger.warning(
+                                        f"[auto_rebalancer] Action {_wa.id}: "
+                                        f"Inline CORDON+DRAIN skipped — "
+                                        f"cluster={'found' if _wa_cluster_inl else 'missing'}, "
+                                        f"node_name={_p2_node_name or 'missing'}"
+                                    )
+                            except Exception as _inl_err:
+                                logger.warning(
+                                    f"[auto_rebalancer] Action {_wa.id}: "
+                                    f"Inline CORDON+DRAIN failed ({type(_inl_err).__name__}: "
+                                    f"{_inl_err}) — agent/fallback will handle"
+                                )
+                            if not _inline_ok:
+                                logger.info(
+                                    f"[auto_rebalancer] Action {_wa.id}: "
+                                    f"Waiting for agent fallback (timeout=15s)"
+                                )
+                        continue  # Proceed to readiness check on next cycle (or wait for agent fallback)
+
+                    # Ghost terminate: node is not in K8s, only TERMINATE action was
+                    # created (no CORDON/DRAIN). Skip drain check and readiness wait,
+                    # mark readiness as verified so we proceed straight to backend EC2
+                    # terminate+decrement.
+                    if _wa_meta.get('ghost_terminate'):
+                        _wa_meta['readiness_verified'] = True
+                        _wa_meta['step_3_draining_pods'] = datetime.utcnow().isoformat()
+                        if not _wa_meta.get('post_drain_readiness_started_at'):
+                            _wa_meta['post_drain_readiness_started_at'] = datetime.utcnow().isoformat()
+                        logger.info(
+                            f"[auto_rebalancer] Action {_wa.id}: Ghost terminate — "
+                            f"skipping drain/readiness wait, proceeding to EC2 terminate"
+                        )
 
                     # Phase 2 exists — check if drain is done, wait for completion
                     _drain_sa = db.query(_AA0).filter(
-                        _AA0.payload.contains({"rebalancing_action_id": _wa.id}),
+                        _AA0.payload.contains({"rebalancing_action_id": str(_wa.id)}),
                         _AA0.action_type == _AAT0.DRAIN_NODE,
                         _AA0.status == _AAS0.COMPLETED,
                     ).first()
@@ -2557,10 +4932,73 @@ def execute_rebalancing():
                             db.commit()
                             continue
 
-                        # Grace period passed: check pod_metrics for pods still on old node
+                        # Grace period passed: verify pods actually moved off the drained node
+                        # PRIMARY: K8s API direct check (real-time, no stale data)
+                        # FALLBACK: PodMetric DB check (if K8s API unavailable)
+                        _drained_node_name = _wa_meta.get('target_node_name', '')
                         _drained_inst_rd = _wa_meta.get('instance_id', '')
                         _pods_stuck = False
-                        if _drained_inst_rd:
+                        _pods_stuck_count = 0
+                        _k8s_check_done = False
+
+                        # Primary: K8s API live pod check on the drained node
+                        if _drained_node_name:
+                            try:
+                                from backend.services.karpenter_service import KarpenterService as _KS_RD
+                                from kubernetes import client as _k8s_rd
+                                _ks_rd = _KS_RD(db, _redis)
+                                _wa_cluster_rd = db.query(Cluster).filter(
+                                    Cluster.id == _wa.cluster_id
+                                ).first()
+                                if _wa_cluster_rd:
+                                    _k8s_api_rd = _ks_rd._get_k8s_client(_wa_cluster_rd)
+                                    _core_rd = _k8s_rd.CoreV1Api(_k8s_api_rd)
+                                    try:
+                                        _live_pods = _core_rd.list_pod_for_all_namespaces(
+                                            field_selector=f"spec.nodeName={_drained_node_name},status.phase=Running",
+                                        ).items
+                                        # Exclude DaemonSet pods (they stay on drained nodes)
+                                        _non_ds_pods = [
+                                            p for p in _live_pods
+                                            if not any(
+                                                o.kind == 'DaemonSet'
+                                                for o in (p.metadata.owner_references or [])
+                                            )
+                                        ]
+                                        _pods_stuck_count = len(_non_ds_pods)
+                                        _pods_stuck = _pods_stuck_count > 0
+                                        _k8s_check_done = True
+                                        if _pods_stuck:
+                                            _stuck_names = [
+                                                f"{p.metadata.namespace}/{p.metadata.name}"
+                                                for p in _non_ds_pods[:5]
+                                            ]
+                                            logger.info(
+                                                f"[auto_rebalancer] Action {_wa.id}: "
+                                                f"{_pods_stuck_count} non-DaemonSet pod(s) "
+                                                f"still on {_drained_node_name}: {_stuck_names}"
+                                            )
+                                        else:
+                                            logger.info(
+                                                f"[auto_rebalancer] Action {_wa.id}: "
+                                                f"K8s API confirms 0 workload pods on "
+                                                f"{_drained_node_name} — drain verified"
+                                            )
+                                    except _k8s_rd.ApiException as _k8s_404:
+                                        if _k8s_404.status == 404:
+                                            # Node already gone from K8s — drain is complete
+                                            _pods_stuck = False
+                                            _k8s_check_done = True
+                                        else:
+                                            raise
+                            except Exception as _k8s_rd_err:
+                                logger.debug(
+                                    f"[auto_rebalancer] Action {_wa.id}: K8s pod check "
+                                    f"failed ({_k8s_rd_err}), falling back to PodMetric"
+                                )
+
+                        # Fallback: PodMetric DB check (stale but better than nothing)
+                        if not _k8s_check_done and _drained_inst_rd:
                             try:
                                 from backend.models.pod_metric import PodMetric as _PM_RD
                                 _pods_stuck = db.query(_PM_RD).filter(
@@ -2597,19 +5035,36 @@ def execute_rebalancing():
                         _wa.action_metadata = _wa_meta
                         db.commit()
 
-                    # Spot appeared or timeout reached — record and proceed to terminate
+                    # Spot appeared — record and proceed to terminate
                     if _spot_count > 0:
                         _wa_meta['step_4_new_node_joined'] = datetime.utcnow().isoformat()
                         _wa_meta['current_step'] = 'old_node_terminating'
                     else:
-                        _wa_meta['current_step'] = 'old_node_terminating_timeout'
-                        logger.warning(
-                            f"[auto_rebalancer] Action {_wa.id}: spot node wait timeout "
-                            f"({int(_spot_wait_elapsed)}s) — proceeding to terminate old OD node anyway"
+                        # CRITICAL FIX: Replacement spot is GONE (Karpenter consolidation
+                        # killed it, or it was never provisioned).  DO NOT terminate the
+                        # OD node — that would shrink the cluster permanently.
+                        # Instead: FAIL the action, attempt to uncordon the OD node
+                        # (if it was cordoned), and clean up resources.
+                        logger.error(
+                            f"[auto_rebalancer] Action {_wa.id}: ABORT — replacement spot "
+                            f"node is gone (_spot_count=0) after Phase 2 drain. "
+                            f"Refusing to terminate OD node {_wa_instance_id} without "
+                            f"a live replacement. Failing action and uncordoning."
                         )
+                        _wa.status = 'failed'
+                        _wa.error_message = (
+                            f"Replacement spot node disappeared (Karpenter consolidation?) "
+                            f"after drain completed. OD node {_wa_instance_id} preserved "
+                            f"to maintain cluster capacity. Will retry next cycle."
+                        )
+                        _wa.completed_at = datetime.utcnow()
+                        _wa.duration_seconds = int(
+                            (_wa.completed_at - _wa.started_at).total_seconds()
+                        ) if _wa.started_at else 0
+                        _wa_meta['current_step'] = 'failed_spot_gone_before_terminate'
+                        _wa.action_metadata = _wa_meta
+
                         # N7 fix: Block the pool for the full join timeout duration
-                        # instead of hardcoded 300s. Prevents double-launch when
-                        # launch_blocked expires before the 30-min join timeout.
                         try:
                             _timeout_itype = _wa_meta.get("target_instance_type", "")
                             _timeout_az = _wa_meta.get("target_az", "")
@@ -2617,20 +5072,82 @@ def execute_rebalancing():
                                 _block_key = f"spot:launch_blocked:{_wa.cluster_id}:{_timeout_itype}:{_timeout_az}"
                                 _block_ttl = _SPOT_WAIT_TIMEOUT_S if _SPOT_WAIT_TIMEOUT_S > 0 else 1800
                                 _redis.setex(_block_key, _block_ttl, '1')
-                                logger.warning(
-                                    '[auto_rebalancer] No-join timeout for action %s — '
-                                    'blocking pool %s:%s in cluster %s for %ds',
-                                    _wa.id, _timeout_itype, _timeout_az, _wa.cluster_id, _block_ttl
-                                )
                         except Exception:
                             pass
+
+                        # Attempt to uncordon the OD node directly via K8s API
+                        # (agent is unreachable so we can't rely on UNCORDON_NODE action)
+                        try:
+                            _unc_node_name = _wa_meta.get('target_node_name', '')
+                            if not _unc_node_name and _wa_instance_id:
+                                _unc_inst = db.query(Instance).filter(
+                                    Instance.instance_id == _wa_instance_id
+                                ).first()
+                                if _unc_inst:
+                                    _unc_node_name = _unc_inst.node_name or ''
+                            if _unc_node_name:
+                                from backend.services.karpenter_service import KarpenterService as _KS_UNC
+                                _ks_unc = _KS_UNC(db=db)
+                                _wa_cluster_unc = db.query(Cluster).filter(
+                                    Cluster.id == _wa.cluster_id
+                                ).first()
+                                if _wa_cluster_unc:
+                                    _k8s_api_unc = _ks_unc._get_k8s_client(_wa_cluster_unc)
+                                    from kubernetes import client as _k8s_unc
+                                    _core_unc = _k8s_unc.CoreV1Api(_k8s_api_unc)
+                                    _core_unc.patch_node(
+                                        _unc_node_name,
+                                        {"spec": {"unschedulable": None}}
+                                    )
+                                    logger.info(
+                                        f"[auto_rebalancer] Action {_wa.id}: UNCORDONED "
+                                        f"{_unc_node_name} via backend K8s API (spot gone rollback)"
+                                    )
+                        except Exception as _unc_err:
+                            logger.warning(
+                                f"[auto_rebalancer] Action {_wa.id}: backend-side uncordon "
+                                f"failed: {_unc_err}"
+                            )
+
+                        _cleanup_rebalancing_resources(_wa, _wa_meta, _redis, db)
+                        db.commit()
+                        continue
 
                 # Fix 2 + CORDON guard: if ANY Phase 2 action failed, determine which
                 # stage failed and execute the appropriate rollback.
                 if _failed > 0:
+                    # Bug #11 guard (top-level): If TERMINATE_NODE already completed
+                    # despite other step failures (parallel agent execution), the OD
+                    # node is gone.  Skip destructive rollback (orphan spot terminate).
+                    _term_already_done_top = db.query(_AA0).filter(
+                        _AA0.payload.contains({"rebalancing_action_id": str(_wa.id)}),
+                        _AA0.action_type == _AAT0.TERMINATE_NODE,
+                        _AA0.status == _AAS0.COMPLETED,
+                    ).count() > 0
+                    if _term_already_done_top:
+                        logger.warning(
+                            f"[auto_rebalancer] Action {_wa.id}: {_failed} steps failed but "
+                            f"TERMINATE already completed (parallel agent). "
+                            f"Marking partial success — skipping rollback."
+                        )
+                        _wa.status = 'completed'
+                        _wa.error_message = (
+                            f"{_failed} Phase 2 step(s) failed but TERMINATE_NODE succeeded. "
+                            f"OD node {_wa_instance_id} terminated. Spot replacement active."
+                        )
+                        _wa.completed_at = datetime.utcnow()
+                        _wa.duration_seconds = int(
+                            (_wa.completed_at - _wa.started_at).total_seconds()
+                        ) if _wa.started_at else 0
+                        _wa_meta['current_step'] = 'completed_partial_steps_failed'
+                        _wa.action_metadata = _wa_meta
+                        _cleanup_rebalancing_resources(_wa, _wa_meta, _redis, db)
+                        db.commit()
+                        continue
+
                     # ── CORDON failure: drain never ran — full clean rollback ────────
                     _cordon_node_failed = db.query(_AA0).filter(
-                        _AA0.payload.contains({"rebalancing_action_id": _wa.id}),
+                        _AA0.payload.contains({"rebalancing_action_id": str(_wa.id)}),
                         _AA0.action_type == _AAT0.CORDON_NODE,
                         _AA0.status == _AAS0.FAILED,
                     ).first()
@@ -2640,7 +5157,7 @@ def execute_rebalancing():
                     # DRAIN stays PICKED_UP then EXPIRED). These must NOT block the
                     # cordon-only rollback path — treat them as "drain never ran".
                     _drain_attempted = db.query(_AA0).filter(
-                        _AA0.payload.contains({"rebalancing_action_id": _wa.id}),
+                        _AA0.payload.contains({"rebalancing_action_id": str(_wa.id)}),
                         _AA0.action_type == _AAT0.DRAIN_NODE,
                         _AA0.status.in_([_AAS0.COMPLETED, _AAS0.FAILED]),
                     ).count() > 0
@@ -2715,6 +5232,7 @@ def execute_rebalancing():
                             _wa_meta['current_step'] = 'zombie_ec2_terminated'
                             _wa.action_metadata = _wa_meta
                             _do_rollback_terminate_orphan_spot(_wa, _wa_meta, db)
+                            _cleanup_rebalancing_resources(_wa, _wa_meta, _redis, db)
                             db.commit()
                             continue
 
@@ -2774,15 +5292,45 @@ def execute_rebalancing():
                             except Exception:
                                 pass
                         _do_rollback_uncordon_and_terminate(_wa, _wa_meta, db)
+                        _cleanup_rebalancing_resources(_wa, _wa_meta, _redis, db)
                         continue
 
                     # ── DRAIN failure: workloads still on old node — safe rollback ──
                     _drain_node_failed = db.query(_AA0).filter(
-                        _AA0.payload.contains({"rebalancing_action_id": _wa.id}),
+                        _AA0.payload.contains({"rebalancing_action_id": str(_wa.id)}),
                         _AA0.action_type == _AAT0.DRAIN_NODE,
                         _AA0.status == _AAS0.FAILED,
                     ).first()
                     if _drain_node_failed:
+                        # Bug #11 guard: If TERMINATE_NODE already completed (agent ran
+                        # steps in parallel before the ordering fix), the OD node is already
+                        # gone.  Do NOT rollback — mark action as completed instead.
+                        _term_already_done = db.query(_AA0).filter(
+                            _AA0.payload.contains({"rebalancing_action_id": str(_wa.id)}),
+                            _AA0.action_type == _AAT0.TERMINATE_NODE,
+                            _AA0.status == _AAS0.COMPLETED,
+                        ).count() > 0
+                        if _term_already_done:
+                            logger.warning(
+                                f"[auto_rebalancer] Action {_wa.id}: DRAIN failed but "
+                                f"TERMINATE already completed (parallel execution). "
+                                f"Treating as partial success — OD node already gone."
+                            )
+                            _wa.status = 'completed'
+                            _wa.error_message = (
+                                f"DRAIN_NODE failed but TERMINATE_NODE succeeded (parallel agent). "
+                                f"OD node {_wa_instance_id} terminated. Spot replacement active."
+                            )
+                            _wa.completed_at = datetime.utcnow()
+                            _wa.duration_seconds = int(
+                                (_wa.completed_at - _wa.started_at).total_seconds()
+                            ) if _wa.started_at else 0
+                            _wa_meta['current_step'] = 'completed_partial_drain_skip'
+                            _wa.action_metadata = _wa_meta
+                            _cleanup_rebalancing_resources(_wa, _wa_meta, _redis, db)
+                            db.commit()
+                            continue
+
                         _drain_fail_err = (_drain_node_failed.error_message or '').strip()
                         _drain_fail_detail = _drain_fail_err[:200] if _drain_fail_err else 'conflict or pod disruption budget'
                         logger.error(
@@ -2843,6 +5391,7 @@ def execute_rebalancing():
                         # 1. Queue UNCORDON_NODE (undo cordon on old OD node)
                         # 2. Terminate orphan spot instance
                         _do_rollback_uncordon_and_terminate(_wa, _wa_meta, db)
+                        _cleanup_rebalancing_resources(_wa, _wa_meta, _redis, db)
                         continue
 
                 # ── Backend EC2 terminate: drain is done, now kill the instance ──
@@ -2850,7 +5399,87 @@ def execute_rebalancing():
                 # running. We must terminate via backend's assumed IAM role to ensure
                 # the instance is actually gone so Karpenter provisions a spot replacement.
                 if _wa_instance_id and _wa_instance_id.startswith("i-") and _failed == 0:
+                    # ── SAFETY GATE: Verify replacement spot instance is still alive ──
+                    # Another action's rollback may have terminated our shared replacement.
+                    # If the replacement is dead, ABORT and rollback instead of orphaning workloads.
+                    _pre_term_replacement_id = _wa_meta.get('replacement_spot_instance_id')
+                    if _pre_term_replacement_id:
+                        _pre_term_inst = db.query(Instance).filter(
+                            Instance.instance_id == _pre_term_replacement_id[:20],
+                        ).first()
+                        _pre_term_dead = False
+                        if _pre_term_inst and _pre_term_inst.state in ('terminated', 'shutting-down', 'stopped'):
+                            _pre_term_dead = True
+                        elif not _pre_term_inst:
+                            _pre_term_dead = True  # Instance disappeared from DB
+                        if _pre_term_dead:
+                            logger.error(
+                                f"[auto_rebalancer] Action {_wa.id}: ABORT TERMINATE — "
+                                f"replacement spot {_pre_term_replacement_id[:12]} is "
+                                f"{'gone from DB' if not _pre_term_inst else _pre_term_inst.state}. "
+                                f"Cannot terminate OD node {_wa_instance_id} without a live replacement. "
+                                f"Rolling back."
+                            )
+                            _wa.status = 'failed'
+                            _wa.error_message = (
+                                f"Replacement spot {_pre_term_replacement_id[:12]} terminated before "
+                                f"OD node could be removed. Rolled back to preserve cluster capacity."
+                            )
+                            _wa.completed_at = datetime.utcnow()
+                            _wa.duration_seconds = int(
+                                (_wa.completed_at - _wa.started_at).total_seconds()
+                            ) if _wa.started_at else 0
+                            _wa_meta['current_step'] = 'failed_replacement_dead'
+                            _wa.action_metadata = _wa_meta
+                            # Queue UNCORDON for the OD node (it was cordoned in Phase 2)
+                            try:
+                                from backend.models.agent_action import AgentAction as _AA_UNC2, AgentActionType as _AAT_UNC2, AgentActionStatus as _AAS_UNC2
+                                _src_node_name = ''
+                                _src_inst_db = db.query(Instance).filter(
+                                    Instance.instance_id == _wa_instance_id
+                                ).first()
+                                if _src_inst_db:
+                                    _src_node_name = _src_inst_db.node_name or ''
+                                if _src_node_name:
+                                    _unc_action = _AA_UNC2(
+                                        cluster_id=_wa.cluster_id,
+                                        action_type=_AAT_UNC2.UNCORDON_NODE,
+                                        status=_AAS_UNC2.PENDING,
+                                        payload={
+                                            "node_name": _src_node_name,
+                                            "rebalancing_action_id": str(_wa.id),
+                                            "reason": "replacement_spot_terminated_rollback",
+                                        },
+                                    )
+                                    db.add(_unc_action)
+                            except Exception as _unc_err:
+                                logger.warning(f"[auto_rebalancer] UNCORDON rollback failed: {_unc_err}")
+                            _cleanup_rebalancing_resources(_wa, _wa_meta, _redis, db)
+                            db.commit()
+                            continue  # Skip to next action
+
                     try:
+                        # Fix 13: Idempotency guard — prevent double-terminate.
+                        # If another rebalancer cycle or concurrent worker already
+                        # terminated this instance, skip the AWS API call.
+                        _idem_key = f"spot:terminating:{_wa_instance_id}"
+                        if _redis:
+                            _idem_set = _redis.set(_idem_key, str(_wa.id), nx=True, ex=300)
+                            if not _idem_set:
+                                _idem_owner = _redis.get(_idem_key)
+                                _idem_owner_str = (_idem_owner.decode() if isinstance(_idem_owner, bytes) else str(_idem_owner)) if _idem_owner else '?'
+                                if _idem_owner_str != str(_wa.id):
+                                    logger.warning(
+                                        f"[auto_rebalancer] Action {_wa.id}: Fix13 — "
+                                        f"{_wa_instance_id} already being terminated by "
+                                        f"action {_idem_owner_str} — skipping duplicate terminate"
+                                    )
+                                    _wa_meta['step_5_old_node_terminated'] = datetime.utcnow().isoformat()
+                                    _wa_meta['ec2_terminate_skipped_duplicate'] = True
+                                    _wa.action_metadata = _wa_meta
+                                    db.commit()
+                                    # Fall through to STATUS DECISION below
+
                         import boto3 as _b3wa
                         from backend.models.system_config import SystemConfig as _SC
                         _wa_cluster = db.query(Cluster).filter(Cluster.id == _wa.cluster_id).first()
@@ -2958,7 +5587,7 @@ def execute_rebalancing():
 
                             # karpenter_only_mode: skip ASG path entirely, use direct EC2
                             _karpenter_only_term = getattr(
-                                getattr(cluster, 'optimization_settings', None),
+                                getattr(_wa_cluster, 'optimization_settings', None),
                                 'karpenter_only_mode', False
                             )
                             if _karpenter_only_term:
@@ -2981,15 +5610,39 @@ def execute_rebalancing():
                                         )['AutoScalingGroups']
                                         if _asg_desc:
                                             _cur_min = _asg_desc[0].get('MinSize', 0)
-                                            if _cur_min > 0:
+                                            # FLOOR: Never decrement MinSize below 1 when
+                                            # Karpenter is active. Karpenter pods have
+                                            # nodeAffinity "karpenter.sh/nodepool DoesNotExist"
+                                            # so they MUST run on ASG-managed (non-Karpenter)
+                                            # nodes. If MinSize hits 0, ASG scales to 0 OD
+                                            # nodes → Karpenter pods go Pending → no more
+                                            # spot provisioning.
+                                            _min_floor = 1 if _wa_karpenter_active else 0
+                                            if _cur_min > _min_floor:
+                                                # Set MinSize to anchor floor directly
+                                                # (not -1 per action). For a batch of N
+                                                # terminates, the first call drops MinSize
+                                                # to anchor_count and subsequent calls
+                                                # are no-ops.  Example: 6-node cluster,
+                                                # 1 anchor, batch of 3:
+                                                #   Old: Min 6→5→4→3 (too high)
+                                                #   New: Min 6→1 on first terminate
                                                 _asg_wa.update_auto_scaling_group(
                                                     AutoScalingGroupName=_stored_asg_for_term,
-                                                    MinSize=_cur_min - 1,
+                                                    MinSize=_min_floor,
                                                 )
                                                 logger.info(
-                                                    f"[auto_rebalancer] Pre-decremented ASG "
+                                                    f"[auto_rebalancer] Pre-set ASG "
                                                     f"'{_stored_asg_for_term}' MinSize "
-                                                    f"{_cur_min} → {_cur_min - 1} before terminate"
+                                                    f"{_cur_min} → {_min_floor} (anchor floor) "
+                                                    f"before terminate"
+                                                )
+                                            elif _cur_min <= _min_floor:
+                                                logger.info(
+                                                    f"[auto_rebalancer] ASG '{_stored_asg_for_term}' "
+                                                    f"MinSize={_cur_min} already at floor "
+                                                    f"({_min_floor}) — skipping pre-decrement "
+                                                    f"(Karpenter needs ≥1 ASG node)"
                                                 )
                                     except Exception as _pre_dec_err:
                                         logger.warning(
@@ -3020,6 +5673,40 @@ def execute_rebalancing():
                                             )
                                             _t_asg.sleep(_asg_wait)
                                             continue
+                                        elif _asg_err_code in ('ExpiredTokenException', 'ExpiredToken'):
+                                            # Fix 10: STS token expired during long-running action.
+                                            # Re-assume role and rebuild ASG client.
+                                            logger.warning(
+                                                f"[auto_rebalancer] ASG terminate: STS token expired "
+                                                f"for {_wa_instance_id} (attempt {_asg_term_attempt + 1}/"
+                                                f"{_asg_term_max_retries}) — refreshing credentials"
+                                            )
+                                            try:
+                                                _sts_refresh = _b3wa.client(
+                                                    "sts",
+                                                    aws_access_key_id=_plat_key,
+                                                    aws_secret_access_key=_plat_secret,
+                                                    region_name=_plat_region,
+                                                )
+                                                _refresh_kwargs = {"RoleArn": _wa_role_arn,
+                                                                   "RoleSessionName": "spot-rebalancer-terminate-refresh"}
+                                                if _wa_ext_id:
+                                                    _refresh_kwargs["ExternalId"] = _wa_ext_id
+                                                _refresh_creds = _sts_refresh.assume_role(**_refresh_kwargs)['Credentials']
+                                                _wa_creds = {
+                                                    "aws_access_key_id":     _refresh_creds["AccessKeyId"],
+                                                    "aws_secret_access_key": _refresh_creds["SecretAccessKey"],
+                                                    "aws_session_token":     _refresh_creds["SessionToken"],
+                                                }
+                                                _asg_wa = _b3wa.client("autoscaling",
+                                                                       region_name=_term_region, **_wa_creds)
+                                            except Exception as _refresh_err:
+                                                logger.error(
+                                                    f"[auto_rebalancer] STS refresh failed: {_refresh_err}"
+                                                )
+                                            import time as _t_asg_exp
+                                            _t_asg_exp.sleep(1)
+                                            continue
                                         elif _asg_err_code == 'ValidationError':
                                             # Instance already removed from ASG (EKS MNG auto-terminated
                                             # after kubectl delete node). Fall back to direct EC2 terminate.
@@ -3049,6 +5736,39 @@ def execute_rebalancing():
                                     f"ShouldDecrementDesiredCapacity={_should_decrement}, "
                                     f"action {_wa.id} post-drain)"
                                 )
+
+                                # FLOOR GUARD: After terminate+decrement, ensure ASG
+                                # DesiredCapacity never drops below 1 when Karpenter is
+                                # active.  Karpenter pods have nodeAffinity requiring
+                                # non-Karpenter nodes (karpenter.sh/nodepool DoesNotExist),
+                                # so at least 1 ASG node must always exist.
+                                if _should_decrement and _wa_karpenter_active:
+                                    try:
+                                        _post_desc = _asg_wa.describe_auto_scaling_groups(
+                                            AutoScalingGroupNames=[_stored_asg_for_term]
+                                        )['AutoScalingGroups']
+                                        if _post_desc:
+                                            _post_desired = _post_desc[0].get('DesiredCapacity', 0)
+                                            _post_min = _post_desc[0].get('MinSize', 0)
+                                            if _post_desired < 1 or _post_min < 1:
+                                                _new_min = max(_post_min, 1)
+                                                _new_desired = max(_post_desired, 1)
+                                                _asg_wa.update_auto_scaling_group(
+                                                    AutoScalingGroupName=_stored_asg_for_term,
+                                                    MinSize=_new_min,
+                                                    DesiredCapacity=_new_desired,
+                                                )
+                                                logger.warning(
+                                                    f"[auto_rebalancer] ASG floor guard: restored "
+                                                    f"'{_stored_asg_for_term}' Min={_new_min} "
+                                                    f"Desired={_new_desired} (was Min={_post_min} "
+                                                    f"Desired={_post_desired}) — Karpenter needs "
+                                                    f"≥1 ASG node"
+                                                )
+                                    except Exception as _floor_err:
+                                        logger.warning(
+                                            f"[auto_rebalancer] ASG floor guard check failed: {_floor_err}"
+                                        )
                             else:
                                 # ── Non-ASG node (Karpenter-managed): direct EC2 ONLY ─────
                                 _ec2_wa = _b3wa.client("ec2",
@@ -3061,6 +5781,33 @@ def execute_rebalancing():
                                 )
 
                             _wa_meta['step_5_old_node_terminated'] = datetime.utcnow().isoformat()
+
+                            # ── Verification: confirm EC2 instance is actually terminated/shutting-down ──
+                            _term_verified = False
+                            try:
+                                import time as _time_verify
+                                _time_verify.sleep(2)  # Brief pause for AWS state propagation
+                                _verify_ec2 = _b3wa.client("ec2", region_name=_term_region, **_wa_creds)
+                                _verify_resp = _verify_ec2.describe_instances(InstanceIds=[_wa_instance_id])
+                                for _vr in _verify_resp.get("Reservations", []):
+                                    for _vi in _vr.get("Instances", []):
+                                        _vi_state = _vi.get("State", {}).get("Name", "")
+                                        if _vi_state in ("terminated", "shutting-down"):
+                                            _term_verified = True
+                                        else:
+                                            logger.warning(
+                                                f"[auto_rebalancer] EC2 terminate verification: "
+                                                f"{_wa_instance_id} state={_vi_state} (expected terminated/shutting-down)"
+                                            )
+                                _wa_meta['step_5_verified'] = _term_verified
+                                if _term_verified:
+                                    logger.info(
+                                        f"[auto_rebalancer] VERIFIED: {_wa_instance_id} is terminated/shutting-down"
+                                    )
+                            except Exception as _verify_err:
+                                logger.warning(f"[auto_rebalancer] EC2 terminate verification failed: {_verify_err}")
+                                _wa_meta['step_5_verified'] = False
+
                             # ── Immediately mark source instance as terminated in DB ──
                             # Without this, the rebalancer sees it as ON_DEMAND on the
                             # next 15s cycle and launches ANOTHER replacement → cluster growth.
@@ -3077,6 +5824,17 @@ def execute_rebalancing():
                                         f"[auto_rebalancer] Marked {_wa_instance_id} as "
                                         f"terminated in DB (prevents cluster growth)"
                                     )
+                                # Fix 14: Set recently_terminated key so aws_sync does
+                                # NOT flip this instance back to 'running' during the
+                                # 1-10 s AWS state propagation window.
+                                try:
+                                    _redis.setex(
+                                        f"spot:recently_terminated:{_wa_instance_id}",
+                                        120,  # 2 min TTL — covers AWS propagation
+                                        "1"
+                                    )
+                                except Exception:
+                                    pass
                             except Exception as _term_db_err:
                                 logger.warning(
                                     f"[auto_rebalancer] Failed to mark source instance "
@@ -3188,9 +5946,17 @@ def execute_rebalancing():
                     _wa_meta['current_step'] = 'optimization_complete'
                     _wa_meta['step_6_optimization_complete'] = datetime.utcnow().isoformat()
 
+                    # Set 24h cooldown NOW (on success) — prevents the terminated
+                    # instance ID from being retried while it lingers in the DB.
+                    _wa_inst_id_success = _wa_meta.get("instance_id", "") or (_wa.source_instance_id or "")
+                    if _wa_inst_id_success and _redis:
+                        try:
+                            _redis.setex(f"spot:rebalanced:instance:{_wa_inst_id_success}", 86400, "1")
+                        except Exception:
+                            pass
+
                     # Fix #14 (success path): reset failure counter so the next OD→spot
                     # migration on this instance starts from 5-min backoff, not escalated.
-                    _wa_inst_id_success = _wa_meta.get("instance_id", "") or (_wa.source_instance_id or "")
                     if _wa_inst_id_success and _redis:
                         try:
                             _redis.delete(f"rebalance_failures:{_wa_inst_id_success}")
@@ -3214,26 +5980,30 @@ def execute_rebalancing():
                         _wa_meta.get('replacement_spot_node_name')
                     )
                     if _replacement_node_name:
+                        # Remove annotation directly via backend K8s API (agent may be unreachable)
                         try:
-                            from backend.models.agent_action import AgentAction as _AA_DP, AgentActionType as _AAT_DP, AgentActionStatus as _AAS_DP
-                            _kp_deprotect = _AA_DP(
-                                cluster_id=_wa.cluster_id,
-                                action_type=_AAT_DP.LABEL_NODE,
-                                status=_AAS_DP.PENDING,
-                                payload={
-                                    "node_name": _replacement_node_name,
-                                    "labels": {},
-                                    "annotations": {"karpenter.sh/do-not-disrupt": "true"},
-                                    "remove": True,
-                                },
-                                action_metadata={"rebalancing_action_id": str(_wa.id),
-                                                 "purpose": "release_replacement_node"},
-                            )
-                            db.add(_kp_deprotect)
-                            db.flush()
+                            from backend.services.karpenter_service import KarpenterService as _KS_DNDREM
+                            _ks_dndrem = _KS_DNDREM(db=db)
+                            _wa_cluster_rem = db.query(Cluster).filter(
+                                Cluster.id == _wa.cluster_id
+                            ).first()
+                            if _wa_cluster_rem:
+                                _k8s_api_rem = _ks_dndrem._get_k8s_client(_wa_cluster_rem)
+                                from kubernetes import client as _k8s_rem
+                                _core_rem = _k8s_rem.CoreV1Api(_k8s_api_rem)
+                                import json as _json_rem
+                                _core_rem.patch_node(
+                                    _replacement_node_name,
+                                    [{"op": "remove", "path": "/metadata/annotations/karpenter.sh~1do-not-disrupt"}],
+                                    _content_type='application/json-patch+json'
+                                )
+                                logger.info(
+                                    f"[auto_rebalancer] Action {_wa.id}: Removed do-not-disrupt "
+                                    f"from {_replacement_node_name} via backend K8s API"
+                                )
                         except Exception as _deann_err:
                             logger.warning(
-                                f"[auto_rebalancer] Failed to queue do-not-disrupt removal: {_deann_err}"
+                                f"[auto_rebalancer] Failed to remove do-not-disrupt: {_deann_err}"
                             )
 
                     # ── POST-SUCCESS: Trigger standby node launch ──────────────
@@ -3300,7 +6070,7 @@ def execute_rebalancing():
                         if _src_itype and _tgt_itype and _tgt_az:
                             from backend.utils.pricing_helper import get_pricing_helper as _gph
                             _ph = _gph()
-                            _region = cluster.region or "ap-south-1"
+                            _region = (_wa_cluster.region if _wa_cluster else None) or "ap-south-1"
                             _od_price = _ph.get_ec2_price(_region, _src_itype) or 0.0
                             _spot_price = _ph.get_spot_price(_region, _tgt_itype, _tgt_az) or 0.0
                             _hourly_saved = max(_od_price - _spot_price, 0.0)
@@ -3322,15 +6092,22 @@ def execute_rebalancing():
                     f"(all AgentActions done, steps: {list(_wa_meta.keys())})"
                 )
 
-                # BUG-7 fix: Release the concurrent-action semaphore on completion/failure.
+                # Full resource cleanup: semaphore DECR, node lock, trigger pod, PENDING actions.
+                # Replaces the inline BUG-7 DECR — now covers all resources in one call.
+                _cleanup_rebalancing_resources(_wa, _wa_meta, _redis, db)
+
+                # ── CRITICAL: Commit action status + cleanup NOW, before any
+                # non-essential post-processing (pool reputation, etc.) that may
+                # corrupt the DB session via missing tables / schema errors.
                 try:
-                    if _redis:
-                        _sem_release_key = f"rebalance:active_count:{_wa.cluster_id}"
-                        _new_sem = _redis.decr(_sem_release_key)
-                        if _new_sem < 0:
-                            _redis.set(_sem_release_key, 0, ex=300)
-                except Exception:
-                    pass
+                    db.commit()
+                    logger.info(f"[auto_rebalancer] Action {_wa.id} status committed to DB")
+                except Exception as _commit_err:
+                    logger.error(f"[auto_rebalancer] Failed to commit action {_wa.id}: {_commit_err}")
+                    try:
+                        db.rollback()
+                    except Exception:
+                        pass
 
                 # Issue 2: Increment Redis daily count on completion so subsequent
                 # cluster loop cycles read from the counter instead of hitting DB.
@@ -3374,7 +6151,7 @@ def execute_rebalancing():
                             # failures don't hammer the cache builder.
                             try:
                                 if _redis:
-                                    _rlf_region = cluster.region or "ap-south-1"
+                                    _rlf_region = (_wa_cluster.region if _wa_cluster else None) or "ap-south-1"
                                     _rlf_debounce_key = f'ranking_refresh_pending:{_rlf_region}'
                                     # BUG-3 fix: atomic set — only one worker triggers refresh
                                     if _redis.set(_rlf_debounce_key, '1', nx=True, ex=60):
@@ -3409,7 +6186,7 @@ def execute_rebalancing():
                     if ':' in _rep_target_pool:
                         _rep_itype, _rep_az = _rep_target_pool.split(':', 1)
                         _rep_outcome = 'success' if _wa.status == 'completed' else 'failed'
-                        _rep_region = cluster.region or "ap-south-1"
+                        _rep_region = (_wa_cluster.region if _wa_cluster else None) or "ap-south-1"
                         _rep_spot_price = _wa_meta.get("actual_spot_price_hr") or _wa.actual_spot_price_hr
                         _rep_svc.record_launch_outcome(
                             pool_key=_rep_target_pool,
@@ -3433,6 +6210,12 @@ def execute_rebalancing():
                         f"[auto_rebalancer] Pool reputation recording failed for action "
                         f"{_wa.id}: {_rep_err}"
                     )
+                    # Recover the DB session if the error invalidated it
+                    # (e.g. psycopg2.errors.UndefinedTable corrupts the session)
+                    try:
+                        db.rollback()
+                    except Exception:
+                        pass
 
                 # Acquire stabilization lock now that the drain+terminate cycle is truly done
                 try:
@@ -3477,6 +6260,23 @@ def execute_rebalancing():
                     pass
                 continue
 
+            # ── AGENT DISCONNECTED GATE ──────────────────────────────────────
+            # Phase 2 (CORDON→DRAIN→TERMINATE) requires the in-cluster agent.
+            # If the agent has been offline for >5 min, skip the cluster entirely
+            # to avoid creating actions that immediately fail with AGENT_WENT_OFFLINE,
+            # which then trigger 2h cooldowns and permanently block all nodes.
+            try:
+                from backend.models.cluster import ClusterStatus as _CS_agent_gate
+                if (cluster.status == _CS_agent_gate.DISCONNECTED
+                    and getattr(cluster, 'is_agentless', 'N') != 'Y'):
+                    logger.info(
+                        f"[auto_rebalancer] Cluster {cluster.name} agent DISCONNECTED "
+                        f"(last heartbeat: {cluster.last_heartbeat}) — skipping until agent reconnects"
+                    )
+                    continue
+            except Exception:
+                pass
+
             # ── PER-CLUSTER INTERVAL GATE ────────────────────────────────────
             # Each cluster can configure its own check frequency (default 15s).
             # The Celery beat fires every 15s; this gate prevents re-processing
@@ -3497,6 +6297,14 @@ def execute_rebalancing():
                     )
                     if not _gate_acquired:
                         continue  # another worker already claimed this interval
+                # Always record the last-run timestamp so the frontend countdown
+                # endpoint can compute an accurate `next_check_at`.
+                if _redis:
+                    _redis.set(
+                        f"spot:last_run_ts:{cluster.id}",
+                        str(int(datetime.utcnow().timestamp())),
+                        ex=_check_interval * 3,  # auto-cleanup
+                    )
             except Exception:
                 pass
 
@@ -3535,12 +6343,13 @@ def execute_rebalancing():
             except Exception:
                 pass
 
-            # ── STALE POOL RANKINGS WARNING + ABORT (Issue 9 + P-M4) ─────────
+            # ── STALE POOL RANKINGS WARNING + SELF-HEAL (Issue 9 + P-M4) ────
             # If global_pool_rankings:{region} is absent from Redis (cold cache,
-            # Redis restart, or TTL expiry between hourly rebuilds), skip this
-            # cluster entirely rather than falling through to the full DB pipeline.
-            # With 15s cycles and many clusters, a cache miss → 240+ heavy DB calls
-            # per hour → DB connection pool exhaustion. Warn once per hour.
+            # Redis restart, or TTL expiry between hourly rebuilds), trigger an
+            # immediate async rebuild rather than blocking the entire region for
+            # up to 1 hour. Skip this cluster THIS CYCLE only (cache will be
+            # available within ~5-10s on next cycle). This replaces the old
+            # approach that blocked all clusters region-wide for 1 hour.
             _pm4_skip_cluster = False
             try:
                 if _redis:
@@ -3550,13 +6359,31 @@ def execute_rebalancing():
                     if _rank_ttl is None or _rank_ttl == -2:  # key does not exist
                         _stale_warn_key = f'ranking_stale_warned:{_rank_region}'
                         # BUG-3 fix: atomic set — only one worker logs the CRITICAL
-                        if _redis.set(_stale_warn_key, '1', nx=True, ex=3600):
-                            logger.critical(
-                                '[auto_rebalancer] CRITICAL: global_pool_rankings:%s is absent from Redis. '
-                                'Skipping all clusters in this region until cache warms up. '
-                                'Check build_global_pool_cache task and Redis health.',
+                        if _redis.set(_stale_warn_key, '1', nx=True, ex=60):
+                            logger.warning(
+                                '[auto_rebalancer] Pool rankings cache absent for region %s. '
+                                'Triggering immediate rebuild. Skipping THIS cycle only.',
                                 _rank_region
                             )
+                            # Self-heal: trigger immediate cache rebuild instead of
+                            # waiting up to 1 hour for the scheduled task.
+                            try:
+                                from backend.workers.app import app as _celery_rebuild
+                                _celery_rebuild.send_task(
+                                    'build_global_pool_cache',
+                                    args=[_rank_region],
+                                    countdown=0,
+                                    queue='celery',
+                                )
+                                logger.info(
+                                    '[auto_rebalancer] Triggered immediate pool rankings '
+                                    'rebuild for region %s', _rank_region
+                                )
+                            except Exception as _rebuild_err:
+                                logger.warning(
+                                    '[auto_rebalancer] Failed to trigger pool rankings '
+                                    'rebuild: %s', _rebuild_err
+                                )
                         _pm4_skip_cluster = True
             except Exception:
                 pass
@@ -3822,10 +6649,30 @@ def execute_rebalancing():
                 AgentAction.cluster_id == cluster.id,
                 AgentAction.status.in_([AgentActionStatus.PENDING, AgentActionStatus.PICKED_UP])
             ).count()
-            if active_agent_actions > 0:
+            # During initial OD→Spot batch rebalance, multiple agent actions are
+            # expected to be in-flight simultaneously (one per batch node). Only
+            # block for post-migration (S2S) sequential mode where one-at-a-time
+            # is correct.
+            # Early OD count for the gate check (full _od_count computed later
+            # for the last-node guard — this is a lightweight pre-check).
+            try:
+                _od_count_for_gate = int(db.execute(
+                    "SELECT COUNT(*) FROM instances "
+                    "WHERE cluster_id = :cid AND state = 'running' "
+                    "AND instance_id LIKE 'i-%%' "
+                    "AND lifecycle NOT IN ('spot', 'SPOT')",
+                    {"cid": cluster.id}
+                ).scalar() or 0)
+            except Exception:
+                _od_count_for_gate = 0
+            _is_initial_for_gate = (
+                _od_count_for_gate > 0
+                and not getattr(cluster, 'managed_node_group_deleted', False)
+            )
+            if active_agent_actions > 0 and not _is_initial_for_gate:
                 logger.info(
                     f"[auto_rebalancer] Skipping cluster {cluster.name}: "
-                    f"{active_agent_actions} AgentAction(s) still in-flight — waiting for completion"
+                    f"{active_agent_actions} AgentAction(s) still in-flight — waiting for completion (S2S sequential mode)"
                 )
                 try:
                     if _redis:
@@ -3833,6 +6680,11 @@ def execute_rebalancing():
                 except Exception:
                     pass
                 continue
+            elif active_agent_actions > 0:
+                logger.info(
+                    f"[auto_rebalancer] Cluster {cluster.name}: {active_agent_actions} AgentAction(s) "
+                    f"in-flight — allowed (initial OD→Spot batch mode, {_od_count_for_gate} OD nodes)"
+                )
 
             # ── PROACTIVE WARM STANDBY ────────────────────────────────────────
             # If maintain_standby=True and no standby node exists, launch one now.
@@ -3939,7 +6791,11 @@ def execute_rebalancing():
                             f"{_od_count} OD node(s) — Karpenter not active, skipping last-node guard. "
                             f"Install Karpenter to enable spot provisioning."
                         )
-                continue
+                        continue
+                    # Karpenter path: continue is NOT called — fall through to
+                    # normal rebalancing so new actions can be created once a
+                    # spot node appears.  The old unconditional `continue` blocked
+                    # single-node Karpenter clusters permanently.
 
             # Spot recovery for direct-EC2 launches removed — Karpenter handles
             # spot interruption recovery automatically via NodePool reconciliation.
@@ -3964,10 +6820,11 @@ def execute_rebalancing():
                     # Cooldown prevents excessive S2S churn. OD→SPOT conversions always
                     # bypass it — converting OD to spot is the platform's primary purpose.
                     try:
+                        from sqlalchemy import text as _sa_text
                         _cd_od = db.execute(
-                            "SELECT COUNT(*) FROM instances WHERE cluster_id = :cid "
-                            "AND state = 'running' AND lifecycle NOT IN ('spot', 'SPOT')",
-                            {"cid": cluster.id}
+                            _sa_text("SELECT COUNT(*) FROM instances WHERE cluster_id = :cid "
+                            "AND state = 'running' AND lifecycle::text NOT IN ('spot', 'SPOT')"),
+                            {"cid": str(cluster.id)}
                         ).scalar()
                         _cd_od = int(_cd_od or 0)
                     except Exception:
@@ -4158,7 +7015,19 @@ def execute_rebalancing():
                     )
                     try:
                         from backend.services.workload_inspector import WorkloadInspector as _WI
-                        _wi_svc = _WI(_redis)
+                        # Fix #10: Obtain K8s client via KarpenterService (STS AssumeRole path)
+                        # so WorkloadInspector can actually query K8s API from the celery worker.
+                        _wi_k8s = None
+                        try:
+                            from backend.services.karpenter_service import KarpenterService as _KS_WI
+                            _ks_wi = _KS_WI(db, _redis)
+                            _wi_k8s = _ks_wi._get_k8s_client(cluster)
+                        except Exception as _wi_k8s_err:
+                            logger.warning(
+                                f"[auto_rebalancer] WorkloadInspector K8s client failed for "
+                                f"{cluster.name}: {_wi_k8s_err}"
+                            )
+                        _wi_svc = _WI(_redis, k8s_client=_wi_k8s)
                         _wi_result = _wi_svc.scan_cluster(cluster.id)
                         if _wi_result:
                             _wi_raw = _redis.get(_wi_cache_key)  # re-read after scan
@@ -4169,19 +7038,47 @@ def execute_rebalancing():
                         else:
                             raise ValueError("scan_cluster returned empty result")
                     except Exception as _wi_inline_err:
-                        # K8s unreachable or scan failed — fall through with all-stateless default
-                        # so the rebalancer is not permanently blocked by a missing K8s connection.
-                        logger.warning(
-                            f"[auto_rebalancer] Inline WorkloadInspector failed for "
-                            f"{cluster.name}: {_wi_inline_err}. "
-                            f"Treating all OD nodes as STATELESS_ELIGIBLE (safe default)."
+                        # K8s unreachable or scan failed.
+                        #
+                        # For INITIAL OD→Spot migration: default to STATELESS_ELIGIBLE.
+                        # OD→Spot replaces the node with an identical workload on spot —
+                        # even stateful workloads are safe because Karpenter provisions
+                        # a replacement BEFORE we drain the source. Blocking here would
+                        # permanently prevent rebalancing whenever K8s API is flaky.
+                        #
+                        # For S2S (post-migration): default to STATEFUL (safe).
+                        # S2S migrations between spot pools are optional optimizations
+                        # and shouldn't risk stateful workloads.
+                        _is_initial_for_wi = (
+                            len(on_demand_instances) > 0
+                            and not getattr(cluster, 'managed_node_group_deleted', False)
                         )
-                        import json as _json_wi_fb
-                        _default_classification = {
-                            inst.node_name: "STATELESS_ELIGIBLE"
-                            for inst in on_demand_instances if inst.node_name
-                        }
-                        _redis.setex(_wi_cache_key, 300, _json_wi_fb.dumps(_default_classification))
+                        if _is_initial_for_wi:
+                            logger.warning(
+                                f"[auto_rebalancer] Inline WorkloadInspector failed for "
+                                f"{cluster.name}: {_wi_inline_err}. "
+                                f"Initial OD→Spot migration — defaulting to STATELESS_ELIGIBLE "
+                                f"(safe: replacement provisioned before drain)."
+                            )
+                            import json as _json_wi_fb
+                            _default_classification = {
+                                inst.node_name: "STATELESS_ELIGIBLE"
+                                for inst in on_demand_instances if inst.node_name
+                            }
+                        else:
+                            logger.warning(
+                                f"[auto_rebalancer] Inline WorkloadInspector failed for "
+                                f"{cluster.name}: {_wi_inline_err}. "
+                                f"S2S mode — defaulting all nodes to STATEFUL (safe). "
+                                f"Rebalancing paused until WorkloadInspector recovers."
+                            )
+                            import json as _json_wi_fb
+                            _default_classification = {
+                                inst.node_name: "STATEFUL"
+                                for inst in on_demand_instances if inst.node_name
+                            }
+                        # Short cache (60s) so we retry quickly once K8s is reachable
+                        _redis.setex(_wi_cache_key, 60, _json_wi_fb.dumps(_default_classification))
                         _wi_raw = _redis.get(_wi_cache_key)
                 else:
                     # Issue 7: Cache hit — reset miss streak counter.
@@ -4244,6 +7141,77 @@ def execute_rebalancing():
                         )
                         on_demand_instances = on_demand_instances[:_od_to_convert]
 
+            # ── STABLE NODE EXCLUSION ──────────────────────────────────────────
+            # When Karpenter is active, one ASG-managed OD node MUST remain for
+            # Karpenter system pods (nodeAffinity: karpenter.sh/nodepool DoesNotExist).
+            # The ASG floor guard (Phase 14) prevents Min<1, but the rebalancer
+            # still sees the floor node as eligible and creates actions for it in
+            # an infinite loop.  Remove it from candidates entirely.
+            if _karpenter_active and on_demand_instances:
+                import json as _json_sn
+                _stable_node_key = f"spot:stable_node:{cluster.id}"
+                _stable_node = None
+
+                # 1. Re-use previously designated stable node if still present
+                try:
+                    _cached_sn = _redis.get(_stable_node_key) if _redis else None
+                    if _cached_sn:
+                        _cached_sn_data = _json_sn.loads(_cached_sn)
+                        _cached_sn_id = _cached_sn_data.get('instance_id')
+                        for _sn_inst in on_demand_instances:
+                            if _sn_inst.instance_id == _cached_sn_id:
+                                _stable_node = _sn_inst
+                                break
+                except Exception:
+                    pass
+
+                # 2. Pick a new stable node — prefer the one hosting Karpenter pods
+                if not _stable_node:
+                    try:
+                        from backend.services.karpenter_service import KarpenterService as _KS_SN
+                        _ks_sn = _KS_SN(db, _redis)
+                        _sn_k8s = _ks_sn._get_k8s_client(cluster)
+                        from kubernetes import client as _k8s_sn
+                        _sn_v1 = _k8s_sn.CoreV1Api(_sn_k8s)
+                        _karp_pods = _sn_v1.list_namespaced_pod('karpenter')
+                        _karp_node_names = set()
+                        for _kp in _karp_pods.items:
+                            if _kp.spec.node_name:
+                                _karp_node_names.add(_kp.spec.node_name)
+                        for _sn_inst in on_demand_instances:
+                            if _sn_inst.node_name in _karp_node_names:
+                                _stable_node = _sn_inst
+                                break
+                    except Exception as _sn_err:
+                        logger.debug(
+                            f"[auto_rebalancer] Karpenter pod lookup for stable node: {_sn_err}"
+                        )
+
+                # 3. Fallback: first OD instance (oldest)
+                if not _stable_node:
+                    _stable_node = on_demand_instances[0]
+
+                # Cache selection (10 min TTL)
+                try:
+                    _redis.setex(_stable_node_key, 600, _json_sn.dumps({
+                        "instance_id": _stable_node.instance_id,
+                        "node_name": _stable_node.node_name,
+                        "instance_type": _stable_node.instance_type,
+                    }))
+                except Exception:
+                    pass
+
+                # Remove from candidates
+                on_demand_instances = [
+                    inst for inst in on_demand_instances
+                    if inst.instance_id != _stable_node.instance_id
+                ]
+                logger.info(
+                    f"[auto_rebalancer] Stable node for {cluster.name}: "
+                    f"{_stable_node.instance_id} ({_stable_node.node_name}) — "
+                    f"excluded from rebalancing. {len(on_demand_instances)} OD nodes remain"
+                )
+
             logger.info(f"[auto_rebalancer] CHECKPOINT-E cluster={cluster.name} od={len(on_demand_instances)}")
             if not on_demand_instances:
                 # ── MIGRATION COMPLETION CHECK ──────────────────────────────────────
@@ -4295,8 +7263,10 @@ def execute_rebalancing():
                 ).first()
                 _diversify_s2s = getattr(_opt_s2s, 'diversify_pools', False)
                 # When the cluster is already fully spot (optimized state),
-                # trigger S2S only on risk-threshold breaches.
-                _s2s_risk_only_mode = True
+                # trigger S2S only on risk-threshold breaches — UNLESS
+                # diversify_pools is enabled, in which case diversify and
+                # opportunistic S2S checks must also run.
+                _s2s_risk_only_mode = not _diversify_s2s
                 logger.info(f"[auto_rebalancer] CHECKPOINT-F S2S diversify_s2s={_diversify_s2s} cluster={cluster.name}")
                 _diversify_fam_cap_pct = getattr(_opt_s2s, 'max_family_diversification_cap_pct', 40) or 40
                 _diversify_fam_cap_ratio = _diversify_fam_cap_pct / 100.0
@@ -4729,7 +7699,7 @@ def execute_rebalancing():
             # Determine how many nodes we can target this cycle based on
             # rebalance_batch_percent and PDB safety. This caps the iteration
             # list so we don't create more actions than the batch allows.
-            _batch_percent = 15  # default: 15% of target nodes
+            _batch_percent = 60  # default: 60% of target nodes
             if _opt_settings and getattr(_opt_settings, 'rebalance_batch_percent', None) is not None:
                 _batch_percent = _opt_settings.rebalance_batch_percent
                 if _batch_percent == 0:
@@ -4758,15 +7728,145 @@ def execute_rebalancing():
                 except Exception:
                     pass
 
-            _batch_size = max(1, int(len(on_demand_instances) * _batch_percent / 100))
-            _batch_candidates = on_demand_instances[:_batch_size]
-            logger.debug(
+            import math as _math_batch
+            # Pre-filter: remove nodes with recent failed/completed actions (< 2h cooldown)
+            # BEFORE computing batch size. Otherwise the batch picks cooled-down nodes,
+            # skips them in the loop, and never reaches eligible nodes beyond the batch window.
+            # EXCEPTION: Infrastructure-level failures (AGENT_WENT_OFFLINE, Karpenter not
+            # installed) don't count — the node was never touched, so cooldown is pointless
+            # and causes infinite blocking loops.
+            _INFRA_FAILURES = (
+                'AGENT_WENT_OFFLINE',
+                'Karpenter not installed',
+                'Dry run:',
+                'No compatible spot pool',
+                'Action timed out',
+            )
+            _total_od_for_batch = len(on_demand_instances)
+            _eligible_od = []
+            _cooled_down_ids = set()
+            for _od_inst in on_demand_instances:
+                try:
+                    _cd_recent = db.query(RebalancingAction).filter(
+                        RebalancingAction.cluster_id == cluster.id,
+                        RebalancingAction.status.in_(['completed', 'failed']),
+                        RebalancingAction.completed_at >= datetime.utcnow() - timedelta(hours=2),
+                    ).filter(
+                        (RebalancingAction.source_instance_id == _od_inst.instance_id)
+                        | (RebalancingAction.action_metadata.op('->>')('instance_id') == _od_inst.instance_id)
+                    ).first()
+                    if _cd_recent:
+                        # Don't cooldown for infrastructure-level failures
+                        if _cd_recent.status == 'failed' and _cd_recent.error_message and any(
+                            _cd_recent.error_message.startswith(inf) for inf in _INFRA_FAILURES
+                        ):
+                            pass  # fall through to eligible
+                        else:
+                            _cooled_down_ids.add(_od_inst.instance_id)
+                            continue
+                except Exception:
+                    pass
+                _eligible_od.append(_od_inst)
+            if _cooled_down_ids:
+                logger.info(
+                    f"[auto_rebalancer] Pre-filter: {len(_cooled_down_ids)} OD nodes in cooldown "
+                    f"({', '.join(iid[:12] for iid in _cooled_down_ids)}), "
+                    f"{len(_eligible_od)} eligible"
+                )
+            # Batch size is based on TOTAL OD count (not just eligible), so the
+            # batch % reflects the cluster's intended migration pace.
+            _batch_size = max(1, _math_batch.ceil(_total_od_for_batch * _batch_percent / 100))
+            _batch_candidates = _eligible_od[:_batch_size]
+
+            # ── INITIAL vs POST-MIGRATION CONCURRENCY ───────────────────────
+            # Initial OD→Spot rebalance (managed node group not yet deleted):
+            #   Run the full batch concurrently — the batch slider controls how
+            #   many nodes are replaced at once (e.g. 3 nodes × 60% = ceil(1.8)
+            #   = 2 nodes concurrently in batch 1, then 1 in batch 2).
+            # Post-migration S2S: sequential (max_concurrent stays 1) — Karpenter
+            #   handles risk/emergency ordering.
+            _is_initial_rebalance = (
+                len(on_demand_instances) > 0
+                and not getattr(cluster, 'managed_node_group_deleted', False)
+            )
+            if _is_initial_rebalance:
+                _initial_max_concurrent = _batch_size
+            else:
+                _initial_max_concurrent = None  # use default from settings (1)
+
+            logger.info(
                 f"[auto_rebalancer] Batch sizing: {cluster.name} "
-                f"total_od={len(on_demand_instances)} batch_pct={_batch_percent}% "
-                f"batch_size={_batch_size}"
+                f"total_od={_total_od_for_batch} eligible={len(_eligible_od)} "
+                f"batch_pct={_batch_percent}% batch_size={_batch_size} "
+                f"initial_rebalance={_is_initial_rebalance} "
+                f"concurrent={_initial_max_concurrent or 'default(1)'}"
             )
 
+            # ── BATCH-LEVEL ASG MinSize PRE-SET ────────────────────────────
+            # Before creating actions, lower ASG MinSize to anchor count (1)
+            # so terminate+decrement calls can proceed without MinSize blocking.
+            # Example: 6-node cluster, 1 anchor, batch of 3:
+            #   MinSize 6 → 1 (anchor only), Desired stays 6 until terminates
+            #   Batch 1 terminates: Desired 6→5→4→3, Min=1
+            #   Batch 2 terminates: Desired 3→2→1, Min=1
+            if _is_initial_rebalance and _batch_candidates and _karpenter_active:
+                try:
+                    _bm_first = _batch_candidates[0]
+                    if _bm_first.instance_id and _bm_first.instance_id.startswith('i-'):
+                        from backend.utils.aws.asg import (
+                            get_assumed_credentials as _get_creds_bm,
+                            get_asg_for_instance as _get_asg_bm,
+                        )
+                        _bm_region = cluster.region or "ap-south-1"
+                        _bm_creds = _get_creds_bm(cluster, db)
+                        _bm_asg_name = _get_asg_bm(
+                            _bm_first.instance_id, _bm_region, _bm_creds
+                        )
+                        if _bm_asg_name:
+                            import boto3 as _b3_bm
+                            _bm_asg_client = _b3_bm.client(
+                                "autoscaling", region_name=_bm_region, **_bm_creds
+                            ) if _bm_creds else _b3_bm.client(
+                                "autoscaling", region_name=_bm_region
+                            )
+                            _bm_desc = _bm_asg_client.describe_auto_scaling_groups(
+                                AutoScalingGroupNames=[_bm_asg_name]
+                            )['AutoScalingGroups']
+                            if _bm_desc:
+                                _bm_cur_min = _bm_desc[0].get('MinSize', 0)
+                                _bm_cur_desired = _bm_desc[0].get('DesiredCapacity', 0)
+                                # Anchor count = 1 (stable node excluded above)
+                                _bm_target_min = 1
+                                if _bm_cur_min > _bm_target_min:
+                                    _bm_asg_client.update_auto_scaling_group(
+                                        AutoScalingGroupName=_bm_asg_name,
+                                        MinSize=_bm_target_min,
+                                    )
+                                    logger.info(
+                                        f"[auto_rebalancer] Batch ASG pre-set: "
+                                        f"'{_bm_asg_name}' MinSize {_bm_cur_min} → "
+                                        f"{_bm_target_min} (anchor_count=1, "
+                                        f"batch={_batch_size}, "
+                                        f"Desired={_bm_cur_desired} unchanged)"
+                                    )
+                                else:
+                                    logger.info(
+                                        f"[auto_rebalancer] Batch ASG pre-set: "
+                                        f"'{_bm_asg_name}' MinSize={_bm_cur_min} "
+                                        f"already ≤ target {_bm_target_min}"
+                                    )
+                except Exception as _bm_err:
+                    logger.warning(
+                        f"[auto_rebalancer] Batch ASG MinSize pre-set failed: "
+                        f"{_bm_err} — per-action decrement will handle it"
+                    )
+
             for instance in _batch_candidates:
+                logger.info(
+                    f"[auto_rebalancer] BATCH-LOOP instance={instance.instance_id} "
+                    f"lifecycle={instance.lifecycle} state={instance.state} "
+                    f"type={instance.instance_type}"
+                )
                 # Skip placeholder instances (daemon-set auto-created with ip- hostname as ID).
                 # They don't have real EC2 IDs and can't be used for spot launch.
                 if not instance.instance_id or not instance.instance_id.startswith('i-'):
@@ -4928,6 +8028,8 @@ def execute_rebalancing():
                 # skip it to prevent duplicate replacements.
                 # For failed actions, only skip (cooldown) — do NOT mark terminated
                 # because the source node was never touched.
+                # EXCEPTION: Infrastructure-level failures (AGENT_WENT_OFFLINE, Karpenter
+                # not installed) bypass cooldown — the node was never touched.
                 try:
                     _recent_completed = db.query(RebalancingAction).filter(
                         RebalancingAction.cluster_id == cluster.id,
@@ -4938,7 +8040,20 @@ def execute_rebalancing():
                         | (RebalancingAction.action_metadata.op('->>')('instance_id') == instance.instance_id)
                     ).first()
                     if _recent_completed:
-                        if _recent_completed.status == 'completed':
+                        # Infrastructure failures don't count as cooldown
+                        _is_infra_fail = (
+                            _recent_completed.status == 'failed'
+                            and _recent_completed.error_message
+                            and any(_recent_completed.error_message.startswith(inf) for inf in _INFRA_FAILURES)
+                        )
+                        if _is_infra_fail:
+                            # Bypass cooldown — node was never touched, proceed with rebalancing
+                            logger.info(
+                                f"[auto_rebalancer] Bypassing cooldown for {instance.instance_id}: "
+                                f"recent action {_recent_completed.id} was infra failure "
+                                f"({_recent_completed.error_message[:60]})"
+                            )
+                        elif _recent_completed.status == 'completed':
                             logger.info(
                                 f"[auto_rebalancer] Skipping {instance.instance_id}: "
                                 f"recent completed action {_recent_completed.id} "
@@ -4947,6 +8062,7 @@ def execute_rebalancing():
                             # Source should already be gone — force DB state to terminated
                             instance.state = 'terminated'
                             db.commit()
+                            continue
                         else:
                             # Failed action — source node is still alive, just skip for cooldown
                             logger.info(
@@ -4954,7 +8070,7 @@ def execute_rebalancing():
                                 f"recent failed action {_recent_completed.id} "
                                 f"exists (< 2h) — cooling down before retry"
                             )
-                        continue
+                            continue
                 except Exception as _rcq_err:
                     logger.debug(f"[auto_rebalancer] Recent action check failed: {_rcq_err}")
 
@@ -4978,11 +8094,18 @@ def execute_rebalancing():
                 # max_concurrent_rebalance_actions=NULL → 1 (preserve existing behavior).
                 # BUG-7: Use Redis atomic INCR/DECR as distributed semaphore instead
                 # of DB query (two workers can read same count and both proceed).
-                _max_concurrent = (
-                    _opt_settings.max_concurrent_rebalance_actions
-                    if _opt_settings and getattr(_opt_settings, 'max_concurrent_rebalance_actions', None)
-                    else 1
-                )
+                #
+                # Initial OD→Spot rebalance: override to batch_size so the full
+                # batch runs concurrently. After initial migration, fall back to
+                # the user setting (default 1) for sequential S2S.
+                if _is_initial_rebalance and _initial_max_concurrent:
+                    _max_concurrent = _initial_max_concurrent
+                else:
+                    _max_concurrent = (
+                        _opt_settings.max_concurrent_rebalance_actions
+                        if _opt_settings and getattr(_opt_settings, 'max_concurrent_rebalance_actions', None)
+                        else 1
+                    )
                 _sem_key = f"rebalance:active_count:{cluster.id}"
                 _sem_acquired = False
                 try:
@@ -5540,11 +8663,15 @@ def execute_rebalancing():
 
                     if target_pool is None:
                         # Neither double-gate nor rank_pools_for_node found a pool
-                        logger.debug(
+                        logger.info(
                             f"[auto_rebalancer] No qualifying spot pool for {instance.instance_id} "
                             f"({instance.instance_type}) — skipping this cycle"
                         )
-                except Exception:
+                except Exception as _pool_sel_err:
+                    logger.warning(
+                        f"[auto_rebalancer] Pool selection exception for {instance.instance_id}: "
+                        f"{type(_pool_sel_err).__name__}: {_pool_sel_err}"
+                    )
                     # Sync target_instance_type_final from target_pool if it was already
                     # set (e.g. by _per_node_primary_pool before the exception occurred).
                     # Avoids the UI showing "→ t3.medium" when target_pool is correctly
@@ -5668,6 +8795,36 @@ def execute_rebalancing():
                         logger.warning(f"[auto_rebalancer] Failed to create deferred action: {_def_err}")
                     continue  # try next OD instance
 
+                # ── TARGET POOL DEDUP ───────────────────────────────────────────
+                # For S2S (post-migration) only: prevent two actions from targeting
+                # the same spot pool simultaneously — two S2S migrations to the same
+                # pool would waste a provision.
+                #
+                # For initial OD→Spot batch: SKIP this check. Multiple OD nodes
+                # SHOULD target the same best pool (e.g. c7g.medium:az). Each gets
+                # its own separate spot EC2 instance. Dedup was incorrectly forcing
+                # different instance types (e.g. c5.large) for parallel batch nodes.
+                # The only real guard needed: source_instance_id != target (can't
+                # replace a node with itself), which is already enforced above.
+                if not _is_initial_rebalance:
+                    try:
+                        _active_target_pools = set()
+                        _active_for_dedup = db.query(RebalancingAction.target_pool).filter(
+                            RebalancingAction.cluster_id == cluster.id,
+                            RebalancingAction.status.in_(['in_progress', 'waiting_agent', 'pending_approval']),
+                        ).all()
+                        for (_atp,) in _active_for_dedup:
+                            if _atp:
+                                _active_target_pools.add(_atp)
+                        if target_pool in _active_target_pools:
+                            logger.info(
+                                f"[auto_rebalancer] Skipping {instance.instance_id} — "
+                                f"target pool {target_pool} already claimed by active action (S2S dedup)"
+                            )
+                            continue
+                    except Exception as _dedup_err:
+                        logger.debug(f"[auto_rebalancer] Target pool dedup check failed: {_dedup_err}")
+
                 _needs_approval = getattr(_opt_settings, 'manual_approval_required', False)
                 _action_status = 'pending_approval' if _needs_approval else 'in_progress'
 
@@ -5698,6 +8855,9 @@ def execute_rebalancing():
                         'initiated_by': 'auto_rebalancer',
                         'instance_id': instance.instance_id,
                         'bin_packed': bin_packed,
+                        'is_initial_batch': _is_initial_rebalance,
+                        'batch_size': _batch_size if _is_initial_rebalance else 1,
+                        'total_od_nodes': len(on_demand_instances),
                         # Use target_instance_type_final (post-double-gate actual choice)
                         # NOT pre-gate target_instance_type which may still equal source type.
                         'target_instance_type': target_instance_type_final,
@@ -5721,14 +8881,16 @@ def execute_rebalancing():
                 else:
                     logger.info(f"Created auto-rebalance action for {instance.instance_id} in cluster {cluster.name}")
 
-                # Z6 fix: Set per-node active action lock with 24h safety-net TTL.
+                # Z6 fix: Set per-node active action lock with 30-min safety-net TTL.
                 # Cleared explicitly by completion/failure handlers; TTL is a fallback
                 # to prevent permanent lockout if explicit cleanup is missed.
+                # Reduced from 24h to 30min — typical action completes in <20min;
+                # 24h TTL caused day-long blockouts when cleanup was missed.
                 try:
                     if _redis:
                         _redis.setex(
                             f"spot:node_active_action:{instance.instance_id}",
-                            86400,
+                            1800,
                             instance.instance_id,
                         )
                 except Exception:
@@ -5753,12 +8915,17 @@ def execute_rebalancing():
                 except Exception:
                     pass
 
-                break  # Only create 1 action per cluster per cycle
+                # Initial OD→Spot rebalance: create ALL batch actions in one cycle.
+                # Post-migration (S2S): only 1 action per cluster per cycle.
+                if not _is_initial_rebalance:
+                    break  # sequential: 1 action per cluster per cycle
 
         db.commit()
 
-        # Step 2: Execute 1 in_progress action per cluster (never all at once)
-        # Group by cluster_id and pick the oldest in_progress action per cluster.
+        # Step 2: Execute in_progress actions.
+        # Initial OD→Spot rebalance (MNG not deleted): execute the full batch
+        # concurrently — all in_progress actions for that cluster run in one cycle.
+        # Post-migration S2S: execute 1 per cluster (sequential).
         from sqlalchemy import func as _sqlfunc
         clusters_with_actions = db.query(RebalancingAction.cluster_id).filter(
             RebalancingAction.status == 'in_progress'
@@ -5766,18 +8933,67 @@ def execute_rebalancing():
 
         executed = 0
         for (cid,) in clusters_with_actions:
-            action = db.query(RebalancingAction).filter(
-                RebalancingAction.cluster_id == cid,
-                RebalancingAction.status == 'in_progress'
-            ).order_by(RebalancingAction.started_at).first()
-            if action:
-                execute_rebalancing_action(db, action)
-                executed += 1
+            _exec_cluster = db.query(Cluster).filter(Cluster.id == cid).first()
+            _is_initial = (
+                _exec_cluster
+                and not getattr(_exec_cluster, 'managed_node_group_deleted', False)
+            )
+
+            if _is_initial:
+                # Initial rebalance: execute ALL in_progress actions (batch)
+                # Acquire the cluster lock ONCE, then pass _batch_lock_held=True
+                # so all batch actions execute in parallel without deferring.
+                _batch_actions = db.query(RebalancingAction).filter(
+                    RebalancingAction.cluster_id == cid,
+                    RebalancingAction.status == 'in_progress'
+                ).order_by(RebalancingAction.started_at).all()
+                if _batch_actions:
+                    from backend.core.redis_client import get_redis_client as _grc_batch, key_rebalance_lock as _krl_batch
+                    _batch_redis = _grc_batch()
+                    _batch_lock_key = _krl_batch(cid)
+                    # Use first action's ID as lock owner for the entire batch
+                    _batch_lock_ok = _batch_redis.set(
+                        _batch_lock_key, f"batch:{_batch_actions[0].id}",
+                        nx=True, ex=2700
+                    )
+                    if not _batch_lock_ok:
+                        logger.info(
+                            f"[auto_rebalancer] Cluster {_exec_cluster.name}: "
+                            f"rebalance lock held — deferring {len(_batch_actions)} batch actions"
+                        )
+                        for action in _batch_actions:
+                            action.status = 'deferred'
+                            action.error_message = 'Batch lock held by concurrent operation'
+                        db.commit()
+                    else:
+                        try:
+                            for action in _batch_actions:
+                                execute_rebalancing_action(db, action, _batch_lock_held=True)
+                                executed += 1
+                            logger.info(
+                                f"[auto_rebalancer] Initial batch: executed {len(_batch_actions)} "
+                                f"parallel action(s) for {_exec_cluster.name}"
+                            )
+                        finally:
+                            # Release batch lock after all actions complete
+                            try:
+                                _batch_redis.delete(_batch_lock_key)
+                            except Exception:
+                                pass
+            else:
+                # Post-migration: 1 action at a time (sequential S2S)
+                action = db.query(RebalancingAction).filter(
+                    RebalancingAction.cluster_id == cid,
+                    RebalancingAction.status == 'in_progress'
+                ).order_by(RebalancingAction.started_at).first()
+                if action:
+                    execute_rebalancing_action(db, action)
+                    executed += 1
 
         if executed == 0:
             logger.debug("No in_progress rebalancing actions to execute")
         else:
-            logger.info(f"Executed {executed} rebalancing action(s) (1 per cluster)")
+            logger.info(f"Executed {executed} rebalancing action(s)")
 
         logger.info("Auto-rebalancer task completed successfully")
 

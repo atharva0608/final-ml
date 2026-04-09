@@ -371,7 +371,7 @@ const CloudIntegrations = () => {
               <p className="text-sm text-gray-700 font-medium mb-2">Connection Parameters:</p>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
                 <div>
-                  <span className="text-gray-500 block">Platform Account ID <span className="text-xs text-blue-600">(SpotOptimizer's AWS Account - Trust This)</span>:</span>
+                  <span className="text-gray-500 block">Platform Account ID <span className="text-xs text-blue-600">(Balancekube's AWS Account - Trust This)</span>:</span>
                   <div className="flex items-center gap-2">
                     <code className="bg-gray-100 px-2 py-1 rounded">{connectionInfo?.platform_account_id || 'Loading...'}</code>
                     {connectionInfo?.platform_account_id_source === 'auto_detected' && (
@@ -381,7 +381,7 @@ const CloudIntegrations = () => {
                       <span className="text-xs bg-red-100 text-red-700 px-1 rounded">Not Configured</span>
                     )}
                   </div>
-                  <p className="text-xs text-gray-400 mt-1">This is NOT your AWS Account. It's the SpotOptimizer backend's account.</p>
+                  <p className="text-xs text-gray-400 mt-1">This is NOT your AWS Account. It's the Balancekube backend's account.</p>
                 </div>
                 <div>
                   <span className="text-gray-500 block">Your Organization External ID <span className="text-xs text-blue-600">(Unique Security Key)</span>:</span>
@@ -422,7 +422,7 @@ const CloudIntegrations = () => {
                 onChange={(e) => setFormData({ ...formData, role_arn: e.target.value })}
                 placeholder="arn:aws:iam::123456789012:role/SpotOptimizerRole"
                 required
-                help="Full ARN of the IAM role created for Spot Optimizer"
+                help="Full ARN of the IAM role created for Balancekube"
               />
 
               <div>

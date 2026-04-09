@@ -103,6 +103,7 @@ class HealthServer(HTTPServer):
     """
     HTTP server with custom attributes for health checks.
     """
+    allow_reuse_address = True
 
     def __init__(self, server_address, handler_class):
         super().__init__(server_address, handler_class)
@@ -150,6 +151,9 @@ class HeartbeatSender:
         self.running = False
         self.health_server = None
         self.server_thread = None
+
+        # Consecutive heartbeat failure counter for adaptive intervals
+        self._consecutive_hb_failures = 0
 
         # Component health status
         # BUG-14 fix: Protected by _health_lock — accessed from multiple threads
@@ -416,7 +420,7 @@ class HeartbeatSender:
 
     def send_heartbeat(self) -> bool:
         """
-        Send heartbeat to backend.
+        Send heartbeat to backend with exponential backoff retry.
 
         Returns:
             True if successful, False otherwise
@@ -446,43 +450,68 @@ class HeartbeatSender:
         with self._health_lock:
             payload['components'] = dict(self.component_health)
 
-        try:
-            response = requests.post(
-                url,
-                json=payload,
-                headers=headers,
-                timeout=10
-            )
-            response.raise_for_status()
-            logger.debug(f"Heartbeat sent successfully")
-            return True
+        # Retry with exponential backoff (up to 3 attempts)
+        max_retries = 3
+        for attempt in range(1, max_retries + 1):
+            try:
+                response = requests.post(
+                    url,
+                    json=payload,
+                    headers=headers,
+                    timeout=15
+                )
+                response.raise_for_status()
+                if self._consecutive_hb_failures > 0:
+                    logger.info(f"Heartbeat recovered after {self._consecutive_hb_failures} failures")
+                    self._consecutive_hb_failures = 0
+                logger.debug("Heartbeat sent successfully")
+                return True
 
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Failed to send heartbeat: {e}")
-            return False
+            except requests.exceptions.RequestException as e:
+                if attempt < max_retries:
+                    backoff = min(2 ** attempt, 10)  # 2s, 4s, 8s (capped at 10)
+                    logger.warning(f"Heartbeat attempt {attempt}/{max_retries} failed: {e}. Retrying in {backoff}s...")
+                    time.sleep(backoff)
+                else:
+                    self._consecutive_hb_failures += 1
+                    logger.error(
+                        f"Heartbeat failed after {max_retries} attempts "
+                        f"(consecutive failures: {self._consecutive_hb_failures}): {e}"
+                    )
+                    return False
 
     def run(self):
         """
-        Run the heartbeat sender in a loop.
+        Run the heartbeat sender in a loop — runs forever with adaptive intervals.
         """
         self.running = True
+        self._consecutive_hb_failures = 0
         logger.info(f"Starting heartbeat sender with {self.heartbeat_interval}s interval")
 
-        # Start health check server
-        self.start_health_server()
+        # Start health check server (skip if already bound from a prior run)
+        if not self.health_server:
+            try:
+                self.start_health_server()
+            except Exception as e:
+                logger.warning(f"Health server already running or port busy: {e}")
 
         while self.running:
             try:
-                success = self.send_heartbeat()
-                if not success:
-                    # Retry once after 5s on transient failure
-                    time.sleep(5)
-                    self.send_heartbeat()
+                self.send_heartbeat()
             except Exception as e:
                 logger.error(f"Error in heartbeat loop: {e}", exc_info=True)
 
-            # Wait for next heartbeat
-            time.sleep(self.heartbeat_interval)
+            # Adaptive interval: slow down if backend is unreachable to avoid flooding
+            if self._consecutive_hb_failures >= 5:
+                sleep_time = min(self.heartbeat_interval * 4, 120)  # max 2 min
+                if self._consecutive_hb_failures % 10 == 0:
+                    logger.warning(
+                        f"Backend unreachable for {self._consecutive_hb_failures} cycles. "
+                        f"Heartbeat interval slowed to {sleep_time}s. Will auto-recover."
+                    )
+            else:
+                sleep_time = self.heartbeat_interval
+            time.sleep(sleep_time)
 
         logger.info("Heartbeat sender stopped")
 

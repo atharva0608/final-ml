@@ -1195,6 +1195,8 @@ class HygieneService:
                     is_dormant = True
 
                 # Additional safety: Don't flag users with active keys unless truly dormant
+                if days_inactive is None:
+                    continue  # New user with no activity yet — skip
                 # ── Use modular rule ──
                 verdict, reason = classify_iam_user(
                     days_inactive=days_inactive,

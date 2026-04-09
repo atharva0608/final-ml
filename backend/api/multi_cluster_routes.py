@@ -90,12 +90,28 @@ def get_multi_cluster_summary(
     fleet_items: List[ClusterFleetItem] = []
 
     for c in clusters_q:
-        # Instance counts
-        spot_count = db.query(Instance).filter(
+        # Build set of replacement spot instance IDs with active optimization
+        # to exclude from fleet view counts until optimization completes.
+        _active_repl_ids = set()
+        _active_ras_mc = db.query(RebalancingAction).filter(
+            RebalancingAction.cluster_id == c.id,
+            RebalancingAction.status.in_(['in_progress', 'waiting_agent']),
+        ).all()
+        for _ra_mc in _active_ras_mc:
+            _ra_mc_meta = _ra_mc.action_metadata or {}
+            _repl_mc = _ra_mc_meta.get('replacement_spot_instance_id')
+            if _repl_mc:
+                _active_repl_ids.add(_repl_mc)
+
+        # Instance counts (excluding replacement spot nodes with active optimization)
+        _spot_q = db.query(Instance).filter(
             Instance.cluster_id == c.id,
             Instance.lifecycle == InstanceLifecycle.SPOT,
             Instance.state == 'running',
-        ).count()
+        )
+        if _active_repl_ids:
+            _spot_q = _spot_q.filter(Instance.instance_id.notin_(_active_repl_ids))
+        spot_count = _spot_q.count()
         od_count = db.query(Instance).filter(
             Instance.cluster_id == c.id,
             Instance.lifecycle == InstanceLifecycle.ON_DEMAND,

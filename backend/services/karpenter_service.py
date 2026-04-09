@@ -381,12 +381,50 @@ class KarpenterService:
 
             try:
                 ec2 = self._get_ec2_client(region)
-                ec2.run_instances(
+                # Fix #9: Resolve architecture-appropriate AMI for dry-run.
+                # c8g/c7g (ARM64) require an arm64 AMI; x86 types require an x86 AMI.
+                _ARM64_FAMILIES_DR = {
+                    't4g', 'c6g', 'c7g', 'c8g', 'm6g', 'm7g', 'm8g', 'r6g', 'r7g', 'r8g',
+                    'c6gn', 'c6gd', 'c8gn', 'm6gd', 'r6gd', 'a1', 'hpc7g', 'x2gd', 'im4gn', 'is4gen',
+                }
+                _family = candidate["instance_type"].split('.')[0]
+                _dr_arch = "arm64" if _family in _ARM64_FAMILIES_DR else "x86_64"
+                _dr_params = dict(
                     InstanceType=candidate["instance_type"],
                     DryRun=True,
                     MinCount=1,
-                    MaxCount=1
+                    MaxCount=1,
                 )
+                # Use SSM-resolved EKS-optimized AMI for the correct arch
+                try:
+                    ssm = self._get_ec2_client(region).meta.client
+                    # Re-create as SSM client
+                    import boto3 as _boto3_dr
+                    _ssm_session = _boto3_dr.Session(region_name=region)
+                    _ssm_c = _ssm_session.client('ssm', region_name=region)
+                    _ami_path = (
+                        f"/aws/service/eks/optimized-ami/1.31/amazon-linux-2{'023/' if _dr_arch == 'x86_64' else '-arm64/'}"
+                        f"recommended/image_id"
+                    )
+                    _ami_resp = _ssm_c.get_parameter(Name=_ami_path)
+                    _dr_params['ImageId'] = _ami_resp['Parameter']['Value']
+                except Exception:
+                    # Fallback: use DescribeImages to find latest EKS AMI
+                    try:
+                        _img_resp = ec2.describe_images(
+                            Owners=['amazon'],
+                            Filters=[
+                                {'Name': 'name', 'Values': [f'amazon-eks-node-1.31-*']},
+                                {'Name': 'architecture', 'Values': [_dr_arch]},
+                                {'Name': 'state', 'Values': ['available']},
+                            ],
+                        )
+                        _images = sorted(_img_resp.get('Images', []), key=lambda x: x.get('CreationDate', ''), reverse=True)
+                        if _images:
+                            _dr_params['ImageId'] = _images[0]['ImageId']
+                    except Exception:
+                        pass  # proceed without ImageId — may fail for ARM64 but worth trying
+                ec2.run_instances(**_dr_params)
             except ClientError as e:
                 if "DryRunOperation" in str(e):
                     # Capacity confirmed — this pool is viable
@@ -668,6 +706,8 @@ class KarpenterService:
         """
         Updates Karpenter NodePool with ML-approved instance types.
         Includes rollback, retry logic, and circuit breaker checks.
+        Automatically derives kubernetes.io/arch from the instance type
+        families so both amd64 and arm64 nodes can be provisioned.
 
         Args:
             capacity_type: "spot" or "on-demand"
@@ -678,6 +718,20 @@ class KarpenterService:
         # Check circuit breaker before attempting execution
         if self._check_circuit_breaker(cluster.id):
             raise Exception(f"Circuit breaker active for cluster {cluster.id} — execution blocked")
+
+        # Derive architecture list from instance types
+        _ARM64_FAMILIES = {
+            't4g', 'c6g', 'c7g', 'c8g', 'm6g', 'm7g', 'm8g', 'r6g', 'r7g', 'r8g',
+            'c6gn', 'c6gd', 'm6gd', 'r6gd', 'a1', 'hpc7g', 'x2gd', 'im4gn', 'is4gen',
+        }
+        _archs = set()
+        for itype in instance_types:
+            family = itype.split('.')[0] if '.' in itype else itype
+            if family in _ARM64_FAMILIES:
+                _archs.add('arm64')
+            else:
+                _archs.add('amd64')
+        arch_list = sorted(_archs) if _archs else ['amd64', 'arm64']
 
         try:
             custom_api = client.CustomObjectsApi(api_client)
@@ -698,6 +752,7 @@ class KarpenterService:
                         "spec": {
                             "requirements": [
                                 {"key": "karpenter.sh/capacity-type", "operator": "In", "values": [capacity_type]},
+                                {"key": "kubernetes.io/arch", "operator": "In", "values": arch_list},
                                 {"key": "node.kubernetes.io/instance-type", "operator": "In", "values": instance_types},
                                 {"key": "topology.kubernetes.io/zone", "operator": "In", "values": azs}
                             ],
@@ -724,31 +779,24 @@ class KarpenterService:
                 logger.info(f"Updating existing NodePool '{nodepool_name}' with retry logic")
 
                 # Retry loop for PATCH operations
-                for attempt in range(self.MAX_PATCH_RETRIES + 1):
-                    try:
-                        custom_api.patch_cluster_custom_object(
-                            group="karpenter.sh", version="v1",
-                            plural="nodepools",
-                            name=nodepool_name, body=nodepool_spec
-                        )
-                        logger.info(f"NodePool PATCH succeeded on attempt {attempt + 1}")
-                        return True
-
-                    except Exception as e:
-                        if attempt < self.MAX_PATCH_RETRIES:
-                            delay = self.RETRY_DELAYS[attempt]
-                            logger.warning(
-                                f"PATCH attempt {attempt + 1} failed, retry in {delay}s: {e}"
-                            )
-                            time.sleep(delay)
-                        else:
-                            logger.error(
-                                f"PATCH failed after {self.MAX_PATCH_RETRIES + 1} attempts, "
-                                f"initiating rollback: {e}"
-                            )
-                            self._restore_nodepool_state(api_client, nodepool_name, current_state)
-                            self._record_execution_failure(cluster.id)
-                            raise
+                # Enhancement 8: Non-blocking retries — attempt once, if it fails
+                # raise immediately (caller uses metadata flag to retry next cycle
+                # instead of blocking the Celery worker thread with time.sleep).
+                try:
+                    custom_api.patch_cluster_custom_object(
+                        group="karpenter.sh", version="v1",
+                        plural="nodepools",
+                        name=nodepool_name, body=nodepool_spec
+                    )
+                    logger.info(f"NodePool PATCH succeeded on first attempt")
+                    return True
+                except Exception as e:
+                    logger.warning(
+                        f"NodePool PATCH failed: {e} — caller will retry next cycle"
+                    )
+                    self._restore_nodepool_state(api_client, nodepool_name, current_state)
+                    self._record_execution_failure(cluster.id)
+                    raise
 
             except ApiException as e:
                 if e.status == 404:
@@ -880,10 +928,9 @@ class KarpenterService:
                 if cached_result.get('source') != 'db_column':
                     return cached_result
 
-            # ── Tier 3: DB column fallback (no live data available) ──
-            # NOTE: karpenter_mode alone is NOT proof of installation — it can be
-            # set as a desired mode before Karpenter is actually installed.
-            # Without live agent confirmation, report detected=False.
+            # ── Tier 2.5: Direct K8s API check (fallback when agent can't call home) ──
+            # The backend has direct K8s API access via EKS token auth.
+            # Check for running Karpenter pods without needing the agent as middleman.
             from backend.models.cluster import Cluster
             cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
             if not cluster:
@@ -891,16 +938,59 @@ class KarpenterService:
 
             karpenter_mode = cluster.karpenter_mode.value if cluster.karpenter_mode else 'none'
 
+            try:
+                _api_client = self._get_k8s_client(cluster)
+                from kubernetes import client as _k8s_det
+                _v1 = _k8s_det.CoreV1Api(_api_client)
+                _karp_pods = _v1.list_namespaced_pod(
+                    namespace="karpenter",
+                    label_selector="app.kubernetes.io/name=karpenter",
+                    timeout_seconds=10,
+                )
+                _running_karp = [
+                    p for p in _karp_pods.items
+                    if p.status and p.status.phase == 'Running'
+                ]
+                if _running_karp:
+                    result = {
+                        'detected': True,
+                        'cluster_id': cluster_id,
+                        'karpenter_mode': karpenter_mode,
+                        'source': 'k8s_api_direct',
+                        'pods_running': len(_running_karp),
+                        'controller_healthy': True,
+                    }
+                    # Populate both caches so rebalancer and other callers see it
+                    if redis:
+                        redis.setex(cache_key, 120, _json.dumps(result))
+                        _installed_key = f"spot:karpenter:installed:{cluster_id}"
+                        redis.setex(_installed_key, 3600, karpenter_mode)
+                    logger.info(
+                        f"[karpenter] Direct K8s check: {len(_running_karp)} Karpenter "
+                        f"pod(s) Running on cluster {cluster.name}"
+                    )
+                    return result
+                else:
+                    logger.info(
+                        f"[karpenter] Direct K8s check: no Running Karpenter pods "
+                        f"found on cluster {cluster.name}"
+                    )
+            except Exception as _k8s_det_err:
+                logger.debug(
+                    f"[karpenter] Direct K8s Karpenter check failed for "
+                    f"{cluster.name}: {_k8s_det_err}"
+                )
+
+            # ── Tier 3: DB column fallback (no live data, no K8s access) ──
             result = {
                 'detected': False,
                 'cluster_id': cluster_id,
                 'karpenter_mode': karpenter_mode,
                 'source': 'db_column',
-                'warning': 'No live agent data available — cannot confirm Karpenter status',
+                'warning': 'No live agent data or direct K8s access — cannot confirm Karpenter status',
             }
             if redis:
                 redis.setex(cache_key, 120, _json.dumps(result))
-                # Do NOT set the installed key from DB-only data
                 _installed_key = f"spot:karpenter:installed:{cluster_id}"
                 redis.delete(_installed_key)
 
@@ -909,6 +999,44 @@ class KarpenterService:
         except Exception as e:
             logger.error(f"[karpenter] detect_karpenter_in_cluster failed: {e}")
             return {'detected': False, 'error': str(e)}
+
+    def add_allowed_instance_type_all_spot(self, cluster_id: str, instance_type: str):
+        """Add instance type to ALL spot-capable NodePools so Karpenter provisions
+        the correct type regardless of which NodePool the trigger pod matches.
+
+        Returns (success: bool, patched_nodepool_names: list[str]).
+        """
+        try:
+            cluster = self.db.query(Cluster).filter(Cluster.id == cluster_id).first()
+            if not cluster:
+                return False, []
+            api_client = self._get_k8s_client(cluster)
+            custom_api = client.CustomObjectsApi(api_client)
+            nps = custom_api.list_cluster_custom_object(
+                group="karpenter.sh", version="v1", plural="nodepools",
+            )
+            spot_np_names = []
+            for np_item in nps.get("items", []):
+                np_name = np_item.get("metadata", {}).get("name", "")
+                reqs = np_item.get("spec", {}).get("template", {}).get("spec", {}).get("requirements", [])
+                for r in reqs:
+                    if r.get("key") == "karpenter.sh/capacity-type" and "spot" in (r.get("values") or []):
+                        spot_np_names.append(np_name)
+                        break
+            if not spot_np_names:
+                spot_np_names = ["default"]
+            any_ok = False
+            patched = []
+            for np_name in spot_np_names:
+                ok = self.add_allowed_instance_type(cluster_id, instance_type, nodepool_name=np_name)
+                if ok:
+                    any_ok = True
+                    patched.append(np_name)
+            return any_ok, patched if patched else spot_np_names
+        except Exception as e:
+            logger.error(f"[karpenter] add_allowed_instance_type_all_spot failed: {e}")
+            result = self.add_allowed_instance_type(cluster_id, instance_type)
+            return result, ["default"]
 
     def add_allowed_instance_type(self, cluster_id: str, instance_type: str, nodepool_name: str = "default") -> bool:
         """
@@ -967,6 +1095,36 @@ class KarpenterService:
                     'values': [instance_type]
                 })
 
+            # Keep kubernetes.io/arch in sync with the instance types list
+            _ARM64_FAMILIES = {
+                't4g', 'c6g', 'c7g', 'c8g', 'm6g', 'm7g', 'm8g', 'r6g', 'r7g', 'r8g',
+                'c6gn', 'c6gd', 'm6gd', 'r6gd', 'a1', 'hpc7g', 'x2gd', 'im4gn', 'is4gen',
+            }
+            # Collect all instance types currently in the NodePool
+            _all_types = set()
+            for req in requirements:
+                if req.get('key') == 'node.kubernetes.io/instance-type':
+                    _all_types.update(req.get('values', []))
+            _derived_archs = set()
+            for _it in _all_types:
+                _fam = _it.split('.')[0] if '.' in _it else _it
+                _derived_archs.add('arm64' if _fam in _ARM64_FAMILIES else 'amd64')
+            _arch_list = sorted(_derived_archs) if _derived_archs else ['amd64', 'arm64']
+
+            # Update or create the kubernetes.io/arch requirement
+            _arch_req_found = False
+            for req in requirements:
+                if req.get('key') == 'kubernetes.io/arch':
+                    req['values'] = _arch_list
+                    _arch_req_found = True
+                    break
+            if not _arch_req_found:
+                requirements.append({
+                    'key': 'kubernetes.io/arch',
+                    'operator': 'In',
+                    'values': _arch_list,
+                })
+
             # Patch the NodePool
             patch_body = {
                 "spec": {"template": {"spec": {"requirements": requirements}}}
@@ -978,6 +1136,38 @@ class KarpenterService:
                 name=nodepool_name,
                 body=patch_body,
             )
+
+            # ── Read-back verification: confirm the patch actually took effect ──
+            try:
+                verified_np = custom_api.get_cluster_custom_object(
+                    group="karpenter.sh", version="v1", plural="nodepools", name=nodepool_name,
+                )
+                verified_reqs = verified_np.get('spec', {}).get('template', {}).get('spec', {}).get('requirements', [])
+                _verified_types = []
+                _has_spot_capacity = False
+                for vr in verified_reqs:
+                    if vr.get('key') == 'node.kubernetes.io/instance-type':
+                        _verified_types = vr.get('values', [])
+                    if vr.get('key') == 'karpenter.sh/capacity-type':
+                        _has_spot_capacity = 'spot' in (vr.get('values') or [])
+                if instance_type not in _verified_types:
+                    logger.error(
+                        f"[karpenter] VERIFICATION FAILED: {instance_type} not in NodePool "
+                        f"'{nodepool_name}' after patch (found: {_verified_types[:5]})"
+                    )
+                    return False
+                if not _has_spot_capacity:
+                    logger.warning(
+                        f"[karpenter] NodePool '{nodepool_name}' does NOT have 'spot' in "
+                        f"karpenter.sh/capacity-type — Karpenter may not provision spot nodes"
+                    )
+                logger.info(
+                    f"[karpenter] VERIFIED: {instance_type} confirmed in NodePool '{nodepool_name}' "
+                    f"for cluster {cluster_id} (spot_capable={_has_spot_capacity})"
+                )
+            except Exception as ve:
+                logger.warning(f"[karpenter] Read-back verification failed: {ve} — proceeding with caution")
+
             logger.info(
                 f"[karpenter] Added {instance_type} to NodePool '{nodepool_name}' "
                 f"for cluster {cluster_id}"
@@ -986,6 +1176,93 @@ class KarpenterService:
 
         except Exception as e:
             logger.error(f"[karpenter] add_allowed_instance_type failed: {e}")
+            return False
+
+    def remove_allowed_instance_type(self, cluster_id: str, instance_type: str, nodepool_name: str = "default") -> bool:
+        """
+        Remove a single instance type from the NodePool's allowed instance-type list.
+        Called by _cleanup_rebalancing_resources to proactively roll back the type
+        injected by Phase 1 when an action fails — preventing Karpenter from
+        provisioning that type for unrelated workload scaling events.
+
+        Returns True on success, False on failure.
+        Idempotent: if the type is not present, returns True without patching.
+        Refuses to remove the last instance type (NodePool must have at least one).
+        """
+        try:
+            cluster = self.db.query(Cluster).filter(Cluster.id == cluster_id).first()
+            if not cluster:
+                return False
+
+            api_client = self._get_k8s_client(cluster)
+            custom_api = client.CustomObjectsApi(api_client)
+
+            try:
+                nodepool = custom_api.get_cluster_custom_object(
+                    group="karpenter.sh", version="v1",
+                    plural="nodepools", name=nodepool_name,
+                )
+            except ApiException as e:
+                if e.status == 404:
+                    return True  # NodePool gone — nothing to remove from
+                raise
+
+            requirements = nodepool.get('spec', {}).get('template', {}).get('spec', {}).get('requirements', [])
+            for req in requirements:
+                if req.get('key') == 'node.kubernetes.io/instance-type':
+                    values = set(req.get('values', []))
+                    if instance_type not in values:
+                        logger.info(
+                            f"[karpenter] {instance_type} not in NodePool '{nodepool_name}' — no removal needed"
+                        )
+                        return True
+                    if len(values) <= 1:
+                        logger.warning(
+                            f"[karpenter] Cannot remove {instance_type} — it's the only type in "
+                            f"NodePool '{nodepool_name}'"
+                        )
+                        return False
+                    values.discard(instance_type)
+                    req['values'] = sorted(values)
+                    break
+            else:
+                return True  # No instance-type requirement at all
+
+            # Re-derive kubernetes.io/arch from remaining types
+            _ARM64_FAMILIES = {
+                't4g', 'c6g', 'c7g', 'c8g', 'm6g', 'm7g', 'm8g', 'r6g', 'r7g', 'r8g',
+                'c6gn', 'c6gd', 'm6gd', 'r6gd', 'a1', 'hpc7g', 'x2gd', 'im4gn', 'is4gen',
+            }
+            _remaining_types = set()
+            for req in requirements:
+                if req.get('key') == 'node.kubernetes.io/instance-type':
+                    _remaining_types.update(req.get('values', []))
+            _derived_archs = set()
+            for _it in _remaining_types:
+                _fam = _it.split('.')[0] if '.' in _it else _it
+                _derived_archs.add('arm64' if _fam in _ARM64_FAMILIES else 'amd64')
+            _arch_list = sorted(_derived_archs) if _derived_archs else ['amd64', 'arm64']
+            for req in requirements:
+                if req.get('key') == 'kubernetes.io/arch':
+                    req['values'] = _arch_list
+                    break
+
+            patch_body = {
+                "spec": {"template": {"spec": {"requirements": requirements}}}
+            }
+            custom_api.patch_cluster_custom_object(
+                group="karpenter.sh", version="v1",
+                plural="nodepools", name=nodepool_name,
+                body=patch_body,
+            )
+            logger.info(
+                f"[karpenter] Removed {instance_type} from NodePool '{nodepool_name}' "
+                f"for cluster {cluster_id}"
+            )
+            return True
+
+        except Exception as e:
+            logger.error(f"[karpenter] remove_allowed_instance_type failed: {e}")
             return False
 
     def patch_node_pool_allowed_types(self, cluster_id: str, instance_types: list, db) -> dict:
@@ -1013,3 +1290,161 @@ class KarpenterService:
         except Exception as e:
             logger.error(f"[karpenter] patch_node_pool_allowed_types failed: {e}")
             return {'status': 'error', 'error': str(e)}
+
+    # ── Spot trigger pod management ──────────────────────────────────────
+    # Karpenter only provisions nodes when there are pending pods.
+    # Existing EKS managed node group nodes are NOT managed by Karpenter,
+    # so consolidation alone won't trigger spot provisioning.
+    # These methods create/delete a lightweight "trigger" pod with a
+    # nodeSelector for spot capacity, forcing Karpenter to provision.
+
+    def create_spot_trigger_pod(
+        self,
+        cluster_id: str,
+        pod_name: str,
+        target_instance_type: str = "",
+        nodepool_name: str = "default",
+        exclude_nodes: list = None,
+        cpu_request: str = "100m",
+        memory_request: str = "128Mi",
+    ) -> bool:
+        """Create a lightweight pod requesting spot capacity to trigger Karpenter provisioning.
+
+        Args:
+            cluster_id: Cluster DB id
+            pod_name: Unique name for the trigger pod
+            target_instance_type: The recommended instance type (e.g. 'c7g.medium').
+                When provided, the pod's nodeSelector constrains Karpenter to launch
+                ONLY this type, preventing it from picking the cheapest type in the
+                NodePool (e.g. c5.large instead of c7g.medium).
+            nodepool_name: Which Karpenter NodePool to target.  Defaults to 'default'.
+                Added to nodeSelector as 'karpenter.sh/nodepool' so the trigger pod
+                lands on the correct NodePool — not 'stateless-spot' or any other pool.
+            exclude_nodes: List of node names where the trigger pod must NOT be
+                scheduled.  The caller must have already labelled these nodes with
+                'spot-optimizer.io/existing-node=true'.  The trigger pod uses
+                nodeAffinity DoesNotExist on that label so Karpenter provisions a
+                brand-new node rather than placing the pod on an existing one.
+                (kubernetes.io/hostname is a restricted label in Karpenter and
+                cannot be used in nodeAffinity.)
+        """
+        try:
+            cluster = self.db.query(Cluster).filter(Cluster.id == cluster_id).first()
+            if not cluster:
+                return False
+
+            api_client = self._get_k8s_client(cluster)
+            v1 = client.CoreV1Api(api_client)
+
+            # Build nodeSelector: always require spot + target the specific NodePool.
+            # When target_instance_type is provided, bind the pod to that EXACT type
+            # so Karpenter cannot substitute a cheaper/different instance type that
+            # happens to be allowed in the NodePool.  If the NodePool sync removes
+            # this type, Karpenter will throw FailedScheduling instead of pivoting.
+            node_selector = {
+                "karpenter.sh/capacity-type": "spot",
+                "karpenter.sh/nodepool": nodepool_name,
+            }
+            if target_instance_type:
+                node_selector["node.kubernetes.io/instance-type"] = target_instance_type
+
+            # Build affinity: exclude existing nodes via a custom label that
+            # Karpenter will NOT set on newly-provisioned nodes.
+            node_affinity = None
+            if exclude_nodes:
+                node_affinity = client.V1NodeAffinity(
+                    required_during_scheduling_ignored_during_execution=client.V1NodeSelector(
+                        node_selector_terms=[
+                            client.V1NodeSelectorTerm(
+                                match_expressions=[
+                                    client.V1NodeSelectorRequirement(
+                                        key="spot-optimizer.io/existing-node",
+                                        operator="DoesNotExist",
+                                    ),
+                                ],
+                            ),
+                        ],
+                    ),
+                )
+
+            pod = client.V1Pod(
+                metadata=client.V1ObjectMeta(
+                    name=pod_name,
+                    namespace="default",
+                    labels={
+                        "app": "spot-trigger",
+                        "managed-by": "spot-optimizer",
+                        "trigger-id": pod_name,
+                    },
+                ),
+                spec=client.V1PodSpec(
+                    node_selector=node_selector,
+                    tolerations=[
+                        client.V1Toleration(operator="Exists"),
+                    ],
+                    affinity=client.V1Affinity(
+                        node_affinity=node_affinity,
+                        pod_anti_affinity=client.V1PodAntiAffinity(
+                            required_during_scheduling_ignored_during_execution=[
+                                client.V1PodAffinityTerm(
+                                    label_selector=client.V1LabelSelector(
+                                        match_labels={"app": "spot-trigger"},
+                                    ),
+                                    topology_key="kubernetes.io/hostname",
+                                ),
+                            ],
+                        ),
+                    ),
+                    containers=[
+                        client.V1Container(
+                            name="trigger",
+                            image="public.ecr.aws/docker/library/busybox:latest",
+                            command=["sleep", "3600"],
+                            resources=client.V1ResourceRequirements(
+                                requests={"cpu": cpu_request, "memory": memory_request},
+                            ),
+                        ),
+                    ],
+                    termination_grace_period_seconds=0,
+                ),
+            )
+            v1.create_namespaced_pod(namespace="default", body=pod)
+            logger.info(
+                f"[karpenter] Created spot trigger pod '{pod_name}' in cluster {cluster.name} "
+                f"(nodepool={nodepool_name}, instance_type={target_instance_type or 'any'})"
+            )
+            return True
+        except ApiException as e:
+            if e.status == 409:  # Already exists
+                logger.info(f"[karpenter] Trigger pod '{pod_name}' already exists")
+                return True
+            logger.warning(f"[karpenter] Failed to create trigger pod: {e}")
+            return False
+        except Exception as e:
+            logger.warning(f"[karpenter] Failed to create trigger pod: {e}")
+            return False
+
+    def delete_spot_trigger_pod(self, cluster_id: str, pod_name: str) -> bool:
+        """Delete a spot trigger pod after the spot node has joined."""
+        try:
+            cluster = self.db.query(Cluster).filter(Cluster.id == cluster_id).first()
+            if not cluster:
+                return False
+
+            api_client = self._get_k8s_client(cluster)
+            v1 = client.CoreV1Api(api_client)
+            v1.delete_namespaced_pod(
+                name=pod_name,
+                namespace="default",
+                grace_period_seconds=0,
+            )
+            logger.info(f"[karpenter] Deleted spot trigger pod '{pod_name}' from cluster {cluster.name}")
+            return True
+        except ApiException as e:
+            if e.status == 404:
+                return True  # Already gone
+            logger.warning(f"[karpenter] Failed to delete trigger pod: {e}")
+            return False
+        except Exception as e:
+            logger.warning(f"[karpenter] Failed to delete trigger pod: {e}")
+            return False

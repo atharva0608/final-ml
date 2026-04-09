@@ -51,7 +51,7 @@ const ClusterDisconnectModal = ({ isOpen, onClose, cluster, onConfirm }) => {
                 <div className="px-6 py-5">
                     <h2 className="text-xl font-bold text-gray-900 mb-2">Disconnect your cluster</h2>
                     <p className="text-sm text-gray-600 mb-6">
-                        This action will remove all Spot Optimizer resources managing your cluster.
+                        This action will remove all Balancekube resources managing your cluster.
                         Please go to AWS IAM and delete it manually.{' '}
                         <a href="#" className="text-blue-600 hover:underline">Full list of resources</a>
                     </p>
@@ -60,7 +60,7 @@ const ClusterDisconnectModal = ({ isOpen, onClose, cluster, onConfirm }) => {
                     <div className="mb-6">
                         <h3 className="text-sm font-semibold text-gray-900 mb-2">Confirmation</h3>
                         <p className="text-sm text-gray-600 mb-3">
-                            Please confirm that you want to disconnect from Spot Optimizer by entering the cluster name below.
+                            Please confirm that you want to disconnect from Balancekube by entering the cluster name below.
                         </p>
                         <div className="mb-2">
                             <span className="text-xs text-gray-400">{cluster.name}</span>
@@ -86,7 +86,7 @@ const ClusterDisconnectModal = ({ isOpen, onClose, cluster, onConfirm }) => {
                             <div className="flex-1">
                                 <div className="flex items-center gap-2 mb-1">
                                     <span className="text-sm font-semibold text-gray-900">
-                                        Delete all Spot Optimizer created nodes
+                                        Delete all Balancekube created nodes
                                     </span>
                                     <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-amber-100 text-amber-700 text-xs font-medium rounded">
                                         <FiAlertTriangle className="w-3 h-3" />

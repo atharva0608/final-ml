@@ -31,12 +31,12 @@ const T = {
 };
 
 const REBALANCE_STEPS = [
-    { key: 'step_1_spot_provisioning',     label: 'New Pool Provisioned', desc: 'New spot instance launched in the target pool' },
-    { key: 'step_4_new_node_joined',       label: 'New Node Joined',      desc: 'Replacement spot node joined the cluster and is ready' },
-    { key: 'step_2_cordon',               label: 'Node Cordoned',         desc: 'No new pods scheduled on the source node' },
-    { key: 'step_3_draining_pods',        label: 'Pods Draining',         desc: 'Existing pods gracefully evicted to other nodes' },
-    { key: 'step_5_old_node_terminated',  label: 'Old Node Terminated',   desc: 'Source EC2 instance terminated' },
-    { key: 'step_6_optimization_complete',label: 'Complete',              desc: 'Node migration finished' },
+    { key: 'step_1_spot_provisioning',     label: 'NodePool Updated',     desc: 'Karpenter NodePool patched with target instance types', verifiedKey: 'step_1_verified' },
+    { key: 'step_4_new_node_joined',       label: 'New Node Joined',      desc: 'Replacement spot node joined the cluster and is ready', verifiedKey: 'step_4_verified' },
+    { key: 'step_2_cordon',               label: 'Node Cordoned',         desc: 'No new pods scheduled on the source node', verifiedKey: 'step_2_verified' },
+    { key: 'step_3_draining_pods',        label: 'Pods Drained',          desc: 'Existing pods gracefully evicted to other nodes', verifiedKey: 'step_3_verified' },
+    { key: 'step_5_old_node_terminated',  label: 'Old Node Terminated',   desc: 'Source EC2 instance terminated', verifiedKey: 'step_5_verified' },
+    { key: 'step_6_optimization_complete',label: 'Complete',              desc: 'Node migration finished', verifiedKey: null },
 ];
 
 const STEP_CURRENT_MAP = {
@@ -83,15 +83,18 @@ const RebalancingTimeline = ({ clusterId, actions: externalActions }) => {
         ? Math.max(0, Math.floor((new Date(nextCheckAt) - Date.now()) / 1000))
         : checkIntervalSeconds;
 
-    // Fetch data if no external actions are provided (when rendered directly on dashboard)
+    // Fetch data — always poll rebalancing context; also poll actions independently
+    // for faster updates during active migrations (parent may refresh only every 30s)
     useEffect(() => {
         if (!clusterId && !externalActions) return;
 
         const fetchData = async () => {
             try {
-                if (!externalActions && clusterId) {
-                    const statusRes = await ascpaiAPI.getRebalancingStatus(clusterId, 5);
-                    setActions(Array.isArray(statusRes.data) ? statusRes.data : []);
+                // Always fetch latest actions independently for live updates
+                if (clusterId) {
+                    const statusRes = await ascpaiAPI.getRebalancingStatus(clusterId, 10);
+                    const freshActions = Array.isArray(statusRes.data) ? statusRes.data : [];
+                    setActions(freshActions);
                 }
 
                 if (clusterId) {
@@ -129,12 +132,13 @@ const RebalancingTimeline = ({ clusterId, actions: externalActions }) => {
         };
 
         fetchData();
-        // Poll at half the configured check interval so we're always within ~1 cycle of accurate data
-        const _pollMs = Math.max(10000, checkIntervalSeconds * 500);
+        // Poll faster (5s) during active migrations, slower otherwise
+        const hasActive = (actions || []).some(a => ['in_progress', 'waiting_agent'].includes(a.status));
+        const _pollMs = hasActive ? 5000 : Math.max(10000, checkIntervalSeconds * 500);
         const intervalId = setInterval(fetchData, _pollMs);
         return () => clearInterval(intervalId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [clusterId, externalActions]);
+    }, [clusterId, externalActions, actions.length]);
 
     // Per-second tick — only triggers re-renders, countdown computed from absolute timestamps
     useEffect(() => {
@@ -142,16 +146,20 @@ const RebalancingTimeline = ({ clusterId, actions: externalActions }) => {
         return () => clearInterval(tick);
     }, []);
 
-    // Use latest available actions (internal state or props)
-    const displayActions = externalActions || actions;
+    // Use independently-fetched actions (more frequent) over parent-provided ones
+    const displayActions = actions.length > 0 ? actions : (externalActions || []);
 
     // Filter to active or recent migrations
     const now = Date.now();
     const visible = (displayActions || []).filter(a => {
         if (['in_progress', 'waiting_agent'].includes(a.status)) return true;
-        // Show completed AND failed migrations from the last hour so failures are visible
-        if ((a.status === 'completed' || a.status === 'failed') && a.completed_at) {
-            return (now - new Date(a.completed_at).getTime()) < 3600_000;
+        // Show completed migrations for 2 seconds after completion, then vanish
+        if (a.status === 'completed' && a.completed_at) {
+            return (now - new Date(a.completed_at).getTime()) < 2000;
+        }
+        // Show failed migrations from the last 24 hours
+        if (a.status === 'failed' && a.completed_at) {
+            return (now - new Date(a.completed_at).getTime()) < 86400_000;
         }
         return false;
     });
@@ -334,6 +342,11 @@ const RebalancingTimeline = ({ clusterId, actions: externalActions }) => {
                                     <div style={{ fontSize: 13, fontWeight: 700, color: T.text }}>
                                         {action.source_pool} → {action.target_pool}
                                     </div>
+                                    {action.actual_instance_type && action.target_pool && !action.target_pool.startsWith(action.actual_instance_type) && (
+                                        <div style={{ fontSize: 11, color: T.amber, marginTop: 2 }}>
+                                            Actual: {action.actual_instance_type}{action.actual_az ? `:${action.actual_az}` : ''}
+                                        </div>
+                                    )}
                                     <div style={{ fontSize: 11, color: T.textMuted, marginTop: 2 }}>
                                         {(meta.instance_id || action.instance_id) && (
                                             <span style={{ fontFamily: 'monospace', background: T.bg, padding: '1px 6px', borderRadius: 3, marginRight: 8 }}>
@@ -365,9 +378,11 @@ const RebalancingTimeline = ({ clusterId, actions: externalActions }) => {
                                     const done = Boolean(action[step.key]);
                                     const active = !done && si === currentStepIdx;
                                     const pending = !done && !active;
+                                    const verified = step.verifiedKey ? action[step.verifiedKey] : true;
+                                    const doneUnverified = done && verified === false;
 
-                                    const dotColor = done ? T.green : active ? T.amber : T.greyBorder;
-                                    const labelColor = done ? T.green : active ? T.amber : T.textFaint;
+                                    const dotColor = done ? (doneUnverified ? T.amber : T.green) : active ? T.amber : T.greyBorder;
+                                    const labelColor = done ? (doneUnverified ? T.amber : T.green) : active ? T.amber : T.textFaint;
 
                                     return (
                                         <div key={step.key} style={{ flex: 1, minWidth: 80, display: 'flex', flexDirection: 'column', alignItems: 'center', position: 'relative' }}>
@@ -375,24 +390,31 @@ const RebalancingTimeline = ({ clusterId, actions: externalActions }) => {
                                             {si < REBALANCE_STEPS.length - 1 && (
                                                 <div style={{
                                                     position: 'absolute', top: 8, left: '50%', width: '100%', height: 2,
-                                                    background: done ? T.green : T.greyBorder, zIndex: 0
+                                                    background: done ? (doneUnverified ? T.amber : T.green) : T.greyBorder, zIndex: 0
                                                 }} />
                                             )}
                                             {/* Dot */}
                                             <div style={{
                                                 width: 18, height: 18, borderRadius: '50%',
-                                                background: done ? T.green : active ? T.amber : T.surface,
+                                                background: done ? (doneUnverified ? T.amber : T.green) : active ? T.amber : T.surface,
                                                 border: `2px solid ${dotColor}`,
                                                 display: 'flex', alignItems: 'center', justifyContent: 'center',
                                                 zIndex: 1, position: 'relative',
                                                 animation: active ? 'pulse 1.5s infinite' : 'none',
                                             }}>
-                                                {done && <span style={{ color: '#fff', fontSize: 10, fontWeight: 900 }}>✓</span>}
+                                                {done && !doneUnverified && <span style={{ color: '#fff', fontSize: 10, fontWeight: 900 }}>✓</span>}
+                                                {doneUnverified && <span style={{ color: '#fff', fontSize: 10, fontWeight: 900 }}>!</span>}
                                             </div>
                                             {/* Label */}
                                             <div style={{ fontSize: 10, fontWeight: 600, color: labelColor, textAlign: 'center', marginTop: 6, lineHeight: 1.3, maxWidth: 80 }}>
                                                 {step.label}
                                             </div>
+                                            {/* Verification badge */}
+                                            {done && step.verifiedKey && (
+                                                <div style={{ fontSize: 8, fontWeight: 700, textAlign: 'center', marginTop: 1, color: verified ? T.green : T.amber }}>
+                                                    {verified ? 'Verified' : 'Unverified'}
+                                                </div>
+                                            )}
                                             {/* Timestamp if done */}
                                             {done && action[step.key] && (
                                                 <div style={{ fontSize: 9, color: T.textFaint, textAlign: 'center', marginTop: 2 }}>
@@ -424,6 +446,11 @@ const RebalancingTimeline = ({ clusterId, actions: externalActions }) => {
                             {action.pool_change_reason && (
                                 <div style={{ marginTop: 8, padding: '6px 10px', background: '#eff6ff', borderRadius: 6, fontSize: 11, color: '#1d4ed8', fontWeight: 500 }}>
                                     ℹ Pool change: {action.pool_change_reason}
+                                </div>
+                            )}
+                            {action.status === 'completed' && action.realized_savings_mo > 0 && (
+                                <div style={{ marginTop: 8, padding: '6px 10px', background: T.greenLight, border: `1px solid ${T.greenBorder}`, borderRadius: 6, fontSize: 11, color: T.green, fontWeight: 600, display: 'inline-block' }}>
+                                    💰 Saving ${action.realized_savings_mo.toFixed(2)}/mo (${action.realized_savings_hr.toFixed(4)}/hr)
                                 </div>
                             )}
                     </div>

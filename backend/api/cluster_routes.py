@@ -218,15 +218,37 @@ def delete_cluster(
                     aws_session_token=_creds.get("session_token"),
                     region_name=cluster.region or "ap-south-1",
                 )
-                k8s_reachable = cluster.agent_installed == "Y"
+
+                # ── Direct K8s cleanup: remove agent + Karpenter from EKS ──
+                if cluster.endpoint and cluster.ca_data:
+                    try:
+                        _uninstall_result = _inj.uninstall_agent(
+                            cluster_name=cluster.name,
+                            cluster_endpoint=cluster.endpoint,
+                            cluster_ca_data=cluster.ca_data,
+                            role_arn=account.role_arn,
+                            external_id=account.external_id or "",
+                            region=cluster.region or "ap-south-1",
+                            remove_karpenter=True,
+                        )
+                        cleanup_results["k8s"] = _uninstall_result
+                        logger.info(f"Direct K8s cleanup for {cluster_id}: {_uninstall_result}")
+                    except Exception as k8s_err:
+                        cleanup_results["k8s"] = {"error": str(k8s_err)}
+                        logger.warning(f"Direct K8s cleanup failed for {cluster_id}: {k8s_err}")
+                else:
+                    cleanup_results["k8s"] = {"skipped": "no endpoint/ca_data stored"}
+
+                # ── AWS resource cleanup ──
+                k8s_reachable = False  # Already handled above directly
                 cleanup_svc = ClusterCleanupService()
-                cleanup_results = cleanup_svc.cleanup_cluster(
+                cleanup_results.update(cleanup_svc.cleanup_cluster(
                     cluster=cluster,
                     account=account,
                     boto_session=boto_session,
                     db=db,
                     k8s_reachable=k8s_reachable,
-                )
+                ))
                 logger.info(f"Cluster {cluster_id} AWS/K8s cleanup: {cleanup_results}")
             except Exception as cleanup_err:
                 logger.warning(f"Cluster {cluster_id} cleanup partial failure (non-blocking): {cleanup_err}")
@@ -830,6 +852,7 @@ def get_cluster_optimization_settings(
             "architecture_preference": automation.architecture_preference if automation else "both",
             "rebalance_batch_percent": automation.rebalance_batch_percent if automation else None,
             "karpenter_only_mode": automation.karpenter_only_mode if automation else False,
+            "min_topology_spread": automation.min_topology_spread if automation else 1,
         },
         "optimization_strategy": {
             "strategy_type": strategy.strategy_type if strategy else "BALANCED",

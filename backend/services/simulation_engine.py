@@ -62,6 +62,7 @@ class SimNode:
     status: str                  # "READY" | "CALIBRATING" | "UNKNOWN"
     is_standby: bool
     node_name: str = ""
+    is_anchor: bool = False      # Anchor node — excluded from rebalancing
 
 
 @dataclass
@@ -105,6 +106,7 @@ class SimClusterSettings:
     rebalance_batch_percent: Optional[int] = None
     risk_ceiling_percent: int = 25
     risk_savings_tradeoff_pct: int = 20
+    min_topology_spread: int = 1
 
 
 @dataclass
@@ -221,15 +223,15 @@ def _derive_node_labels(instance_type: str, architecture: str, az: str) -> Dict[
 
 
 def _derive_node_taints(lifecycle: str) -> List[Dict[str, str]]:
-    """Derive node taints based on lifecycle (spot nodes get a taint)."""
-    taints = []
-    if lifecycle == 'spot':
-        taints.append({
-            'key': 'karpenter.sh/lifecycle',
-            'value': 'spot',
-            'effect': 'NoSchedule',
-        })
-    return taints
+    """Derive node taints based on lifecycle.
+
+    NOTE: Karpenter-provisioned spot nodes do NOT carry a NoSchedule taint
+    by default.  The previous synthetic taint blocked all pods that lacked an
+    explicit toleration in pod_metadata (which most agent-collected metrics
+    don't include).  Removing it so the simulation scheduler mirrors real
+    Karpenter behaviour where any pod can land on a spot node.
+    """
+    return []
 
 
 def _toleration_matches_taint(toleration: Dict[str, str], taint: Dict[str, str]) -> bool:
@@ -557,7 +559,14 @@ def select_pool_for_pending(
     state: VirtualClusterState,
     settings: SimClusterSettings,
 ) -> Optional[SimPool]:
-    """Select best pool for a batch of pending pods using the 4-pass algorithm."""
+    """Select best pool using 5-pass algorithm (Pass 0 = total-cost, then 4 original passes).
+
+    Pass 0 is forward-looking: it estimates the total pod demand (current
+    pending + pods still on remaining OD nodes) and picks the pool type that
+    minimises ``nodes_needed × spot_price``.  This prevents the scenario where
+    the per-node-cheapest instance (e.g. t3a.small) leads to more total nodes
+    than a slightly larger instance (e.g. t3a.medium) that packs more pods.
+    """
     if not pending_pods or not eligible_pools:
         return None
 
@@ -565,14 +574,54 @@ def select_pool_for_pending(
     min_mem_b = max(p.memory_bytes for p in pending_pods)
     risk_ceiling = settings.risk_ceiling_percent / 100
 
-    # Pass 1: VALUE + SAFETY
+    # ── Pass 0: Total-cost optimisation (forward-looking) ──────────────────
+    # Estimate ALL pods that will eventually need spot placement.
+    remaining_od = [
+        n for n in state.nodes.values()
+        if n.status == 'READY' and n.lifecycle == 'on-demand'
+        and n.workload_class == 'stateless'
+    ]
+    future_pods: List[VirtualPod] = list(pending_pods)
+    for od_node in remaining_od:
+        future_pods.extend(state.get_running_pods(od_node.node_id))
+
+    if len(future_pods) > 1:
+        total_future_cpu = sum(p.cpu_millicores for p in future_pods)
+        total_future_mem = sum(p.memory_bytes for p in future_pods)
+
+        best_tco_pool: Optional[SimPool] = None
+        best_tco = float('inf')
+
+        for pool in eligible_pools:
+            if pool.allocatable_cpu_m < min_cpu_m or pool.allocatable_mem_bytes < min_mem_b:
+                continue
+            if pool.risk_probability >= risk_ceiling:
+                continue
+            if pool.spot_price >= pool.od_price:
+                continue
+            if not apply_diversification(pool, state, settings):
+                continue
+
+            nodes_cpu = math.ceil(total_future_cpu / max(1, pool.allocatable_cpu_m))
+            nodes_mem = math.ceil(total_future_mem / max(1, pool.allocatable_mem_bytes))
+            nodes_needed = max(1, max(nodes_cpu, nodes_mem))
+            total_cost = nodes_needed * pool.spot_price
+
+            if total_cost < best_tco:
+                best_tco = total_cost
+                best_tco_pool = pool
+
+        if best_tco_pool:
+            return best_tco_pool
+
+    # ── Pass 1: VALUE + SAFETY ─────────────────────────────────────────────
     for pool in eligible_pools:
         if pool.allocatable_cpu_m >= min_cpu_m and pool.allocatable_mem_bytes >= min_mem_b:
             if pool.risk_probability < risk_ceiling and pool.spot_price < pool.od_price:
                 if apply_diversification(pool, state, settings):
                     return pool
 
-    # Pass 2: Allow slightly costlier if safer
+    # ── Pass 2: Allow slightly costlier if safer ───────────────────────────
     tradeoff = settings.risk_savings_tradeoff_pct / 100
     cheapest_price = min((p.spot_price for p in eligible_pools if p.allocatable_cpu_m >= min_cpu_m), default=0)
     for pool in eligible_pools:
@@ -582,13 +631,13 @@ def select_pool_for_pending(
                 if price_ok:
                     return pool
 
-    # Pass 3: Risk override — any pool safer than worst current
+    # ── Pass 3: Risk override — any pool safer than worst current ──────────
     for pool in eligible_pools:
         if pool.allocatable_cpu_m >= min_cpu_m and pool.allocatable_mem_bytes >= min_mem_b:
             if pool.risk_probability < risk_ceiling:
                 return pool
 
-    # Pass 4: Final fallback — anything cheaper than OD
+    # ── Pass 4: Final fallback — anything cheaper than OD ──────────────────
     for pool in eligible_pools:
         if pool.allocatable_cpu_m >= min_cpu_m and pool.allocatable_mem_bytes >= min_mem_b:
             if pool.spot_price < pool.od_price:
@@ -710,8 +759,8 @@ def run_simulation(snapshot: SimulationSnapshot) -> SimulationResult:
         nodes_provisioned = 0
         prov_failures = 0
         if pending:
-            # Group pending pods by resource needs (simple batching)
-            groups = _batch_pending_pods(pending)
+            # Group pending pods by resource needs (capacity-aware batching)
+            groups = _batch_pending_pods(pending, eligible_pools)
             for group in groups:
                 pool = select_pool_for_pending(group, eligible_pools, state, settings)
                 if pool:
@@ -744,6 +793,11 @@ def run_simulation(snapshot: SimulationSnapshot) -> SimulationResult:
         # ── Step 4: Scheduler placement (greedy, not global FFD) ──
         placed, unschedulable = _simulate_scheduler(state)
 
+        # ── Step 4b: Cleanup empty provisioned nodes ──
+        # Nodes provisioned this cycle that got zero pods are waste —
+        # real Karpenter would not have provisioned them.
+        _cleanup_empty_nodes(state)
+
         # Track peak pending
         current_pending = len(state.get_pending_pods())
         if current_pending > state.peak_pending_pods:
@@ -764,11 +818,22 @@ def run_simulation(snapshot: SimulationSnapshot) -> SimulationResult:
         if not candidates and state.check_convergence():
             break
 
+    # ── Spot consolidation: remove underutilised spot nodes ───────────────
+    # The main loop only drains OD→spot.  Real Karpenter also consolidates
+    # spot nodes whose user-pods can fit on remaining nodes.  We iterate
+    # until no more nodes can be removed.
+    _consolidate_underutilised_spots(
+        state, eligible_pools, ds_overhead_cpu, ds_overhead_mem, settings,
+    )
+
     # ── Fragmentation correction ──
     _apply_fragmentation_correction(state, eligible_pools, ds_overhead_cpu, ds_overhead_mem)
 
     # ── HA constraint ──
     _enforce_ha_minimum(state, eligible_pools, ds_overhead_cpu, ds_overhead_mem, settings)
+
+    # ── Topology spread constraint ──
+    _enforce_topology_spread(state, eligible_pools, ds_overhead_cpu, ds_overhead_mem, settings)
 
     # ── Confidence score ──
     confidence = _compute_confidence(snapshot, state, history)
@@ -792,6 +857,8 @@ def _select_candidates(state: VirtualClusterState,
     for node in state.ready_nodes():
         if node.workload_class in ('stateful', 'system'):
             continue
+        if getattr(node, 'is_anchor', False):
+            continue
         if node.lifecycle == 'on-demand':
             candidates.append(node)
 
@@ -802,8 +869,12 @@ def _select_candidates(state: VirtualClusterState,
     pdb_pct = state.pods  # placeholder; use settings
     batch_pct = settings.rebalance_batch_percent
     if batch_pct is None:
-        batch_pct = 15  # default
-    batch_size = max(1, int(len(candidates) * batch_pct / 100))
+        # Simulation shows theoretical maximum consolidation: drain all OD
+        # candidates in a single cycle so Karpenter can bin-pack onto fewer
+        # nodes. PDB-safe batching (15%) is for live rebalancing, not sim.
+        batch_pct = 100
+    import math as _math_sim
+    batch_size = max(1, _math_sim.ceil(len(candidates) * batch_pct / 100))
     candidates = candidates[:batch_size]
 
     return candidates
@@ -829,18 +900,36 @@ def _apply_spot_exposure_cap(
     return candidates[:od_to_convert]
 
 
-def _batch_pending_pods(pending: List[VirtualPod]) -> List[List[VirtualPod]]:
-    """Group pending pods by compatible resource profiles for Karpenter batching."""
+def _batch_pending_pods(
+    pending: List[VirtualPod],
+    eligible_pools: Optional[List[SimPool]] = None,
+) -> List[List[VirtualPod]]:
+    """Group pending pods into node-capacity-aware batches for Karpenter.
+
+    Instead of a fixed group size of 4, estimate how many pods actually fit on
+    one node of the most-likely pool.  This prevents over-provisioning (e.g.
+    creating 3 groups of 4 when 2 larger nodes could hold all 12 pods).
+    """
     if not pending:
         return []
 
-    # Simple grouping: sort by CPU descending, batch up to ~4 pods per group
+    pods_per_node = 4  # sensible default when pool info unavailable
+    if eligible_pools and pending:
+        # Use the cheapest eligible pool's capacity for estimation
+        cheapest = eligible_pools[0]
+        max_pod_cpu = max(p.cpu_millicores for p in pending)
+        max_pod_mem = max(p.memory_bytes for p in pending)
+        if max_pod_cpu > 0 and max_pod_mem > 0:
+            fit_by_cpu = cheapest.allocatable_cpu_m // max_pod_cpu
+            fit_by_mem = cheapest.allocatable_mem_bytes // max_pod_mem
+            pods_per_node = max(1, min(fit_by_cpu, fit_by_mem))
+
     sorted_pods = sorted(pending, key=lambda p: -p.cpu_millicores)
-    groups = []
-    batch = []
+    groups: List[List[VirtualPod]] = []
+    batch: List[VirtualPod] = []
     for pod in sorted_pods:
         batch.append(pod)
-        if len(batch) >= 4:
+        if len(batch) >= pods_per_node:
             groups.append(batch)
             batch = []
     if batch:
@@ -989,13 +1078,122 @@ def _check_topology_spread(
     return True
 
 
+SMALL_CLUSTER_THRESHOLD = 5  # Don't add physical frag node for clusters ≤ this size
+
+
+def _cleanup_empty_nodes(state: VirtualClusterState):
+    """Remove newly provisioned spot nodes that received zero pods after scheduling.
+
+    This mirrors real Karpenter behaviour: a node that was provisioned but
+    never had pods scheduled on it would eventually be terminated by the
+    consolidation controller.  Removing them within the same cycle prevents
+    inflated node counts in the simulation output.
+    """
+    empty_ids = [
+        nid for nid, node in state.nodes.items()
+        if (node.status == 'READY'
+            and node.is_new_this_cycle
+            and node.lifecycle == 'spot'
+            and len(state.get_running_pods(nid)) == 0)
+    ]
+    for nid in empty_ids:
+        state.terminate_node(nid)
+        logger.debug(f"Cleanup: terminated empty provisioned node {nid}")
+
+
+def _consolidate_underutilised_spots(
+    state: VirtualClusterState,
+    eligible_pools: List[SimPool],
+    ds_cpu: int,
+    ds_mem: int,
+    settings: SimClusterSettings,
+):
+    """Post-convergence spot consolidation — mirrors Karpenter's consolidation controller.
+
+    After OD→spot conversion, existing spot nodes that are mostly empty can be
+    drained and their user-pods repacked onto fewer nodes.  We greedily remove
+    the least-loaded spot node each pass, repack pending pods, and repeat until
+    no more nodes can be removed without leaving pods unschedulable.
+    """
+    min_nodes = max(1, settings.min_node_count)
+    removed = 0
+
+    for _ in range(50):  # safety cap
+        ready_stateless = sorted(
+            [n for n in state.nodes.values()
+             if n.status == 'READY' and n.workload_class == 'stateless'],
+            key=lambda n: n.used_cpu_m,  # least loaded first
+        )
+        if len(ready_stateless) <= min_nodes:
+            break
+
+        # Try removing the least-loaded node
+        candidate = ready_stateless[0]
+        running_pods = state.get_running_pods(candidate.node_id)
+        # Filter to user pods only (daemonsets auto-clone on remaining nodes)
+        user_pods = [p for p in running_pods if not p.is_daemonset and not p.is_system]
+
+        # Check if all user pods can fit on the other READY nodes
+        other_nodes = [n for n in ready_stateless if n.node_id != candidate.node_id]
+
+        # Dry-run: compute remaining capacity on other nodes
+        temp_used = {n.node_id: (n.used_cpu_m, n.used_mem_bytes) for n in other_nodes}
+        can_fit = True
+        for pod in user_pods:
+            fitted = False
+            for onode in sorted(other_nodes, key=lambda n: -(n.allocatable_cpu_m - temp_used[n.node_id][0])):
+                rem_cpu = onode.allocatable_cpu_m - temp_used[onode.node_id][0]
+                rem_mem = onode.allocatable_mem_bytes - temp_used[onode.node_id][1]
+                if rem_cpu >= pod.cpu_request_m and rem_mem >= pod.mem_request_bytes:
+                    temp_used[onode.node_id] = (
+                        temp_used[onode.node_id][0] + pod.cpu_request_m,
+                        temp_used[onode.node_id][1] + pod.mem_request_bytes,
+                    )
+                    fitted = True
+                    break
+            if not fitted:
+                can_fit = False
+                break
+
+        if not can_fit:
+            break
+
+        # Drain and terminate
+        state.drain_node(candidate.node_id)
+        state.terminate_node(candidate.node_id)
+        removed += 1
+
+        # Place the displaced user pods for real
+        for pod in user_pods:
+            for onode in sorted(
+                [n for n in state.nodes.values()
+                 if n.status == 'READY' and n.node_id != candidate.node_id],
+                key=lambda n: -n.remaining_cpu()
+            ):
+                if node_fits_pod(onode, pod) and node_allows_pod(onode, pod):
+                    state.place_pod(pod.pod_id, onode.node_id)
+                    break
+
+    if removed:
+        logger.info(f"Spot consolidation: removed {removed} underutilised spot node(s)")
+
+
 def _apply_fragmentation_correction(
     state: VirtualClusterState,
     eligible_pools: List[SimPool],
     ds_cpu: int,
     ds_mem: int,
 ):
-    """Add fragmentation node if packing is too optimal."""
+    """Add fragmentation correction when packing is too optimal.
+
+    For small clusters (≤ SMALL_CLUSTER_THRESHOLD nodes), adding a full extra
+    node is disproportionate (e.g., +1 on a 3-node cluster = 33% increase).
+    Real Karpenter would not provision an idle node.  Instead, the cost
+    inflation is applied as a multiplier in build_simulation_output.
+
+    For larger clusters the extra node is < 10% of the fleet, so a physical
+    node is still added as before.
+    """
     ready_stateless = [n for n in state.nodes.values()
                        if n.status == 'READY' and n.workload_class == 'stateless']
     if not ready_stateless or not eligible_pools:
@@ -1009,8 +1207,16 @@ def _apply_fragmentation_correction(
     utilization = total_used / total_alloc
     waste = 1.0 - utilization
     if waste < FRAGMENTATION_PCT:
-        # Packing is suspiciously optimal — add a fragmentation node
-        # Use the most commonly selected instance type
+        # ── Small cluster: skip physical node, apply cost multiplier instead ──
+        if len(ready_stateless) <= SMALL_CLUSTER_THRESHOLD:
+            logger.info(
+                f"Fragmentation correction: small cluster "
+                f"({len(ready_stateless)} nodes, waste={waste:.1%} < {FRAGMENTATION_PCT:.0%}). "
+                f"Skipping extra node — cost will be inflated by {FRAGMENTATION_PCT:.0%} in output."
+            )
+            return
+
+        # ── Larger cluster: add a physical fragmentation node ──
         type_counts: Dict[str, int] = {}
         for n in ready_stateless:
             type_counts[n.instance_type] = type_counts.get(n.instance_type, 0) + 1
@@ -1045,6 +1251,43 @@ def _enforce_ha_minimum(
         node.status = 'READY'
         node.provisioning_ticks_remaining = 0
         ready_stateless.append(node)
+
+
+def _enforce_topology_spread(
+    state: VirtualClusterState,
+    eligible_pools: List[SimPool],
+    ds_cpu: int,
+    ds_mem: int,
+    settings: SimClusterSettings,
+):
+    """Ensure at least min_topology_spread distinct nodes for zone spread.
+
+    When the simulation consolidates aggressively, it may produce fewer nodes
+    than the user's desired topology spread. This post-pass adds empty nodes
+    from different pools (different AZs when possible) to meet the minimum.
+    """
+    min_spread = getattr(settings, 'min_topology_spread', 1)
+    if min_spread <= 1:
+        return
+
+    ready = [n for n in state.nodes.values()
+             if n.status == 'READY' and n.workload_class == 'stateless']
+    current_count = len(ready)
+    if current_count >= min_spread:
+        return
+
+    # Pick pools from distinct AZs where possible
+    used_azs = {n.az for n in ready if n.az}
+    sorted_pools = sorted(eligible_pools, key=lambda p: (p.az in used_azs, p.spot_price))
+
+    while current_count < min_spread and sorted_pools:
+        pool = sorted_pools.pop(0)
+        vid = state.provision_node(pool, ds_cpu, ds_mem)
+        node = state.nodes[vid]
+        node.status = 'READY'
+        node.provisioning_ticks_remaining = 0
+        used_azs.add(node.az)
+        current_count += 1
 
 
 def _compute_confidence(
@@ -1130,6 +1373,21 @@ def compute_two_pool_cost(state: VirtualClusterState) -> Dict[str, Any]:
 
 # ─── Output Builder ──────────────────────────────────────────────────────────
 
+def _build_az_distribution(state: VirtualClusterState) -> List[Dict[str, Any]]:
+    """Build AZ distribution summary from the final virtual cluster state."""
+    az_counts: Dict[str, int] = {}
+    for node in state.nodes.values():
+        if node.status != 'READY':
+            continue
+        az = node.az or 'unknown'
+        az_counts[az] = az_counts.get(az, 0) + 1
+    total = sum(az_counts.values()) or 1
+    return sorted([
+        {'az': az, 'count': cnt, 'pct': round(cnt / total * 100, 1)}
+        for az, cnt in az_counts.items()
+    ], key=lambda x: -x['count'])
+
+
 def build_simulation_output(
     result: SimulationResult,
     snapshot: SimulationSnapshot,
@@ -1139,6 +1397,27 @@ def build_simulation_output(
     """Build the enhanced simulation response dict."""
     state = result.final_state
     two_pool = compute_two_pool_cost(state)
+
+    # ── Small-cluster fragmentation cost inflation ──
+    # When _apply_fragmentation_correction skipped adding a physical node
+    # (≤ SMALL_CLUSTER_THRESHOLD), inflate the stateless cost by FRAGMENTATION_PCT
+    # to account for real-world packing inefficiency without inflating node count.
+    ready_stateless = [n for n in state.nodes.values()
+                       if n.status == 'READY' and n.workload_class == 'stateless']
+    if 0 < len(ready_stateless) <= SMALL_CLUSTER_THRESHOLD:
+        _total_alloc = sum(n.allocatable_cpu_m for n in ready_stateless)
+        _total_used = sum(n.used_cpu_m for n in ready_stateless)
+        _waste = (1.0 - _total_used / _total_alloc) if _total_alloc > 0 else 1.0
+        if _waste < FRAGMENTATION_PCT:
+            frag_multiplier = 1.0 + FRAGMENTATION_PCT
+            two_pool['stateless_hourly_cost'] = round(
+                two_pool['stateless_hourly_cost'] * frag_multiplier, 4)
+            two_pool['stateless_monthly_cost'] = round(
+                two_pool['stateless_monthly_cost'] * frag_multiplier, 2)
+            two_pool['total_hourly_cost'] = round(
+                two_pool['stateful_hourly_cost'] + two_pool['stateless_hourly_cost'], 4)
+            two_pool['total_monthly_cost'] = round(
+                two_pool['stateful_monthly_cost'] + two_pool['stateless_monthly_cost'], 2)
 
     # Build consolidated_nodes from final state
     stateless_by_type: Dict[str, Dict] = {}
@@ -1262,6 +1541,10 @@ def build_simulation_output(
         # ── NEW: Constraint visibility ──
         'pools_skipped_launch_blocked': state.pools_skipped_launch_blocked,
         'pools_skipped_blacklisted': state.pools_skipped_blacklisted,
+
+        # ── NEW: Topology & AZ distribution ──
+        'topology_spread': snapshot.cluster_settings.min_topology_spread,
+        'az_distribution': _build_az_distribution(state),
 
         # ── NEW: Quality ──
         'confidence_score': result.confidence_score,

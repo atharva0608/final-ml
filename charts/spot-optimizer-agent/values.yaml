@@ -1,11 +1,11 @@
 image:
   repository: atharva608/spot-optimizer-agent
-  tag: "{{ .Chart.AppVersion }}"  # N4 fix: pin to chart version, never use 'latest' in production
-  pullPolicy: IfNotPresent
+  tag: "1.1.6"
+  pullPolicy: Always
 
 config:
   apiKey: ""
-  backendUrl: ""
+  backendUrl: "https://basketball-trees-estimates-generally.trycloudflare.com"
   clusterId: ""
 
 resources:
@@ -31,8 +31,8 @@ orchestrator:
   replicaCount: 1
   image:
     repository: atharva608/spot-optimizer-agent
-    tag: "{{ .Chart.AppVersion }}"  # N4 fix: pin to chart version
-    pullPolicy: IfNotPresent
+    tag: "1.1.6"
+    pullPolicy: Always
   resources:
     requests:
       cpu: 100m

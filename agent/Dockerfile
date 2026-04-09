@@ -22,7 +22,7 @@ ENV PATH="/opt/venv/bin:$PATH"
 RUN useradd -u 1000 -m -s /bin/bash agent
 WORKDIR /app
 COPY --chown=agent:agent *.py /app/
-ARG AGENT_VERSION=1.0.0
+ARG AGENT_VERSION=1.1.2
 ENV AGENT_VERSION=${AGENT_VERSION}
 LABEL version="${AGENT_VERSION}"
 USER agent

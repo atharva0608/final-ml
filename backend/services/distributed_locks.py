@@ -188,19 +188,23 @@ class HeartbeatLock:
         lock_key: str,
         timeout: int = 300,
         stop_event: Optional[threading.Event] = None,
+        max_hold_time: int = 3600,  # Fix 8: Hard ceiling (default 1h)
     ):
         self.redis = redis
         self.lock_key = lock_key
         self.timeout = timeout
         self.stop_event = stop_event or threading.Event()
+        self.max_hold_time = max_hold_time
         self._lock = DistributedLock(redis, lock_key, timeout)
         self._heartbeat_thread: Optional[threading.Thread] = None
         self._heartbeat_stop = threading.Event()
+        self._acquired_at: Optional[float] = None
 
     def acquire(self, blocking: bool = True, wait_timeout: Optional[int] = None) -> bool:
         """Acquire the lock and start the heartbeat thread."""
         acquired = self._lock.acquire(blocking=blocking, timeout=wait_timeout)
         if acquired:
+            self._acquired_at = _time.time()
             self._start_heartbeat()
         return acquired
 
@@ -216,6 +220,15 @@ class HeartbeatLock:
 
         def _heartbeat_loop():
             while not self._heartbeat_stop.wait(timeout=interval):
+                # Fix 8: Hard ceiling — release lock after max_hold_time
+                if self._acquired_at and (_time.time() - self._acquired_at) > self.max_hold_time:
+                    logger.warning(
+                        f"[HeartbeatLock] {self.lock_key} held for "
+                        f"{int(_time.time() - self._acquired_at)}s > max_hold_time "
+                        f"{self.max_hold_time}s — releasing to prevent starvation"
+                    )
+                    self.stop_event.set()
+                    return
                 try:
                     extended = self._lock.extend_ttl(self.timeout)
                     if not extended:

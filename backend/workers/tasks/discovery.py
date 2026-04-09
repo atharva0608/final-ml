@@ -966,33 +966,53 @@ def scan_ec2_instances(account: Account, ec2_client, db: Session) -> int:
         # Any instance that was NOT seen in this scan but is still state='running'
         # in the DB must have been terminated in AWS.  Mark it terminated so the
         # dedup + visualization code stops showing it as a live node.
-        try:
-            # Issue #11: lock rows before bulk state change to prevent dual-mark
-            _stale_qs = db.query(Instance).filter(
-                Instance.account_id == account.id,
-                Instance.state == 'running',
-            ).with_for_update().all()
-            _stale_count = 0
-            for _s in _stale_qs:
-                if (
-                    _s.instance_id
-                    and _s.instance_id.startswith('i-')  # only real EC2 IDs
-                    and _s.instance_id not in _seen_instance_ids
-                ):
-                    _s.state = 'terminated'
-                    _s.updated_at = datetime.utcnow()
-                    _stale_count += 1
+        #
+        # CRITICAL: Only run stale-mark when the scan actually found instances.
+        # This function is called per-region.  If a region has 0 instances
+        # (e.g. us-east-1 when all nodes are in ap-south-1), the empty
+        # _seen_instance_ids would incorrectly mark EVERY instance across all
+        # regions as terminated.  Skip when _seen_instance_ids is empty.
+        #
+        # REGION SCOPING FIX: The stale-mark MUST only affect instances in the
+        # SAME region as this scan.  Without region filtering, a scan of
+        # ap-south-1 would incorrectly mark all us-east-1 instances as terminated
+        # because they weren't in _seen_instance_ids.  Filter by AZ prefix
+        # (region name) since Instance has `az` but no `region` column.
+        _scan_region = getattr(ec2_client.meta, 'region_name', '') or ''
+        if _seen_instance_ids and _scan_region:
+            try:
+                # Issue #11: lock rows before bulk state change to prevent dual-mark
+                # Region scope: only check instances whose AZ starts with this scan's region
+                _stale_qs = db.query(Instance).filter(
+                    Instance.account_id == account.id,
+                    Instance.state == 'running',
+                    Instance.az.like(f'{_scan_region}%'),
+                ).with_for_update().all()
+                _stale_count = 0
+                for _s in _stale_qs:
+                    if (
+                        _s.instance_id
+                        and _s.instance_id.startswith('i-')  # only real EC2 IDs
+                        and _s.instance_id not in _seen_instance_ids
+                    ):
+                        _s.state = 'terminated'
+                        _s.updated_at = datetime.utcnow()
+                        _stale_count += 1
+                        logger.info(
+                            f"[WORK-DISC-01] Marking {_s.instance_id} (az={_s.az}) as terminated "
+                            f"(not found in {_scan_region} EC2 scan)"
+                        )
+                if _stale_count:
+                    db.commit()
                     logger.info(
-                        f"[WORK-DISC-01] Marking {_s.instance_id} as terminated "
-                        f"(not found in running EC2 scan)"
+                        f"[WORK-DISC-01] Marked {_stale_count} ghost instance(s) as terminated"
                     )
-            if _stale_count:
-                db.commit()
-                logger.info(
-                    f"[WORK-DISC-01] Marked {_stale_count} ghost instance(s) as terminated"
-                )
-        except Exception as _stale_err:
-            logger.warning(f"[WORK-DISC-01] Stale-mark pass failed: {_stale_err}")
+            except Exception as _stale_err:
+                logger.warning(f"[WORK-DISC-01] Stale-mark pass failed: {_stale_err}")
+        elif instance_count == 0 or not _scan_region:
+            logger.debug(
+                f"[WORK-DISC-01] Skipping stale-mark (instances={instance_count}, region={_scan_region or 'unknown'})"
+            )
 
         # ── Clean up terminated instances older than 30 min ───────────────────
         try:

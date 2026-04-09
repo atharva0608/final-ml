@@ -130,7 +130,7 @@ const Sidebar = ({ activeType, onSelect, categories }) => {
           Resources
         </div>
         <div style={{ fontSize: 11, color: C.muted }}>
-          Total discovered: <strong style={{ color: C.text, fontWeight: 700 }}>${totalCost}/mo</strong>
+          Total discovered: <strong style={{ color: C.text, fontWeight: 700 }}>${totalCost.toFixed(2)}/mo</strong>
         </div>
       </div>
 
@@ -202,7 +202,7 @@ const Sidebar = ({ activeType, onSelect, categories }) => {
                           }}>{t.count}</span>
                         )}
                         {t.cost > 0 && (
-                          <span style={{ fontSize: 9, color: C.subtle }}>${t.cost}</span>
+                          <span style={{ fontSize: 9, color: C.subtle }}>${t.cost.toFixed(2)}</span>
                         )}
                       </button>
                     );
@@ -343,7 +343,7 @@ const ResourceTable = ({ resources, selected, onSelect, onSelectAll }) => {
 
               {/* Cost */}
               <div style={{ padding: "0 6px", fontSize: 12, fontWeight: r.cost > 50 ? 700 : 400, color: C.text }}>
-                {r.cost > 0 ? `$${r.cost}` : <span style={{ color: C.subtle }}>—</span>}
+                {r.cost > 0 ? `$${r.cost.toFixed(2)}` : <span style={{ color: C.subtle }}>—</span>}
               </div>
 
               {/* Reason */}
@@ -666,7 +666,7 @@ export default function CleanupDashboard() {
   };
 
   const selectedCount = selected.size;
-  const selectedCost = filteredResources.filter(r => selected.has(r.id)).reduce((s, r) => s + r.cost, 0);
+  const selectedCost = Number(filteredResources.filter(r => selected.has(r.id)).reduce((s, r) => s + r.cost, 0).toFixed(2));
   const selectedResourceObjects = allResources.filter(r => selected.has(r.id));
 
   const STATUS_FILTERS = [
@@ -679,12 +679,11 @@ export default function CleanupDashboard() {
   ];
 
   // Aggregate KPIs based on API data
-  // Use scan result's total_discovered_cost (sum of cost_per_month across ALL resources found)
-  // This matches the sidebar total and is the authoritative figure from the hygiene scan.
-  const TOTAL_DISCOVERED = scanResult?.summary?.total_discovered_cost
-    ? Number(scanResult.summary.total_discovered_cost.toFixed(2))
+  // HygieneSummary fields are at the top level of scanResult (no .summary wrapper)
+  const TOTAL_DISCOVERED = scanResult?.total_discovered_cost != null
+    ? Number(scanResult.total_discovered_cost.toFixed(2))
     : Number(allResources.reduce((s, r) => s + (r.cost || 0), 0).toFixed(2));
-  const TOTAL_POTENTIAL = scanResult?.summary?.total_potential_savings ? Number(scanResult.summary.total_potential_savings.toFixed(2)) : 0;
+  const TOTAL_POTENTIAL = scanResult?.total_potential_savings ? Number(scanResult.total_potential_savings.toFixed(2)) : 0;
   const UNTAGGED = allResources.filter(r => r.missingTags.length > 0).length;
   const TAG_HEALTH_PCT = allResources.length > 0 ? Math.round((1 - UNTAGGED / allResources.length) * 100) : 100;
   const SAFETY_SAFE = allResources.filter(r => r.status === "SAFE_TO_DELETE" || r.status === "STOPPED").length;
@@ -946,8 +945,12 @@ export default function CleanupDashboard() {
             display: "flex", alignItems: "center", gap: 10, flexShrink: 0,
           }}>
             <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 14, fontWeight: 700, color: C.text, marginBottom: 2 }}>Compute Instances</div>
-              <div style={{ fontSize: 11, color: C.subtle }}>Review and action logical resources.</div>
+              <div style={{ fontSize: 14, fontWeight: 700, color: C.text, marginBottom: 2 }}>
+                {SIDEBAR_CATEGORIES.flatMap(c => c.types).find(t => t.id === activeType)?.label || "Resources"}
+              </div>
+              <div style={{ fontSize: 11, color: C.subtle }}>
+                {filteredResources.length} resource{filteredResources.length !== 1 ? "s" : ""} found
+              </div>
             </div>
             {/* Status filter tabs */}
             <div style={{ display: "flex", gap: 3, background: "#f3f4f6", padding: 3, borderRadius: 9 }}>
@@ -1066,12 +1069,31 @@ export default function CleanupDashboard() {
           </div>
 
           {/* Table */}
-          <ResourceTable
-            resources={filteredResources}
-            selected={selected}
-            onSelect={handleSelect}
-            onSelectAll={handleSelectAll}
-          />
+          {loading ? (
+            <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 12, padding: 40 }}>
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" style={{ animation: "spin 1s linear infinite" }}>
+                <circle cx="12" cy="12" r="10" stroke={C.border} strokeWidth="3" />
+                <path d="M12 2a10 10 0 0 1 10 10" stroke={C.accent} strokeWidth="3" strokeLinecap="round" />
+              </svg>
+              <span style={{ fontSize: 13, color: C.muted }}>Scanning resources…</span>
+              <span style={{ fontSize: 11, color: C.subtle }}>This may take a minute for all regions</span>
+            </div>
+          ) : filteredResources.length === 0 ? (
+            <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 8, padding: 40, color: C.subtle }}>
+              <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke={C.subtle} strokeWidth="1.5" strokeLinecap="round">
+                <circle cx="11" cy="11" r="8" /><path d="M21 21l-4.35-4.35" />
+              </svg>
+              <span style={{ fontSize: 13, fontWeight: 500 }}>No resources in this category</span>
+              <span style={{ fontSize: 11 }}>Try selecting a different resource type from the sidebar</span>
+            </div>
+          ) : (
+            <ResourceTable
+              resources={filteredResources}
+              selected={selected}
+              onSelect={handleSelect}
+              onSelectAll={handleSelectAll}
+            />
+          )}
 
           {/* Footer: status legend */}
           <div style={{

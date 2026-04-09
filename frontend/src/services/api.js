@@ -7,7 +7,7 @@ const API_URL = process.env.REACT_APP_API_URL || '';
 
 const api = axios.create({
     baseURL: API_URL,
-    timeout: 15000,  // 15s — prevents infinite loading when backend is slow or DB pool is exhausted
+    timeout: 20000,  // 20s — allows time for retries and slow backends
     headers: {
         'Content-Type': 'application/json',
     },
@@ -22,6 +22,8 @@ api.interceptors.request.use(
         if (token) {
             config.headers.Authorization = `Bearer ${token}`;
         }
+        // Tag retry count for the retry interceptor
+        config.__retryCount = config.__retryCount || 0;
         return config;
     },
     (error) => {
@@ -29,10 +31,22 @@ api.interceptors.request.use(
     }
 );
 
-// Add a response interceptor for Global Error Handling
+// Add a response interceptor for Global Error Handling + automatic retry on transient failures
 api.interceptors.response.use(
     (response) => response,
-    (error) => {
+    async (error) => {
+        const config = error.config;
+
+        // Retry on 500/502/503/504 or network errors (up to 2 retries with backoff)
+        const isRetryable = !error.response || [500, 502, 503, 504].includes(error.response?.status);
+        const isIdempotent = !config || config.method === 'get' || config.__retryCount > 0;
+        if (isRetryable && isIdempotent && config && config.__retryCount < 2) {
+            config.__retryCount += 1;
+            const backoff = config.__retryCount * 1000; // 1s, 2s
+            await new Promise(r => setTimeout(r, backoff));
+            return api(config);
+        }
+
         // Handle 401 Unauthorized (Expired token or missing auth)
         if (error.response && error.response.status === 401) {
             // Clear local storage and redirect if not already on login page

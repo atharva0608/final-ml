@@ -332,8 +332,18 @@ class MetricsCollector:
                     'unschedulable': node.spec.unschedulable or False,
                     'labels': node.metadata.labels or {},
                     'timestamp': datetime.utcnow().isoformat(),
-                    'status': 'CALIBRATING' if is_warming_up else ('READY' if ready else 'NOT_READY')
+                    'status': 'CALIBRATING' if is_warming_up else ('READY' if ready else 'NOT_READY'),
+                    'metric_type': 'node',
                 }
+
+                # Extract EC2 instance ID from spec.providerID
+                # Format: "aws:///az/i-0abc123def456" → "i-0abc123def456"
+                provider_id = getattr(node.spec, 'provider_id', None) or ''
+                if provider_id:
+                    parts = provider_id.rstrip('/').split('/')
+                    ec2_id = parts[-1] if parts else ''
+                    if ec2_id.startswith('i-'):
+                        node_metric['provider_id'] = ec2_id
 
                 node_metrics.append(node_metric)
 
@@ -453,7 +463,7 @@ class MetricsCollector:
 
     def send_metrics_to_backend(self, metrics: List[Dict[str, Any]]) -> bool:
         """
-        Send metrics to the backend API.
+        Send metrics to the backend API with retry and exponential backoff.
 
         Args:
             metrics: List of metric dictionaries
@@ -477,34 +487,49 @@ class MetricsCollector:
             'timestamp': datetime.utcnow().isoformat()
         }
 
-        try:
-            response = requests.post(
-                url,
-                json=payload,
-                headers=headers,
-                timeout=30
-            )
-            response.raise_for_status()
-            logger.info(f"Successfully sent {len(metrics)} metrics to backend")
-            return True
+        max_retries = 3
+        for attempt in range(1, max_retries + 1):
+            try:
+                response = requests.post(
+                    url,
+                    json=payload,
+                    headers=headers,
+                    timeout=30
+                )
+                response.raise_for_status()
+                logger.info(f"Successfully sent {len(metrics)} metrics to backend")
+                return True
 
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Failed to send metrics to backend: {e}")
-            return False
+            except requests.exceptions.RequestException as e:
+                if attempt < max_retries:
+                    backoff = min(2 ** attempt, 10)
+                    logger.warning(f"Metrics send attempt {attempt}/{max_retries} failed: {e}. Retrying in {backoff}s...")
+                    time.sleep(backoff)
+                else:
+                    logger.error(f"Failed to send metrics after {max_retries} attempts: {e}")
+                    return False
 
     def flush_buffer(self):
         """
         Flush the metrics buffer by sending all buffered metrics.
+        Cap buffer to prevent unbounded memory growth during outages.
         """
         with self.buffer_lock:
             if not self.metrics_buffer:
                 return
 
+            # Cap buffer: if backend was down for a long time, drop oldest metrics
+            max_buffer = self.batch_size * 10  # ~1000 metrics max
+            if len(self.metrics_buffer) > max_buffer:
+                dropped = len(self.metrics_buffer) - max_buffer
+                self.metrics_buffer = self.metrics_buffer[-max_buffer:]
+                logger.warning(f"Buffer overflow: dropped {dropped} oldest metrics (kept {max_buffer})")
+
             metrics_to_send = self.metrics_buffer[:self.batch_size]
             if self.send_metrics_to_backend(metrics_to_send):
                 self.metrics_buffer = self.metrics_buffer[self.batch_size:]
             else:
-                logger.warning("Failed to send metrics, keeping in buffer")
+                logger.warning(f"Failed to send metrics, keeping {len(self.metrics_buffer)} in buffer for next cycle")
 
     def collect_and_send(self):
         """

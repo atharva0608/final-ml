@@ -224,12 +224,15 @@ class ClusterService:
                         Cluster.is_dismissed == False,
                     ).first()
 
+                    new_arn = details.get('arn', '')
+
                     if not cluster:
                         cluster = Cluster(
                             id=str(uuid.uuid4()),
                             name=cluster_name,
                             account_id=account.id,
                             region=region,
+                            arn=new_arn,
                             status=ClusterStatus.DISCOVERED,
                             version=details.get('version'),
                             endpoint=details.get('endpoint'),
@@ -239,8 +242,56 @@ class ClusterService:
                         self.db.add(cluster)
                         logger.info(f"Discovered new cluster: {cluster_name} in {region}")
                     else:
+                        # Detect if the physical cluster was recreated
+                        # Case 1: ARN changed (different physical cluster)
+                        # Case 2: Old record had no ARN but was stale/disconnected
+                        arn_changed = (new_arn and cluster.arn and cluster.arn != new_arn)
+                        stale_without_arn = (
+                            new_arn
+                            and not cluster.arn
+                            and cluster.status in (
+                                ClusterStatus.DISCONNECTED,
+                                ClusterStatus.TERMINATED,
+                                ClusterStatus.INACTIVE,
+                            )
+                            and cluster.agent_installed == "Y"
+                        )
+                        is_recreated = arn_changed or stale_without_arn
+                        if is_recreated:
+                            logger.info(
+                                f"Cluster {cluster_name} was recreated or stale "
+                                f"(old_arn={cluster.arn}, new_arn={new_arn}, "
+                                f"old_status={cluster.status}). "
+                                f"Resetting agent data."
+                            )
+                            cluster.arn = new_arn
+                            cluster.cluster_uid = uuid.uuid4().hex[:8]
+                            cluster.agent_installed = "N"
+                            cluster.is_agentless = "N"
+                            cluster.last_heartbeat = None
+                            cluster.node_count = 0
+                            cluster.spot_count = 0
+                            cluster.cpu_total = 0
+                            cluster.mem_total = 0
+                            cluster.cpu_usage_pct = 0
+                            cluster.mem_usage_pct = 0
+                            cluster.monthly_cost = 0
+                            cluster.estimated_savings = 0
+                            cluster.potential_savings_monthly = 0
+                            cluster.realized_savings_monthly = 0
+                            cluster.on_demand_node_count = 0
+                            cluster.inventory_summary = None
+                            cluster.version = details.get('version')
+                            cluster.karpenter_mode = None
+                            cluster.auto_rebalance_enabled = False
+                            cluster.rightsizing_enabled = False
+                        elif not cluster.arn and new_arn:
+                            # Backfill ARN if it was missing
+                            cluster.arn = new_arn
+
                         cluster.status = ClusterStatus.DISCOVERED
-                        cluster.version = details.get('version')
+                        if not is_recreated:
+                            cluster.version = details.get('version')
                         cluster.endpoint = details.get('endpoint')
                         cluster.region = region  # Update region in case it changed
                         cluster.updated_at = datetime.utcnow()
@@ -600,7 +651,9 @@ class ClusterService:
                 cpu_total=cluster.cpu_total or 0,
                 mem_total=cluster.mem_total or 0,
                 cpu_usage_pct=float(cluster.cpu_usage_pct or 0),
-                mem_usage_pct=float(cluster.mem_usage_pct or 0)
+                mem_usage_pct=float(cluster.mem_usage_pct or 0),
+                auto_rebalance_enabled=bool(cluster.auto_rebalance_enabled),
+                rightsizing_enabled=bool(getattr(cluster, 'rightsizing_enabled', False)),
             ))
 
         result = ClusterList(
@@ -984,7 +1037,8 @@ EOF
         """
         cluster = self._get_cluster_with_access(cluster_id, user_id)
         
-        backend_url = os.environ.get('BACKEND_PUBLIC_URL', 'https://34c3-103-147-161-240.ngrok-free.app')
+        from backend.core.redis_client import get_backend_public_url
+        backend_url = get_backend_public_url()
         ws_url = backend_url.replace('https://', 'wss://').replace('http://', 'ws://')
 
         script = f"""#!/bin/bash
@@ -1071,7 +1125,8 @@ echo "✅ Agent successfully deployed!"
             self.db.refresh(cluster)
         
         # 2. Get Configuration
-        backend_url = os.environ.get('BACKEND_PUBLIC_URL', 'https://34c3-103-147-161-240.ngrok-free.app')
+        from backend.core.redis_client import get_backend_public_url
+        backend_url = get_backend_public_url()
         ws_url = backend_url.replace('https://', 'wss://').replace('http://', 'ws://')
         
         # Placeholder - updated by publish_to_dockerhub.sh
@@ -1181,6 +1236,12 @@ echo "✅ Agent successfully deployed!"
             node_count=cluster.node_count or 0,
             spot_count=cluster.spot_count or 0,
             on_demand_node_count=cluster.on_demand_node_count or 0,
+            agent_installed=cluster.agent_installed,
+            is_agentless=cluster.is_agentless,
+            potential_savings_monthly=float(cluster.potential_savings_monthly or 0),
+            inventory_summary=cluster.inventory_summary or {},
+            rightsizing_enabled=cluster.rightsizing_enabled or False,
+            managed_node_group_deleted=cluster.managed_node_group_deleted or False,
         )
 
     def get_cluster_nodes(self, cluster_id: str, user_id: str) -> dict:
@@ -1188,6 +1249,20 @@ echo "✅ Agent successfully deployed!"
         Get nodes/instances for a cluster
         """
         cluster = self._get_cluster_with_access(cluster_id, user_id)
+
+        # Build set of replacement spot instance IDs with active optimization
+        # so we can hide them from the fleet view until optimization completes.
+        from backend.models.rebalancing_action import RebalancingAction as _RA_FV
+        _active_replacements = set()
+        _active_ras = self.db.query(_RA_FV).filter(
+            _RA_FV.cluster_id == cluster_id,
+            _RA_FV.status.in_(['in_progress', 'waiting_agent']),
+        ).all()
+        for _ra in _active_ras:
+            _ra_meta = _ra.action_metadata or {}
+            _repl_id = _ra_meta.get('replacement_spot_instance_id')
+            if _repl_id:
+                _active_replacements.add(_repl_id)
 
         # Query ONLY active instances — terminated records must never appear in node lists.
         # Exclude ghost placeholder instances (instance_id not like 'i-%' or 'ip-%').
@@ -1199,6 +1274,9 @@ echo "✅ Agent successfully deployed!"
 
         nodes = []
         for inst in instances:
+            # Hide replacement spot nodes whose optimization is still in progress
+            if inst.instance_id in _active_replacements:
+                continue
             nodes.append({
                 "id": inst.id,
                 "type": inst.instance_type,
@@ -1411,6 +1489,26 @@ echo "✅ Agent successfully deployed!"
             Instance.state == 'running',
         ).all()
 
+        # Build set of replacement spot instance IDs with active optimization
+        # so we can hide them from the fleet view until optimization completes.
+        from backend.models.rebalancing_action import RebalancingAction as _RA_FVD
+        _active_replacements_d = set()
+        _active_ras_d = self.db.query(_RA_FVD).filter(
+            _RA_FVD.cluster_id == cluster_id,
+            _RA_FVD.status.in_(['in_progress', 'waiting_agent']),
+        ).all()
+        for _ra_d in _active_ras_d:
+            _ra_d_meta = _ra_d.action_metadata or {}
+            _repl_id_d = _ra_d_meta.get('replacement_spot_instance_id')
+            if _repl_id_d:
+                _active_replacements_d.add(_repl_id_d)
+
+        # Filter out replacement spot instances with active optimization
+        _all_instances = [
+            i for i in _all_instances
+            if i.instance_id not in _active_replacements_d
+        ]
+
         # Deduplicate: prefer real EC2 instances (instance_id starts with 'i-') over
         # daemon-set placeholder records (instance_id starts with 'ip-').
         # Key by the short hostname prefix so ip-x-y-z-w maps to the same slot as
@@ -1444,10 +1542,11 @@ echo "✅ Agent successfully deployed!"
             or (i.instance_id or '').startswith('ip-')
         ]
 
-        # RC5 fix: extend pod metrics freshness window from 3 → 10 minutes.
-        # Daemon set reports every 1 min; 10× window tolerates brief agent pauses
-        # or slow pod start-up without blanking out all utilisation data.
-        cutoff_time = datetime.utcnow() - timedelta(minutes=10)
+        # RC5+: extend pod metrics freshness window to 30 minutes.
+        # Daemon set reports every 1 min; 30× window tolerates agent restarts,
+        # ngrok tunnel rotations, and brief network outages without blanking
+        # out all utilisation data in the fleet view.
+        cutoff_time = datetime.utcnow() - timedelta(minutes=30)
 
         latest_subq = self.db.query(
             PodMetric.pod_name,
@@ -1715,10 +1814,65 @@ echo "✅ Agent successfully deployed!"
         )
 
         _total_pods = sum(n["pod_count"] for n in nodes_detailed)
+
+        # ── STABLE / ANCHOR NODE DETECTION ─────────────────────────────────
+        # The auto-rebalancer designates one OD node as "stable" (hosts Karpenter
+        # system pods). Its pods must NOT count as spot-friendly in the UI card.
+        # Strategy:
+        #   1. Try Redis cache first (set by the rebalancer, 10 min TTL).
+        #   2. If Redis miss, detect anchor from node data (node with karpenter-
+        #      namespace pods that is lifecycle=on-demand).
+        _stable_node_info = None
+        _stable_node_name = None
+        try:
+            import os as _os_sn
+            import redis as _redis_sn
+            import json as _json_sn
+            _r_sn = _redis_sn.from_url(_os_sn.getenv("REDIS_URL", "redis://redis:6379/0"))
+            _sn_raw = _r_sn.get(f"spot:stable_node:{cluster_id}")
+            if _sn_raw:
+                _stable_node_info = _json_sn.loads(_sn_raw)
+                _stable_node_name = _stable_node_info.get('node_name')
+        except Exception:
+            pass
+
+        # Fallback: detect from pod data — find an OD node hosting karpenter pods
+        if not _stable_node_name:
+            for n in nodes_detailed:
+                if n.get("lifecycle") == "on-demand":
+                    karp_pods = [p for p in n.get("pods", []) if p.get("namespace") == "karpenter"]
+                    if karp_pods:
+                        _stable_node_name = n.get("node_name")
+                        _stable_node_info = {
+                            "node_name": _stable_node_name,
+                            "instance_type": n.get("instance_type"),
+                            "detected_via": "pod_data_fallback",
+                        }
+                        break
+
+        # Tag nodes and compute spot-friendly pods.
+        # Karpenter pods (namespace=karpenter) are non-spot-friendly on ANY node
+        # because Karpenter must run on OD nodes and can never be migrated to spot.
+        # DaemonSet pods (aws-node, kube-proxy, spot-agent) run on ALL nodes
+        # including spot, so they remain spot-friendly.
+        _non_spot_friendly_count = 0
+        _NON_SPOT_NAMESPACES = {"karpenter"}
+        for n in nodes_detailed:
+            if _stable_node_name and n.get("node_name") == _stable_node_name:
+                n["is_stable_node"] = True
+                n["classification"] = "ANCHOR"
+            else:
+                n["is_stable_node"] = False
+
+            # Count karpenter-namespace pods as non-spot-friendly on every node
+            for p in n["pods"]:
+                if p.get("namespace") in _NON_SPOT_NAMESPACES:
+                    _non_spot_friendly_count += 1
+
         _spot_friendly_pods = sum(
             len([p for p in n["pods"] if not p.get("is_stateful", False)])
             for n in nodes_detailed
-        )
+        ) - _non_spot_friendly_count
 
         return {
             "cluster_id": cluster_id,
@@ -1726,6 +1880,8 @@ echo "✅ Agent successfully deployed!"
             "total_nodes": len(nodes_detailed),
             "total_pods": _total_pods,
             "spot_friendly_pods": _spot_friendly_pods,
+            "non_spot_friendly_pods": _total_pods - _spot_friendly_pods,
+            "stable_node": _stable_node_info,
             "nodes": nodes_detailed,
             "timestamp": datetime.utcnow().isoformat(),
             "data_source": "instances_primary" if instances else "pod_metrics_only"

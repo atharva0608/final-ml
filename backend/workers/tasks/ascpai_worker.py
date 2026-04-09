@@ -49,13 +49,19 @@ def execute_pool_ranking_pipeline(self: Task) -> Dict[str, Any]:
     redis = get_redis_client()
 
     try:
-        # Default node template (can be customized per organization)
+        # Default node template — includes both AMD64 and ARM64 families
+        # so the ML pipeline can rank pools across both architectures.
         default_template = NodeTemplate(
             architecture=["amd64", "arm64"],
             vcpu_range=(2, 16),
             memory_range=(4, 64),
-            allowed_families=["m5", "m6i", "c5", "c6i", "r5", "r6i"],
-            allowed_sizes=["large", "xlarge", "2xlarge", "4xlarge"],
+            allowed_families=[
+                # AMD64 families
+                "m5", "m6i", "c5", "c6i", "r5", "r6i",
+                # ARM64 (Graviton) families
+                "m7g", "m6g", "c7g", "c6g", "r7g", "r6g", "t4g",
+            ],
+            allowed_sizes=["medium", "large", "xlarge", "2xlarge", "4xlarge"],
             allowed_azs=None,  # All AZs
             excluded_instance_types=["*.metal", "*.24xlarge"]
         )
@@ -119,11 +125,17 @@ def collect_spot_prices(self: Task) -> Dict[str, Any]:
         timestamp = datetime.utcnow()
         prices_collected = 0
 
-        # Example: Collect prices for monitored instance types
+        # Collect prices for monitored instance types
+        # AZs must use public format (ap-south-1a) not internal IDs (aps1-az1)
+        # so queries from ML pipeline / auto_rebalancer can join on az.
         monitored_pools = [
-            ("m5.xlarge", "aps1-az1", "ap-south-1"),
-            ("c5.xlarge", "aps1-az2", "ap-south-1"),
-            ("r5.2xlarge", "aps1-az3", "ap-south-1"),
+            ("m5.xlarge", "ap-south-1a", "ap-south-1"),
+            ("c5.xlarge", "ap-south-1b", "ap-south-1"),
+            ("r5.2xlarge", "ap-south-1c", "ap-south-1"),
+            # ARM64 / Graviton types
+            ("c7g.medium", "ap-south-1a", "ap-south-1"),
+            ("c7g.large", "ap-south-1b", "ap-south-1"),
+            ("m7g.medium", "ap-south-1c", "ap-south-1"),
         ]
 
         for instance_type, az, region in monitored_pools:
@@ -265,8 +277,15 @@ def sync_karpenter_nodepools(self: Task) -> Dict[str, Any]:
     try:
         from backend.services.karpenter_service import KarpenterService
         from backend.models.cluster import Cluster
+        from backend.models.rebalancing_action import RebalancingAction as _RA
+        from datetime import timezone
 
         karpenter_service = KarpenterService(db, redis)
+        ranking_service = PoolRankingService(db, redis)
+
+        # Family lists by architecture
+        _AMD64_FAMILIES = ["m5", "m6i", "c5", "c6i", "r5", "r6i"]
+        _ARM64_FAMILIES = ["m7g", "m6g", "c7g", "c6g", "r7g", "r6g", "t4g"]
 
         # Get all active EKS clusters
         clusters = db.query(Cluster).filter(
@@ -296,7 +315,6 @@ def sync_karpenter_nodepools(self: Task) -> Dict[str, Any]:
             if not cluster.karpenter_mode:
                 continue
             if cluster.last_heartbeat:
-                from datetime import timezone
                 _hb = cluster.last_heartbeat
                 if _hb.tzinfo is None:
                     _hb = _hb.replace(tzinfo=timezone.utc)
@@ -309,17 +327,40 @@ def sync_karpenter_nodepools(self: Task) -> Dict[str, Any]:
             else:
                 # agent_installed='Y' but no heartbeat ever received — skip
                 continue
+
+            # ── Guard: skip NodePool sync while an auto-rebalance is active ──
+            _active_rebalance = db.query(_RA).filter(
+                _RA.cluster_id == cluster.id,
+                _RA.status.in_(['in_progress', 'waiting_agent']),
+            ).first()
+            if _active_rebalance:
+                logger.info(
+                    f"[Karpenter] Skipping NodePool sync for {cluster.name} — "
+                    f"active rebalance action #{_active_rebalance.id} "
+                    f"(status={_active_rebalance.status})"
+                )
+                continue
+
             try:
-                # Get ML rankings for this cluster's region
-                # Use cached rankings from Redis (updated by pool ranking pipeline)
-                ranking_service = PoolRankingService(db, redis)
+                # Build NodeTemplate using the cluster's architecture preference
+                # so the families match the declared architectures.
+                _arch_pref = getattr(cluster, 'architecture_preference', 'both') or 'both'
+                if _arch_pref == 'arm64':
+                    _arch_list = ["arm64"]
+                    _families = _ARM64_FAMILIES
+                elif _arch_pref == 'amd64':
+                    _arch_list = ["amd64"]
+                    _families = _AMD64_FAMILIES
+                else:  # 'both'
+                    _arch_list = ["amd64", "arm64"]
+                    _families = _AMD64_FAMILIES + _ARM64_FAMILIES
 
                 default_template = NodeTemplate(
-                    architecture=["amd64", "arm64"],
+                    architecture=_arch_list,
                     vcpu_range=(2, 16),
                     memory_range=(4, 64),
-                    allowed_families=["m5", "m6i", "c5", "c6i", "r5", "r6i"],
-                    allowed_sizes=["large", "xlarge", "2xlarge", "4xlarge"],
+                    allowed_families=_families,
+                    allowed_sizes=["medium", "large", "xlarge", "2xlarge", "4xlarge"],
                     allowed_azs=None,
                     excluded_instance_types=["*.metal", "*.24xlarge"]
                 )
@@ -363,8 +404,15 @@ def sync_karpenter_nodepools(self: Task) -> Dict[str, Any]:
 
         logger.info(f"[Karpenter] NodePool sync complete: {synced_count} synced, {failed_count} failed")
 
+        if failed_count > 0 and synced_count == 0:
+            _sync_status = "failed"
+        elif failed_count > 0:
+            _sync_status = "partial_failure"
+        else:
+            _sync_status = "success"
+
         return {
-            "status": "success",
+            "status": _sync_status,
             "timestamp": datetime.utcnow().isoformat(),
             "clusters_synced": synced_count,
             "clusters_failed": failed_count,

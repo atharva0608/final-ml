@@ -7,6 +7,10 @@ from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
+IMDS_TOKEN_URL = "http://169.254.169.254/latest/api/token"
+IMDS_TOKEN_TTL = 21600  # 6 hours
+
+
 class SpotPoller:
     """
     Polls AWS Instance Metadata Service for Spot Termination Warnings (2-minute warning).
@@ -39,13 +43,42 @@ class SpotPoller:
         self.cluster_id = cluster_id or os.getenv('CLUSTER_ID', '')
         self.node_name = node_name or os.getenv('NODE_NAME', '')
         self._instance_id = None
+        self._imds_token = None
+        self._imds_token_expiry = 0
+
+    def _get_imds_token(self):
+        """Get or refresh an IMDSv2 session token."""
+        now = time.time()
+        if self._imds_token and now < self._imds_token_expiry:
+            return self._imds_token
+        try:
+            resp = requests.put(
+                IMDS_TOKEN_URL,
+                headers={"X-aws-ec2-metadata-token-ttl-seconds": str(IMDS_TOKEN_TTL)},
+                timeout=1,
+            )
+            if resp.status_code == 200:
+                self._imds_token = resp.text
+                self._imds_token_expiry = now + IMDS_TOKEN_TTL - 60
+                return self._imds_token
+        except requests.exceptions.RequestException:
+            pass
+        return None
+
+    def _imds_get(self, url):
+        """IMDSv2-aware GET: uses token header, falls back to v1 if token unavailable."""
+        headers = {}
+        token = self._get_imds_token()
+        if token:
+            headers["X-aws-ec2-metadata-token"] = token
+        return requests.get(url, headers=headers, timeout=1)
 
     def _get_instance_id(self):
         """Fetch instance ID from IMDS (cached after first call)."""
         if self._instance_id:
             return self._instance_id
         try:
-            resp = requests.get(self.IMDS_INSTANCE_ID_URL, timeout=1)
+            resp = self._imds_get(self.IMDS_INSTANCE_ID_URL)
             if resp.status_code == 200:
                 self._instance_id = resp.text.strip()
                 return self._instance_id
@@ -60,8 +93,7 @@ class SpotPoller:
             Dict with action info if terminating, None otherwise.
         """
         try:
-            # Short timeout is critical to not block the thread
-            response = requests.get(self.IMDS_URL, timeout=1)
+            response = self._imds_get(self.IMDS_URL)
             
             if response.status_code == 200:
                 data = response.json()
@@ -82,7 +114,7 @@ class SpotPoller:
     def check_rebalance_recommendation(self):
         """Check IMDS for EC2 rebalance recommendation (precursor to termination)."""
         try:
-            response = requests.get(self.IMDS_REBALANCE_URL, timeout=1)
+            response = self._imds_get(self.IMDS_REBALANCE_URL)
             if response.status_code == 200:
                 data = response.json()
                 logger.info(f"[SpotPoller] Rebalance recommendation received: {data}")

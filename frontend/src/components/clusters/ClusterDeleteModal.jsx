@@ -68,8 +68,8 @@ const ClusterDeleteModal = ({ isOpen, onClose, cluster, onConfirm }) => {
                                     This will permanently delete the cluster and:
                                 </p>
                                 <ul className="text-sm text-red-700 space-y-1 ml-4">
-                                    <li>• Remove the Spot Optimizer agent from Kubernetes</li>
-                                    <li>• Delete the spot-optimizer namespace and all resources</li>
+                                    <li>• Remove the Balancekube agent from Kubernetes</li>
+                                    <li>• Delete the balancekube namespace and all resources</li>
                                     <li>• Remove cluster data from our database</li>
                                     <li>• Delete all metrics history</li>
                                 </ul>

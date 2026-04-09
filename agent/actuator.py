@@ -145,7 +145,7 @@ class ActionActuator:
         logger.info(f"Evicting pod {namespace}/{pod_name}")
 
         retries = 5
-        retry_delay = 10
+        retry_delay = 10  # base delay (seconds)
 
         for attempt in range(1, retries + 2):
             try:
@@ -177,8 +177,15 @@ class ActionActuator:
                 # 429 = PDB Violation (Too Many Requests)
                 if e.status == 429:
                     if attempt <= retries:
-                        logger.warning(f"Eviction blocked by PDB (429) for {namespace}/{pod_name}. Retrying in {retry_delay}s ({attempt}/{retries})...")
-                        time.sleep(retry_delay)
+                        # Fix 7: Exponential backoff for PDB-blocked evictions.
+                        # base=10s, factor=1.5: 10, 15, 22, 34, 50s (total ~131s).
+                        # Gives PDB-controlled replicas time to become available.
+                        _backoff_delay = min(int(retry_delay * (1.5 ** (attempt - 1))), 60)
+                        logger.warning(
+                            f"Eviction blocked by PDB (429) for {namespace}/{pod_name}. "
+                            f"Retrying in {_backoff_delay}s ({attempt}/{retries})..."
+                        )
+                        time.sleep(_backoff_delay)
                         continue
                     else:
                         error_msg = f"Failed to evict pod {namespace}/{pod_name} after {retries} retries due to PDB violation"
@@ -240,10 +247,25 @@ class ActionActuator:
             # Patch the node
             self.core_v1.patch_node(node_name, node)
 
-            logger.info(f"Successfully {action.lower()} node {node_name}")
+            # ── Verification: read back node to confirm unschedulable state ──
+            _verified = False
+            try:
+                _readback = self.core_v1.read_node(node_name)
+                _verified = bool(_readback.spec.unschedulable) == (not uncordon)
+                if not _verified:
+                    logger.warning(
+                        f"VERIFICATION FAILED: node {node_name} unschedulable="
+                        f"{_readback.spec.unschedulable} (expected {not uncordon})"
+                    )
+            except Exception as _ve:
+                logger.warning(f"Cordon verification read-back failed: {_ve}")
+
+            logger.info(f"Successfully {action.lower()} node {node_name} (verified={_verified})")
             return {
                 'success': True,
-                'message': f'Node {node_name} {action.lower()} successfully'
+                'message': f'Node {node_name} {action.lower()} successfully',
+                'verified': _verified,
+                'node_unschedulable': not uncordon,
             }
 
         except ApiException as e:
@@ -440,6 +462,24 @@ class ActionActuator:
 
             logger.info(f"Successfully drained node {node_name}")
 
+            # ── Verification: count non-DaemonSet pods remaining on node ──
+            _remaining_pods = 0
+            _verified_drain = False
+            try:
+                _check_pods = self.core_v1.list_pod_for_all_namespaces(
+                    field_selector=f'spec.nodeName={node_name}'
+                )
+                for _cp in _check_pods.items:
+                    if not self._is_daemonset_pod(_cp) and not self._is_mirror_pod(_cp):
+                        _remaining_pods += 1
+                _verified_drain = (_remaining_pods == 0)
+                if not _verified_drain:
+                    logger.warning(
+                        f"Drain verification: {_remaining_pods} non-DS pods still on {node_name}"
+                    )
+            except Exception as _ve:
+                logger.warning(f"Drain verification read-back failed: {_ve}")
+
             # After draining, proactively clear any stuck VolumeAttachment objects.
             # EBS volumes can be slow to detach; lingering VolumeAttachments produce
             # Multi-Attach errors on the new node, blocking StatefulSet pod startup.
@@ -457,7 +497,9 @@ class ActionActuator:
             return {
                 'success': True,
                 'message': f'Node {node_name} drained successfully',
-                'evicted': len(eviction_results)
+                'evicted': len(eviction_results),
+                'verified': _verified_drain,
+                'remaining_non_ds_pods': _remaining_pods,
             }
 
         except ApiException as e:
@@ -493,46 +535,67 @@ class ActionActuator:
         action = "Removing" if remove else "Adding"
         logger.info(f"{action} labels on node {node_name}: {labels}")
 
-        try:
-            # Get current node
-            node = self.core_v1.read_node(node_name)
+        # Retry with backoff on 404 (node may still be registering in K8s
+        # after EC2 launch — kubelet needs time to join the API server).
+        import time as _time_lbl
+        _LBL_MAX_RETRIES = 8
+        _LBL_RETRY_INTERVAL_S = 5  # 8 x 5s = 40s max wait
 
-            if remove:
-                # Remove labels
-                for key in labels.keys():
-                    if key in node.metadata.labels:
-                        del node.metadata.labels[key]
-            else:
-                # Add labels
-                if node.metadata.labels is None:
-                    node.metadata.labels = {}
-                node.metadata.labels.update(labels)
+        for _lbl_attempt in range(1, _LBL_MAX_RETRIES + 1):
+            try:
+                # Get current node
+                node = self.core_v1.read_node(node_name)
 
-            # Patch the node
-            self.core_v1.patch_node(node_name, node)
+                if remove:
+                    # Remove labels
+                    for key in labels.keys():
+                        if key in node.metadata.labels:
+                            del node.metadata.labels[key]
+                else:
+                    # Add labels
+                    if node.metadata.labels is None:
+                        node.metadata.labels = {}
+                    node.metadata.labels.update(labels)
 
-            logger.info(f"Successfully {action.lower()} labels on node {node_name}")
-            return {
-                'success': True,
-                'message': f'Labels {action.lower()} on node {node_name} successfully'
-            }
+                # Patch the node
+                self.core_v1.patch_node(node_name, node)
 
-        except ApiException as e:
-            error_msg = f"Failed to {action.lower()} labels on node {node_name}: {e.reason}"
-            logger.error(error_msg)
-            return {
-                'success': False,
-                'message': error_msg,
-                'error': str(e)
-            }
-        except Exception as e:
-            error_msg = f"Unexpected error {action.lower()} labels on node {node_name}: {e}"
-            logger.error(error_msg, exc_info=True)
-            return {
-                'success': False,
-                'message': error_msg,
-                'error': str(e)
-            }
+                logger.info(f"Successfully {action.lower()} labels on node {node_name}"
+                            f" (attempt {_lbl_attempt}/{_LBL_MAX_RETRIES})")
+                return {
+                    'success': True,
+                    'message': f'Labels {action.lower()} on node {node_name} successfully'
+                }
+
+            except ApiException as e:
+                if e.status == 404 and _lbl_attempt < _LBL_MAX_RETRIES:
+                    logger.warning(
+                        f"Node {node_name} not found (404) on attempt "
+                        f"{_lbl_attempt}/{_LBL_MAX_RETRIES}, "
+                        f"retrying in {_LBL_RETRY_INTERVAL_S}s..."
+                    )
+                    _time_lbl.sleep(_LBL_RETRY_INTERVAL_S)
+                    continue
+                error_msg = f"Failed to {action.lower()} labels on node {node_name}: {e.reason}"
+                logger.error(error_msg)
+                return {
+                    'success': False,
+                    'message': error_msg,
+                    'error': str(e)
+                }
+            except Exception as e:
+                error_msg = f"Unexpected error {action.lower()} labels on node {node_name}: {e}"
+                logger.error(error_msg, exc_info=True)
+                return {
+                    'success': False,
+                    'message': error_msg,
+                    'error': str(e)
+                }
+        # Should not reach here, but safety net
+        return {
+            'success': False,
+            'message': f'All {_LBL_MAX_RETRIES} retries exhausted for {action.lower()} labels on {node_name}'
+        }
 
     def clear_stuck_volume_attachments(self, node_name: str, timeout_seconds: int = 60) -> Dict[str, Any]:
         """
@@ -627,26 +690,45 @@ class ActionActuator:
         """
         action = "Removing" if remove else "Applying"
         logger.info(f"[annotate_node] {action} annotations on {node_name}: {list(annotations.keys())}")
-        try:
-            node = self.core_v1.read_node(node_name)
-            if node.metadata.annotations is None:
-                node.metadata.annotations = {}
-            if remove:
-                for key in annotations:
-                    node.metadata.annotations.pop(key, None)
-            else:
-                node.metadata.annotations.update(annotations)
-            self.core_v1.patch_node(node_name, node)
-            logger.info(f"[annotate_node] {action} annotations on {node_name} succeeded")
-            return {'success': True, 'message': f'Annotations {action.lower()} on {node_name}'}
-        except ApiException as e:
-            msg = f"[annotate_node] Failed to {action.lower()} annotations on {node_name}: {e.reason}"
-            logger.error(msg)
-            return {'success': False, 'message': msg, 'error': str(e)}
-        except Exception as e:
-            msg = f"[annotate_node] Unexpected error on {node_name}: {e}"
-            logger.error(msg, exc_info=True)
-            return {'success': False, 'message': msg, 'error': str(e)}
+
+        # Retry with backoff on 404 — node may still be registering in K8s.
+        import time as _time_ann
+        _ANN_MAX_RETRIES = 8
+        _ANN_RETRY_INTERVAL_S = 5
+
+        for _ann_attempt in range(1, _ANN_MAX_RETRIES + 1):
+            try:
+                node = self.core_v1.read_node(node_name)
+                if node.metadata.annotations is None:
+                    node.metadata.annotations = {}
+                if remove:
+                    for key in annotations:
+                        node.metadata.annotations.pop(key, None)
+                else:
+                    node.metadata.annotations.update(annotations)
+                self.core_v1.patch_node(node_name, node)
+                logger.info(f"[annotate_node] {action} annotations on {node_name} succeeded"
+                            f" (attempt {_ann_attempt}/{_ANN_MAX_RETRIES})")
+                return {'success': True, 'message': f'Annotations {action.lower()} on {node_name}'}
+            except ApiException as e:
+                if e.status == 404 and _ann_attempt < _ANN_MAX_RETRIES:
+                    logger.warning(
+                        f"[annotate_node] Node {node_name} not found (404) on attempt "
+                        f"{_ann_attempt}/{_ANN_MAX_RETRIES}, retrying in {_ANN_RETRY_INTERVAL_S}s..."
+                    )
+                    _time_ann.sleep(_ANN_RETRY_INTERVAL_S)
+                    continue
+                msg = f"[annotate_node] Failed to {action.lower()} annotations on {node_name}: {e.reason}"
+                logger.error(msg)
+                return {'success': False, 'message': msg, 'error': str(e)}
+            except Exception as e:
+                msg = f"[annotate_node] Unexpected error on {node_name}: {e}"
+                logger.error(msg, exc_info=True)
+                return {'success': False, 'message': msg, 'error': str(e)}
+        return {
+            'success': False,
+            'message': f'All {_ANN_MAX_RETRIES} retries exhausted for {action.lower()} annotations on {node_name}'
+        }
 
     def update_deployment(self, namespace: str, deployment_name: str,
                          replicas: Optional[int] = None,
@@ -810,6 +892,17 @@ class ActionActuator:
                 "--create-namespace",
                 "--set", f"settings.clusterName={cluster_name}",
                 "--set", f"settings.interruptionQueue={effective_sqs_queue}",
+                # Pin Karpenter pods to anchor (ASG-managed OD) nodes only.
+                # Nodes provisioned by Karpenter carry the karpenter.sh/nodepool label;
+                # the anchor node (ASG-managed) does NOT, so this affinity keeps the
+                # controller on the single stable OD node that won't be drained.
+                "--set", "affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms[0].matchExpressions[0].key=karpenter.sh/nodepool",
+                "--set", "affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms[0].matchExpressions[0].operator=DoesNotExist",
+                "--set", "replicas=2",
+                "--set", "topologySpreadConstraints[0].maxSkew=1",
+                "--set", "topologySpreadConstraints[0].topologyKey=kubernetes.io/hostname",
+                "--set", "topologySpreadConstraints[0].whenUnsatisfiable=ScheduleAnyway",
+                "--set", "topologySpreadConstraints[0].labelSelector.matchLabels.app\\.kubernetes\\.io/name=karpenter",
                 "--wait", "--timeout", "5m",
             ]
             # IRSA: annotate the Karpenter controller ServiceAccount so it can call AWS APIs
@@ -1575,18 +1668,17 @@ class ActionActuator:
             )
 
         elif action_type == 'CORDON_NODE':
-            # Prefer exact instance_id lookup (via providerID), then fallback to type+AZ
+            # Bug #9 fix: Only use node_name or providerID-based lookup (unique).
+            # Never fall back to type+AZ which can match the wrong node.
             node_name = (payload.get('node_name') or
-                         self._find_node_by_instance_id(payload.get('instance_id', '')) or
-                         self._find_node_name(payload.get('instance_type', ''), payload.get('az', '')))
+                         self._find_node_by_instance_id(payload.get('instance_id', '')))
             if not node_name:
                 return {'success': False, 'message': f"Could not find node for instance_id={payload.get('instance_id')} type={payload.get('instance_type')} az={payload.get('az')}"}
             return self.cordon_node(node_name, uncordon=False)
 
         elif action_type == 'UNCORDON_NODE':
             node_name = (payload.get('node_name') or
-                         self._find_node_by_instance_id(payload.get('instance_id', '')) or
-                         self._find_node_name(payload.get('instance_type', ''), payload.get('az', '')))
+                         self._find_node_by_instance_id(payload.get('instance_id', '')))
             if not node_name:
                 return {'success': False, 'message': f"Could not find node to uncordon: instance_id={payload.get('instance_id')}"}
             return self.cordon_node(node_name, uncordon=True)
@@ -1597,17 +1689,15 @@ class ActionActuator:
             # (hardware failure, spot reclamation) and the Node is stuck NotReady,
             # holding StatefulSet pods in Terminating state.
             node_name = (payload.get('node_name') or
-                         self._find_node_by_instance_id(payload.get('instance_id', '')) or
-                         self._find_node_name(payload.get('instance_type', ''), payload.get('az', '')))
+                         self._find_node_by_instance_id(payload.get('instance_id', '')))
             if not node_name:
                 return {'success': False, 'message': f"Could not find ghost node to force-delete: instance_id={payload.get('instance_id')}"}
             return self.force_delete_node(node_name)
 
         elif action_type == 'DRAIN_NODE':
-            # Prefer exact instance_id lookup (via providerID), then fallback to type+AZ
+            # Bug #9 fix: Only use node_name or providerID-based lookup (unique).
             node_name = (payload.get('node_name') or
-                         self._find_node_by_instance_id(payload.get('instance_id', '')) or
-                         self._find_node_name(payload.get('instance_type', ''), payload.get('az', '')))
+                         self._find_node_by_instance_id(payload.get('instance_id', '')))
             if not node_name:
                 return {'success': False, 'message': f"Could not find node for instance_id={payload.get('instance_id')} type={payload.get('instance_type')} az={payload.get('az')}"}
             # force=True: bypass PodDisruptionBudgets (required for emergency drains
@@ -1619,8 +1709,7 @@ class ActionActuator:
 
         elif action_type == 'LABEL_NODE':
             node_name = (payload.get('node_name') or
-                         self._find_node_by_instance_id(payload.get('instance_id', '')) or
-                         self._find_node_name(payload.get('instance_type', ''), payload.get('az', '')))
+                         self._find_node_by_instance_id(payload.get('instance_id', '')))
             if not node_name:
                 return {'success': False, 'message': 'Could not resolve node_name'}
             result = self.label_node(node_name, payload.get('labels', {}), payload.get('remove', False))
@@ -1752,13 +1841,36 @@ class ActionActuator:
         while self.running:
             try:
                 commands = self.poll_actions()
-                for cmd in commands:
+
+                # Bug #11 fix (defense-in-depth): Sort by zero_downtime_step and
+                # only execute the lowest step per rebalancing_action_id.  The
+                # backend should already gate this, but the agent enforces it too.
+                _zd_seen = {}  # rebalancing_action_id -> lowest step already executed
+                _ordered = sorted(
+                    commands,
+                    key=lambda c: (c.get('payload', {}).get('zero_downtime_step') or 0),
+                )
+
+                for cmd in _ordered:
                     action_id = cmd.get('action_id')
                     action_type = cmd.get('action_type', '')
                     payload = cmd.get('payload', {})
 
                     if not action_id or not action_type:
                         continue
+
+                    # Bug #11 fix: For zero-downtime steps, only execute ONE step
+                    # per rebalancing_action_id per poll cycle. Defer the rest.
+                    _zd_step = payload.get('zero_downtime_step')
+                    _ra_id = payload.get('rebalancing_action_id')
+                    if _zd_step and _ra_id:
+                        if _ra_id in _zd_seen:
+                            logger.info(
+                                f"[poll] Deferring step {_zd_step} for action {_ra_id} "
+                                f"(step {_zd_seen[_ra_id]} already executed this cycle)"
+                            )
+                            continue
+                        _zd_seen[_ra_id] = _zd_step
 
                     # N5 fix: Start heartbeat thread during action execution
                     _hb_stop = threading.Event()

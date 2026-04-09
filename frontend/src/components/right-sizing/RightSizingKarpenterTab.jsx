@@ -131,6 +131,7 @@ export default function RightSizingMonitoringDashboard() {
   const [statelessNodes, setStatelessNodes] = useState([]);
   const [statefulNodes, setStatefulNodes] = useState([]);
   const [rebalancingActions, setRebalancingActions] = useState([]);
+  const [karpenterSimulation, setKarpenterSimulation] = useState(null);
 
   // Fetch clusters
   useEffect(() => {
@@ -161,11 +162,15 @@ export default function RightSizingMonitoringDashboard() {
     setLoading(true);
     Promise.all([
       clusterAPI.getOptimizationSettings(selectedClusterId).catch(() => ({ data: null })),
-      karpenterAPI.getRecommendations(selectedClusterId).catch(() => ({ data: { recommendations: [] } }))
-    ]).then(([configRes, recsRes]) => {
+      karpenterAPI.getRecommendations(selectedClusterId).catch(() => ({ data: { recommendations: [] } })),
+      ascpaiAPI.getNodeRecommendations(selectedClusterId, { useRightsized: true }).catch(() => ({ data: null })),
+    ]).then(([configRes, recsRes, nodeRecsRes]) => {
       const c = configRes.data;
       setAutoState(c?.automation_controls?.auto_rightsizing_enabled ?? false);
       setRebalanceState(c?.automation_controls?.auto_rebalance_enabled ?? false);
+
+      // Extract karpenter simulation from node-recommendations response
+      setKarpenterSimulation(nodeRecsRes.data?.karpenter_simulation || null);
 
       const rawRecs = recsRes.data?.recommendations || [];
       let sNodes = [];
@@ -340,7 +345,26 @@ export default function RightSizingMonitoringDashboard() {
                 <div>
                   <div className="text-[11px] font-bold text-slate-500 uppercase tracking-widest mb-8">Availability Strategy</div>
                   <div className="flex justify-center mb-10">
-                    <div className="flex items-center justify-center w-28 h-28 rounded-full bg-slate-100 text-slate-400 text-xs text-center">Data<br/>pending</div>
+                    {karpenterSimulation ? (
+                      <div className="flex flex-col items-center gap-3">
+                        <div className="relative w-28 h-28">
+                          <svg viewBox="0 0 36 36" className="w-full h-full -rotate-90">
+                            <circle cx="18" cy="18" r="15.9" fill="none" stroke="#e2e8f0" strokeWidth="3" />
+                            <circle cx="18" cy="18" r="15.9" fill="none" stroke="#6366f1" strokeWidth="3" strokeDasharray={`${karpenterSimulation.simulated_spot_pct} ${100 - karpenterSimulation.simulated_spot_pct}`} strokeLinecap="round" />
+                          </svg>
+                          <div className="absolute inset-0 flex flex-col items-center justify-center">
+                            <span className="text-[16px] font-extrabold text-slate-800">{karpenterSimulation.simulated_spot_pct}%</span>
+                            <span className="text-[9px] font-bold text-slate-400 uppercase">Spot</span>
+                          </div>
+                        </div>
+                        <div className="flex gap-4 text-[10px] font-bold">
+                          <span className="text-indigo-600">{karpenterSimulation.simulated_spot_node_count} Spot</span>
+                          <span className="text-orange-600">{karpenterSimulation.simulated_od_node_count} OD</span>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="flex items-center justify-center w-28 h-28 rounded-full bg-slate-100 text-slate-400 text-xs text-center">Data<br/>pending</div>
+                    )}
                   </div>
                 </div>
 
@@ -348,42 +372,32 @@ export default function RightSizingMonitoringDashboard() {
                 <div>
                   <div className="text-[11px] font-bold text-slate-500 uppercase tracking-widest mb-8">AZ Distribution</div>
                   <div className="flex flex-col gap-6 mb-10">
-                    <div>
-                      <div className="flex justify-between text-[11px] font-bold text-slate-800 mb-2">
-                        <span>us-east-1a</span>
-                        <span className="text-slate-500">42%</span>
-                      </div>
-                      <div className="w-full h-2.5 bg-slate-100 rounded-full overflow-hidden">
-                        <div className="h-full bg-orange-600 rounded-full" style={{ width: '42%' }}></div>
-                      </div>
-                    </div>
-                    <div>
-                      <div className="flex justify-between text-[11px] font-bold text-slate-800 mb-2">
-                        <span>us-east-1b</span>
-                        <span className="text-slate-500">35%</span>
-                      </div>
-                      <div className="w-full h-2.5 bg-slate-100 rounded-full overflow-hidden">
-                        <div className="h-full bg-orange-500 rounded-full" style={{ width: '35%' }}></div>
-                      </div>
-                    </div>
-                    <div>
-                      <div className="flex justify-between text-[11px] font-bold text-slate-800 mb-2">
-                        <span>us-east-1c</span>
-                        <span className="text-slate-500">23%</span>
-                      </div>
-                      <div className="w-full h-2.5 bg-slate-100 rounded-full overflow-hidden">
-                        <div className="h-full bg-orange-400 rounded-full" style={{ width: '23%' }}></div>
-                      </div>
-                    </div>
+                    {(karpenterSimulation?.az_distribution || []).length > 0 ? (
+                      karpenterSimulation.az_distribution.map(az => (
+                        <div key={az.az}>
+                          <div className="flex justify-between text-[11px] font-bold text-slate-800 mb-2">
+                            <span>{az.az}</span>
+                            <span className="text-slate-500">{az.pct}%</span>
+                          </div>
+                          <div className="w-full h-2.5 bg-slate-100 rounded-full overflow-hidden">
+                            <div className="h-full bg-indigo-500 rounded-full" style={{ width: `${az.pct}%` }}></div>
+                          </div>
+                        </div>
+                      ))
+                    ) : (
+                      <div className="text-[12px] text-slate-400 font-medium">Enable right-sizing to see simulated AZ distribution</div>
+                    )}
                   </div>
 
-                  <div className="bg-[#fff9f2] border border-[#fdecd5] rounded-xl p-4 flex gap-3 items-start">
-                    <FiAlertCircle className="text-orange-600 flex-shrink-0 mt-0.5" />
-                    <div>
-                      <div className="text-[10px] font-extrabold text-orange-600 uppercase tracking-widest mb-1.5 leading-none">Insight</div>
-                      <div className="text-[12px] text-orange-800 leading-relaxed font-medium">High concentration in 1a detected. Consider rebalancing for better fault tolerance.</div>
+                  {karpenterSimulation?.az_distribution?.length > 0 && karpenterSimulation.az_distribution[0].pct > 60 && (
+                    <div className="bg-[#fff9f2] border border-[#fdecd5] rounded-xl p-4 flex gap-3 items-start">
+                      <FiAlertCircle className="text-orange-600 flex-shrink-0 mt-0.5" />
+                      <div>
+                        <div className="text-[10px] font-extrabold text-orange-600 uppercase tracking-widest mb-1.5 leading-none">Insight</div>
+                        <div className="text-[12px] text-orange-800 leading-relaxed font-medium">High concentration in {karpenterSimulation.az_distribution[0].az} ({karpenterSimulation.az_distribution[0].pct}%). Consider increasing topology spread for better fault tolerance.</div>
+                      </div>
                     </div>
-                  </div>
+                  )}
                 </div>
               </div>
             </div>
@@ -393,56 +407,52 @@ export default function RightSizingMonitoringDashboard() {
               <div className="flex justify-between items-center mb-6">
                 <div className="text-[11px] font-extrabold text-slate-600 uppercase tracking-widest">Guard & Stability Panel</div>
                 <div className="flex items-center gap-3">
-                  <span className="text-[11px] font-bold text-slate-500">Cluster Safety Score:</span>
-                  <span className="bg-emerald-50 text-emerald-600 border border-emerald-100 px-3 py-1 rounded-md text-[11px] font-extrabold">98/100</span>
+                  <span className="text-[11px] font-bold text-slate-500">Confidence:</span>
+                  <span className={`px-3 py-1 rounded-md text-[11px] font-extrabold border ${
+                    (karpenterSimulation?.confidence_score ?? 0) >= 80
+                      ? 'bg-emerald-50 text-emerald-600 border-emerald-100'
+                      : 'bg-orange-50 text-orange-600 border-orange-100'
+                  }`}>{karpenterSimulation?.confidence_score ?? '—'}/100</span>
                 </div>
               </div>
               <div className="grid grid-cols-6 gap-3">
                 <div className="bg-slate-50 border border-slate-100 rounded-xl p-4 flex flex-col justify-center">
                   <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-2 leading-none">Rollbacks (24H)</div>
-                  <div className="text-[16px] font-extrabold text-slate-800 leading-none">0</div>
+                  <div className="text-[16px] font-extrabold text-slate-800 leading-none">{rebalancingActions.filter(a => a.status === 'rolled_back').length}</div>
                 </div>
                 <div className="bg-slate-50 border border-slate-100 rounded-xl p-4 flex flex-col justify-center">
-                  <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-2 leading-none">Guard Triggers</div>
-                  <div className="text-[16px] font-extrabold text-orange-500 leading-none">2</div>
+                  <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-2 leading-none">Actions (24H)</div>
+                  <div className="text-[16px] font-extrabold text-indigo-500 leading-none">{rebalancingActions.length}</div>
                 </div>
-                <div className="bg-emerald-50 border border-emerald-100 rounded-xl p-4 flex flex-col justify-center">
-                  <div className="text-[11px] font-bold text-emerald-500 uppercase tracking-wider mb-2 leading-none">Circuit Breaker</div>
-                  <div className="text-[13px] font-extrabold text-emerald-600 leading-none tracking-wide">HEALTHY</div>
-                </div>
-                <div className="bg-slate-50 border border-slate-100 rounded-xl p-4 flex flex-col justify-center">
-                  <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-2 leading-none">Max Concurrent</div>
-                  <div className="text-[16px] font-extrabold text-slate-800 leading-none">5</div>
+                <div className={`${(karpenterSimulation?.provisioning_failures ?? 0) === 0 ? 'bg-emerald-50 border-emerald-100' : 'bg-orange-50 border-orange-100'} rounded-xl p-4 flex flex-col justify-center`}>
+                  <div className={`text-[11px] font-bold uppercase tracking-wider mb-2 leading-none ${(karpenterSimulation?.provisioning_failures ?? 0) === 0 ? 'text-emerald-500' : 'text-orange-500'}`}>Prov. Failures</div>
+                  <div className={`text-[16px] font-extrabold leading-none ${(karpenterSimulation?.provisioning_failures ?? 0) === 0 ? 'text-emerald-600' : 'text-orange-600'}`}>{karpenterSimulation?.provisioning_failures ?? 0}</div>
                 </div>
                 <div className="bg-slate-50 border border-slate-100 rounded-xl p-4 flex flex-col justify-center">
-                  <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-2 leading-none">Currently Running</div>
-                  <div className="text-[16px] font-extrabold text-slate-800 leading-none">1</div>
+                  <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-2 leading-none">Sim Cycles</div>
+                  <div className="text-[16px] font-extrabold text-slate-800 leading-none">{karpenterSimulation?.cycles_to_converge ?? '—'}</div>
                 </div>
                 <div className="bg-slate-50 border border-slate-100 rounded-xl p-4 flex flex-col justify-center">
-                  <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-2 leading-none">Queue Length</div>
-                  <div className="text-[16px] font-extrabold text-slate-800 leading-none">3</div>
+                  <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-2 leading-none">Topology Spread</div>
+                  <div className="text-[16px] font-extrabold text-slate-800 leading-none">{karpenterSimulation?.topology_spread ?? '—'}</div>
+                </div>
+                <div className="bg-slate-50 border border-slate-100 rounded-xl p-4 flex flex-col justify-center">
+                  <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-2 leading-none">Fragmentation</div>
+                  <div className="text-[16px] font-extrabold text-slate-800 leading-none">{karpenterSimulation?.scheduler_fragmentation_pct != null ? `${karpenterSimulation.scheduler_fragmentation_pct}%` : '—'}</div>
                 </div>
               </div>
             </div>
 
             {/* ACTIVE NODE MIGRATIONS */}
             <div className="bg-white rounded-xl border border-slate-200 shadow-[0_2px_4px_rgba(0,0,0,0.02)] overflow-hidden p-6 pb-12">
-              <div className="text-[11px] font-extrabold text-slate-600 uppercase tracking-widest mb-10 flex items-center gap-2">
+              <div className="text-[11px] font-extrabold text-slate-600 uppercase tracking-widest mb-6 flex items-center gap-2">
                 <span className="relative flex h-2 w-2">
-                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                  <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                  <span className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${rebalancingActions.some(a => a.status === 'in_progress') ? 'bg-orange-400' : 'bg-emerald-400'}`}></span>
+                  <span className={`relative inline-flex rounded-full h-2 w-2 ${rebalancingActions.some(a => a.status === 'in_progress') ? 'bg-orange-500' : 'bg-emerald-500'}`}></span>
                 </span>
-                ACTIVE NODE MIGRATIONS <span className="text-slate-400 lowercase normal-case">(0 migrations)</span>
+                ACTIVE NODE MIGRATIONS <span className="text-slate-400 lowercase normal-case">({rebalancingActions.filter(a => a.status === 'in_progress').length} active)</span>
               </div>
-              <div className="border border-dashed border-slate-200 rounded-xl p-16 flex flex-col items-center justify-center text-center max-w-2xl mx-auto">
-                <div className="w-12 h-12 rounded-full bg-slate-50 border border-slate-100 flex items-center justify-center mb-4">
-                  <svg className="w-5 h-5 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
-                  </svg>
-                </div>
-                <div className="text-[14px] font-bold text-slate-800 mb-2">No Active Migrations</div>
-                <div className="text-[12px] text-slate-500 font-medium">The cluster is currently stable and no nodes are being replaced.</div>
-              </div>
+              <RebalancingTimeline clusterId={selectedClusterId} />
             </div>
 
             {/* RESOURCE ALLOCATION BY INSTANCE FAMILY */}
@@ -457,75 +467,87 @@ export default function RightSizingMonitoringDashboard() {
           <div className="flex flex-col gap-6">
 
             {/* NEXT TARGET */}
-            <div className="bg-white rounded-xl border border-slate-200 shadow-[0_2px_4px_rgba(0,0,0,0.02)] overflow-hidden">
-              <div className="flex justify-between items-center px-6 py-4 border-b border-slate-100">
-                <div className="text-[11px] font-extrabold text-slate-600 uppercase tracking-widest">Next Target</div>
-                <span className="bg-orange-50 text-orange-600 px-2.5 py-1 rounded text-[9px] font-bold uppercase tracking-wider border border-orange-100">Ready</span>
-              </div>
-              <div className="p-6">
-                <div className="bg-slate-50 border border-slate-100 rounded-xl p-4 mb-6 flex items-center gap-4">
-                  <div className="w-10 h-10 rounded-lg bg-orange-100 text-orange-600 flex items-center justify-center shrink-0 border border-orange-200">
-                    <FiServer size={18} />
+            {(() => {
+              const nextTarget = statelessNodes.find(n => n.savings > 0) || statefulNodes.find(n => n.savings > 0);
+              return (
+                <div className="bg-white rounded-xl border border-slate-200 shadow-[0_2px_4px_rgba(0,0,0,0.02)] overflow-hidden">
+                  <div className="flex justify-between items-center px-6 py-4 border-b border-slate-100">
+                    <div className="text-[11px] font-extrabold text-slate-600 uppercase tracking-widest">Next Target</div>
+                    {nextTarget ? (
+                      <span className="bg-orange-50 text-orange-600 px-2.5 py-1 rounded text-[9px] font-bold uppercase tracking-wider border border-orange-100">Ready</span>
+                    ) : (
+                      <span className="bg-slate-50 text-slate-400 px-2.5 py-1 rounded text-[9px] font-bold uppercase tracking-wider border border-slate-100">None</span>
+                    )}
                   </div>
-                  <div>
-                    <div className="text-[12px] font-extrabold text-slate-800 leading-none mb-1.5">prod-data-api-v2</div>
-                    <div className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider leading-none">AWS-US-EAST-1 (VPC-04281)</div>
+                  <div className="p-6">
+                    {nextTarget ? (
+                      <>
+                        <div className="bg-slate-50 border border-slate-100 rounded-xl p-4 mb-6 flex items-center gap-4">
+                          <div className="w-10 h-10 rounded-lg bg-orange-100 text-orange-600 flex items-center justify-center shrink-0 border border-orange-200">
+                            <FiServer size={18} />
+                          </div>
+                          <div>
+                            <div className="text-[12px] font-extrabold text-slate-800 leading-none mb-1.5">{nextTarget.name}</div>
+                            <div className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider leading-none">{nextTarget.current} → {nextTarget.recommended}</div>
+                          </div>
+                        </div>
+                        <div className="flex flex-col gap-4 mb-8">
+                          <div className="flex justify-between items-center">
+                            <span className="text-[12px] text-slate-500 font-bold uppercase tracking-wider">Proposed Type</span>
+                            <span className="text-[13px] font-extrabold text-slate-800">{nextTarget.recommended}</span>
+                          </div>
+                          <div className="flex justify-between items-center">
+                            <span className="text-[12px] text-slate-500 font-bold uppercase tracking-wider">Monthly Savings</span>
+                            <span className="text-[13px] font-extrabold text-emerald-500">+${nextTarget.savings}/mo</span>
+                          </div>
+                          <div className="flex justify-between items-center">
+                            <span className="text-[12px] text-slate-500 font-bold uppercase tracking-wider">Confidence</span>
+                            <span className={`text-[12px] font-bold flex items-center gap-1.5 ${nextTarget.confidence >= 70 ? 'text-emerald-500' : 'text-orange-500'}`}>
+                              {nextTarget.confidence >= 70 ? <FiCheckCircle size={14} /> : <FiAlertTriangle size={14} />} {nextTarget.confidence}%
+                            </span>
+                          </div>
+                        </div>
+                      </>
+                    ) : (
+                      <div className="text-center py-8 text-[12px] text-slate-400 font-medium">All nodes are optimally sized.</div>
+                    )}
                   </div>
                 </div>
+              );
+            })()}
 
-                <div className="flex flex-col gap-4 mb-8">
-                  <div className="flex justify-between items-center">
-                    <span className="text-[12px] text-slate-500 font-bold uppercase tracking-wider">Proposed Family</span>
-                    <span className="text-[13px] font-extrabold text-slate-800">c6g.2xlarge</span>
-                  </div>
-                  <div className="flex justify-between items-center">
-                    <span className="text-[12px] text-slate-500 font-bold uppercase tracking-wider">Annual Savings</span>
-                    <span className="text-[13px] font-extrabold text-emerald-500">+$4,280</span>
-                  </div>
-                  <div className="flex justify-between items-center">
-                    <span className="text-[12px] text-slate-500 font-bold uppercase tracking-wider">Risk Assessment</span>
-                    <span className="text-[12px] font-bold text-orange-500 flex items-center gap-1.5"><FiAlertTriangle size={14} className="mb-0.5" /> Low-Medium</span>
-                  </div>
-                </div>
-
-                <button className="w-full bg-[#1e293b] hover:bg-[#0f172a] text-white font-bold py-3 px-4 rounded-xl text-[12px] transition-colors shadow-sm cursor-pointer">
-                  Apply Recommendations
-                </button>
-              </div>
-            </div>
-
-            {/* STABILIZATION STATUS */}
+            {/* SIMULATION STATUS */}
             <div className="bg-white rounded-xl border border-slate-200 shadow-[0_2px_4px_rgba(0,0,0,0.02)] overflow-hidden">
               <div className="px-6 py-4 border-b border-slate-100">
-                <div className="text-[11px] font-extrabold text-slate-600 uppercase tracking-widest">Stabilization Status</div>
+                <div className="text-[11px] font-extrabold text-slate-600 uppercase tracking-widest">Simulation Status</div>
               </div>
               <div className="p-6 flex flex-col gap-6">
 
                 <div className="relative pl-7">
-                  <div className="absolute left-0 top-1.5 w-2.5 h-2.5 rounded-full bg-emerald-500"></div>
-                  <div className="text-[12px] font-bold text-slate-800 mb-1 leading-none">Scaling Metrics</div>
-                  <div className="text-[11px] text-slate-500 font-medium">Within 2% of baseline expectation.</div>
+                  <div className={`absolute left-0 top-1.5 w-2.5 h-2.5 rounded-full ${karpenterSimulation?.converged ? 'bg-emerald-500' : 'bg-orange-400'}`}></div>
+                  <div className="text-[12px] font-bold text-slate-800 mb-1 leading-none">Convergence</div>
+                  <div className="text-[11px] text-slate-500 font-medium">{karpenterSimulation?.converged ? `Converged in ${karpenterSimulation.cycles_to_converge} cycles` : karpenterSimulation?.timed_out ? 'Timed out' : 'Pending simulation'}</div>
                 </div>
 
                 <div className="relative pl-7">
-                  <div className="absolute left-0 top-1.5 w-2.5 h-2.5 rounded-full bg-emerald-500"></div>
-                  <div className="text-[12px] font-bold text-slate-800 mb-1 leading-none">Compute Optimizer</div>
-                  <div className="text-[11px] text-slate-500 font-medium">Data integrity verified (Last 24h).</div>
+                  <div className={`absolute left-0 top-1.5 w-2.5 h-2.5 rounded-full ${(karpenterSimulation?.pending_pods_peak ?? 0) === 0 ? 'bg-emerald-500' : 'bg-orange-400'}`}></div>
+                  <div className="text-[12px] font-bold text-slate-800 mb-1 leading-none">Pod Scheduling</div>
+                  <div className="text-[11px] text-slate-500 font-medium">{karpenterSimulation ? `${karpenterSimulation.total_pods_packed}/${karpenterSimulation.total_pods_in_cluster} pods packed (${karpenterSimulation.pending_pods_peak} peak pending)` : 'Data pending'}</div>
                 </div>
 
                 <div className="relative pl-7">
-                  <div className="absolute left-0 top-1.5 w-2.5 h-2.5 rounded-full bg-orange-400"></div>
-                  <div className="text-[12px] font-bold text-slate-800 mb-1 leading-none">Traffic Re-routing</div>
-                  <div className="text-[11px] text-slate-500 font-medium">Syncing nodes in sub-region-1c...</div>
+                  <div className={`absolute left-0 top-1.5 w-2.5 h-2.5 rounded-full ${(karpenterSimulation?.nodes_eliminated ?? 0) > 0 ? 'bg-emerald-500' : 'bg-slate-300'}`}></div>
+                  <div className="text-[12px] font-bold text-slate-800 mb-1 leading-none">Consolidation</div>
+                  <div className="text-[11px] text-slate-500 font-medium">{karpenterSimulation ? `${karpenterSimulation.current_node_count} → ${karpenterSimulation.total_node_count} nodes (${karpenterSimulation.nodes_eliminated} eliminated)` : 'Data pending'}</div>
                 </div>
 
                 <div className="mt-4 pt-6 border-t border-slate-100">
                   <div className="flex justify-between items-center mb-3">
-                    <span className="text-[10px] font-extrabold text-slate-500 uppercase tracking-widest">Process Health</span>
-                    <span className="text-[11px] font-extrabold text-slate-800">88%</span>
+                    <span className="text-[10px] font-extrabold text-slate-500 uppercase tracking-widest">Savings</span>
+                    <span className="text-[11px] font-extrabold text-emerald-600">{karpenterSimulation ? `$${karpenterSimulation.monthly_savings}/mo` : '—'}</span>
                   </div>
                   <div className="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden">
-                    <div className="h-full bg-orange-500 rounded-full" style={{ width: '88%' }}></div>
+                    <div className="h-full bg-emerald-500 rounded-full" style={{ width: `${karpenterSimulation?.current_monthly_cost > 0 ? Math.min(100, Math.round(karpenterSimulation.monthly_savings / karpenterSimulation.current_monthly_cost * 100)) : 0}%` }}></div>
                   </div>
                 </div>
 
@@ -533,25 +555,37 @@ export default function RightSizingMonitoringDashboard() {
             </div>
 
             {/* LIVE UPDATES */}
-            <div className="bg-[#fff9f9] rounded-xl border border-[#fee2e2] shadow-[0_2px_4px_rgba(0,0,0,0.02)] overflow-hidden">
-              <div className="px-5 py-3 border-b border-[#fee2e2]">
-                <div className="text-[10px] font-extrabold text-[#ef4444] uppercase tracking-widest flex items-center gap-2">
+            <div className={`rounded-xl border shadow-[0_2px_4px_rgba(0,0,0,0.02)] overflow-hidden ${
+              rebalancingActions.length > 0 ? 'bg-[#fff9f9] border-[#fee2e2]' : 'bg-white border-slate-200'
+            }`}>
+              <div className={`px-5 py-3 border-b ${rebalancingActions.length > 0 ? 'border-[#fee2e2]' : 'border-slate-100'}`}>
+                <div className={`text-[10px] font-extrabold uppercase tracking-widest flex items-center gap-2 ${rebalancingActions.length > 0 ? 'text-[#ef4444]' : 'text-slate-500'}`}>
                   <span className="relative flex h-1.5 w-1.5">
-                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
-                    <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-red-500"></span>
+                    <span className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${rebalancingActions.length > 0 ? 'bg-red-400' : 'bg-slate-300'}`}></span>
+                    <span className={`relative inline-flex rounded-full h-1.5 w-1.5 ${rebalancingActions.length > 0 ? 'bg-red-500' : 'bg-slate-400'}`}></span>
                   </span>
-                  LIVE UPDATES
+                  RECENT ACTIVITY
                 </div>
               </div>
-              <div className="p-5 flex flex-col gap-4 bg-[#fff5f5]">
-                <div className="flex gap-3 text-[11px]">
-                  <span className="font-extrabold text-slate-800 whitespace-nowrap pt-0.5">14:21:45</span>
-                  <span className="text-slate-600 leading-relaxed font-medium">Instance <span className="font-bold text-slate-700">i-0a2b4c6e8f</span> successfully drained</span>
-                </div>
-                <div className="flex gap-3 text-[11px]">
-                  <span className="font-extrabold text-slate-800 whitespace-nowrap pt-0.5">14:19:30</span>
-                  <span className="text-slate-600 leading-relaxed font-medium">Spot capacity verified for <span className="font-bold">c6g.xlarge</span></span>
-                </div>
+              <div className={`p-5 flex flex-col gap-4 ${rebalancingActions.length > 0 ? 'bg-[#fff5f5]' : 'bg-white'}`}>
+                {rebalancingActions.length > 0 ? rebalancingActions.slice(0, 4).map((action, i) => (
+                  <div key={action.id || i} className="flex gap-3 text-[11px]">
+                    <span className="font-extrabold text-slate-800 whitespace-nowrap pt-0.5">
+                      {action.created_at ? new Date(action.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—'}
+                    </span>
+                    <span className="text-slate-600 leading-relaxed font-medium">
+                      <span className={`inline-block w-1.5 h-1.5 rounded-full mr-1.5 ${
+                        action.status === 'completed' ? 'bg-emerald-500'
+                        : action.status === 'in_progress' ? 'bg-orange-500'
+                        : action.status === 'failed' ? 'bg-red-500'
+                        : 'bg-slate-400'
+                      }`}></span>
+                      {action.action_type || 'rebalance'} — <span className="font-bold text-slate-700">{action.status}</span>
+                    </span>
+                  </div>
+                )) : (
+                  <div className="text-[11px] text-slate-400 font-medium text-center py-2">No recent activity</div>
+                )}
               </div>
             </div>
 

@@ -33,10 +33,10 @@ class AgentInjectorService:
     into discovered EKS clusters.
     """
 
-    AGENT_IMAGE = "atharva608/spot-optimizer-agent:latest"
+    AGENT_IMAGE = "atharva608/spot-optimizer-agent:1.1.6"
     # NOTE: orchestrator image not yet published separately; using agent image
     # with ROLE=orchestrator env var until atharva608/spot-optimizer-orchestrator is built.
-    ORCHESTRATOR_IMAGE = "atharva608/spot-optimizer-agent:latest"
+    ORCHESTRATOR_IMAGE = "atharva608/spot-optimizer-agent:1.1.6"
     NAMESPACE = "spot-optimizer"
     
     # AWS policy for cluster admin access
@@ -45,7 +45,8 @@ class AgentInjectorService:
     def __init__(self, db_session):
         self.db = db_session
         self.backend_role_arn = os.getenv('AWS_BACKEND_ROLE_ARN')
-        self.backend_url = os.getenv('BACKEND_PUBLIC_URL', 'https://localhost:8000')
+        from backend.core.redis_client import get_backend_public_url
+        self.backend_url = get_backend_public_url()
 
         # If role ARN is missing, try to detect it
         if not self.backend_role_arn:
@@ -1403,6 +1404,25 @@ class AgentInjectorService:
                                                 )
                                             )
                                         ),
+                                        # BACKWARD COMPATIBILITY: Provide API_TOKEN and API_URL for config.py validation
+                                        k8s_client.V1EnvVar(
+                                            name="API_TOKEN",
+                                            value_from=k8s_client.V1EnvVarSource(
+                                                secret_key_ref=k8s_client.V1SecretKeySelector(
+                                                    name="spot-agent-secret",
+                                                    key="API_KEY"
+                                                )
+                                            )
+                                        ),
+                                        k8s_client.V1EnvVar(
+                                            name="API_URL",
+                                            value_from=k8s_client.V1EnvVarSource(
+                                                config_map_key_ref=k8s_client.V1ConfigMapKeySelector(
+                                                    name="spot-agent-config",
+                                                    key="BACKEND_URL"
+                                                )
+                                            )
+                                        ),
                                     ],
                                     resources=k8s_client.V1ResourceRequirements(
                                         requests={"cpu": "100m", "memory": "128Mi"},
@@ -1469,10 +1489,12 @@ class AgentInjectorService:
         cluster_ca_data: str,
         role_arn: str,
         external_id: str,
-        region: str
+        region: str,
+        remove_karpenter: bool = False,
     ) -> Dict:
         """
         Uninstall the agent from the cluster.
+        When remove_karpenter=True, also removes Karpenter namespace + CRDs.
         """
         try:
             logger.info(f"Starting agent uninstallation for cluster {cluster_name}")
@@ -1490,12 +1512,13 @@ class AgentInjectorService:
                 region=region
             )
 
-            # Step 3: Remove agent resources
+            # Step 3: Remove agent resources (and optionally Karpenter)
             logger.info("Removing agent resources...")
             self._remove_agent_resources(
                 cluster_endpoint=cluster_endpoint,
                 cluster_ca_data=cluster_ca_data,
-                k8s_token=k8s_token
+                k8s_token=k8s_token,
+                remove_karpenter=remove_karpenter,
             )
 
             return {
@@ -1652,10 +1675,13 @@ class AgentInjectorService:
         self,
         cluster_endpoint: str,
         cluster_ca_data: str,
-        k8s_token: str
+        k8s_token: str,
+        remove_karpenter: bool = False,
     ) -> None:
         """
         Remove agent resources from the cluster using Kubernetes API.
+        When remove_karpenter=True, also removes the karpenter namespace
+        and Karpenter CRDs (NodePools, EC2NodeClasses, NodeClaims).
         """
         try:
             from kubernetes import client as k8s_client
@@ -1683,6 +1709,78 @@ class AgentInjectorService:
             api_client = ApiClient(configuration=config)
             core_v1 = k8s_client.CoreV1Api(api_client)
             rbac_v1 = k8s_client.RbacAuthorizationV1Api(api_client)
+
+            # ── Karpenter cleanup (before agent, so agent can still relay if needed) ──
+            if remove_karpenter:
+                custom_api = k8s_client.CustomObjectsApi(api_client)
+
+                # Strip finalizers then delete Karpenter CRDs.
+                # Karpenter adds finalizers (karpenter.sh/termination,
+                # karpenter.k8s.aws/termination) that only its controller
+                # can process.  We must remove them BEFORE deleting the
+                # karpenter namespace, otherwise the objects get stuck in
+                # Terminating forever.
+                karpenter_crds = [
+                    ("karpenter.sh", "v1", "nodeclaims"),
+                    ("karpenter.sh", "v1", "nodepools"),
+                    ("karpenter.k8s.aws", "v1", "ec2nodeclasses"),
+                ]
+                for group, version, plural in karpenter_crds:
+                    try:
+                        items = custom_api.list_cluster_custom_object(group, version, plural)
+                        for item in items.get("items", []):
+                            name = item["metadata"]["name"]
+                            # 1. Strip finalizers so deletion isn't blocked
+                            if item["metadata"].get("finalizers"):
+                                try:
+                                    custom_api.patch_cluster_custom_object(
+                                        group, version, plural, name,
+                                        {"metadata": {"finalizers": None}},
+                                    )
+                                    logger.info(f"Stripped finalizers from {plural}/{name}")
+                                except k8s_client.exceptions.ApiException:
+                                    pass  # best-effort
+                            # 2. Delete the object
+                            try:
+                                custom_api.delete_cluster_custom_object(group, version, plural, name)
+                                logger.info(f"Deleted {plural}/{name}")
+                            except k8s_client.exceptions.ApiException as e:
+                                if e.status != 404:
+                                    logger.warning(f"Error deleting {plural}/{name}: {e}")
+                    except k8s_client.exceptions.ApiException as e:
+                        if e.status != 404:
+                            logger.warning(f"Error listing {plural}: {e}")
+                    except Exception as e:
+                        logger.warning(f"Error cleaning up {plural}: {e}")
+
+                # Clean up orphaned Karpenter-managed nodes that are NotReady
+                # (EC2 instance terminated but K8s node object lingers)
+                try:
+                    nodes = core_v1.list_node()
+                    for node in nodes.items:
+                        labels = node.metadata.labels or {}
+                        if "karpenter.sh/nodepool" not in labels:
+                            continue  # not Karpenter-managed
+                        conditions = {c.type: c.status for c in (node.status.conditions or [])}
+                        if conditions.get("Ready") != "True":
+                            logger.info(f"Removing orphaned Karpenter node {node.metadata.name}...")
+                            try:
+                                core_v1.delete_node(name=node.metadata.name)
+                            except k8s_client.exceptions.ApiException as e:
+                                if e.status != 404:
+                                    logger.warning(f"Error deleting orphan node {node.metadata.name}: {e}")
+                except Exception as e:
+                    logger.warning(f"Orphan node cleanup error (non-fatal): {e}")
+
+                # Delete karpenter namespace (cascades to all karpenter pods/services)
+                try:
+                    logger.info("Deleting namespace karpenter...")
+                    core_v1.delete_namespace(name="karpenter")
+                except k8s_client.exceptions.ApiException as e:
+                    if e.status != 404:
+                        logger.warning(f"Error deleting karpenter namespace: {e}")
+
+            # ── Agent cleanup ──
 
             # 1. Delete Namespace (cascades to Deployment/DaemonSet/Secret/ConfigMap/ServiceAccount)
             try:
@@ -1930,6 +2028,12 @@ class AgentInjectorService:
                             "ec2:DescribeAvailabilityZones",
                             "pricing:GetProducts",
                         ]
+                    },
+                    {
+                        "Sid": "AllowSSMForAMIResolution",
+                        "Effect": "Allow",
+                        "Resource": f"arn:aws:ssm:{region}::parameter/aws/service/*",
+                        "Action": ["ssm:GetParameter"],
                     },
                     {
                         "Sid": "AllowIAMInstanceProfile",

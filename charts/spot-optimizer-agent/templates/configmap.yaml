@@ -5,7 +5,7 @@ metadata:
   namespace: {{ .Values.namespace }}
 data:
   BACKEND_URL: {{ .Values.config.backendUrl | quote }}
-  BACKEND_WS_URL: {{ .Values.config.backendUrl | replace "http" "ws" | replace "https" "wss" | quote }}
+  BACKEND_WS_URL: {{ .Values.config.backendUrl | replace "https://" "wss://" | replace "http://" "ws://" | quote }}
   CLUSTER_ID: {{ .Values.config.clusterId | quote }}
   IMDS_POLL_INTERVAL: "5"
   AGENT_POLL_INTERVAL: "15"

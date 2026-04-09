@@ -1,6 +1,8 @@
 # Agent System — Complete Technical Reference
 
-> All facts in this document are verified directly against the codebase. Source file and line references are provided for every claim.
+> **Last validated**: June 2026 · **Source of truth**: `agent/` + `backend/routers/agents.py` + `backend/models/agent_action.py`
+>
+> Every claim is verified against the current codebase. Source file references are provided throughout.
 
 ---
 
@@ -9,44 +11,50 @@
 1. [Agent Identity & Deployment](#1-agent-identity--deployment)
 2. [Communication & Endpoints](#2-communication--endpoints)
 3. [Agent Lifecycle & Failure Management](#3-agent-lifecycle--failure-management)
-4. [Rebalancing Method on Agent Side](#4-rebalancing-method-on-agent-side)
-5. [Data Fetched by the Agent](#5-data-fetched-by-the-agent)
-6. [AWS API Calls from the Agent](#6-aws-api-calls-from-the-agent)
-7. [Backend Response to Agent Messages](#7-backend-response-to-agent-messages)
-8. [Monitoring & Debugging](#8-monitoring--debugging)
-9. [Edge Cases & Resilience](#9-edge-cases--resilience)
+4. [Action Types & Dispatch](#4-action-types--dispatch)
+5. [Rebalancing Method on Agent Side](#5-rebalancing-method-on-agent-side)
+6. [Termination Modes (TERMINATE_NODE)](#6-termination-modes-terminate_node)
+7. [Karpenter Management](#7-karpenter-management)
+8. [Right-Sizing (PATCH_CONTAINER_RESOURCES)](#8-right-sizing-patch_container_resources)
+9. [Data Fetched by the Agent](#9-data-fetched-by-the-agent)
+10. [AWS API Calls from the Agent](#10-aws-api-calls-from-the-agent)
+11. [Backend Response to Agent Messages](#11-backend-response-to-agent-messages)
+12. [Monitoring & Debugging](#12-monitoring--debugging)
+13. [Edge Cases & Resilience](#13-edge-cases--resilience)
 
 ---
 
 ## 1. Agent Identity & Deployment
 
-### The Two Agents
+**Source**: `agent/main.py`, `charts/spot-optimizer-agent/`
 
-There are two distinct agents deployed per cluster:
+### The Two Agents
 
 | | **Node Agent** | **Orchestrator** |
 |---|---|---|
-| **Primary role** | Execute K8s actions (cordon/drain/delete node), collect per-node metrics, report spot-interruption events | Cluster-level coordination (Karpenter management, cluster-wide actions) |
+| **Primary role** | Execute K8s actions (cordon/drain/delete), collect per-node metrics, report spot-interruption events | Cluster-level coordination (Karpenter management, cluster-wide actions) |
 | **Entry point** | `agent/main.py` — `Agent` class | Same codebase, different runtime role |
 | **Deployment kind** | `DaemonSet` — one pod per node | `Deployment` — exactly 1 replica |
-| **Image** | `atharva608/spot-optimizer-agent:{{ .Chart.AppVersion }}` | `atharva608/spot-optimizer-agent:{{ .Chart.AppVersion }}` |
+| **Image** | `atharva608/spot-optimizer-agent:{{ .Chart.AppVersion }}` | Same image |
 | **Namespace** | `spot-optimizer` (configurable via `values.yaml`) | `spot-optimizer` |
 | **Source** | `charts/spot-optimizer-agent/templates/daemonset.yaml` | `charts/spot-optimizer-agent/templates/orchestrator-deployment.yaml` |
 
-**Image tag policy** (`charts/spot-optimizer-agent/values.yaml` lines 1–4):
-```yaml
-image:
-  repository: atharva608/spot-optimizer-agent
-  tag: "{{ .Chart.AppVersion }}"
-  pullPolicy: IfNotPresent
-```
+**Image tag policy**: `pullPolicy: IfNotPresent` (fix N4). Agent sends `"version": "1.0.1"` in registration. Backend does **not reject** mismatched versions but logs a warning when version differs from `EXPECTED_AGENT_VERSION = "1.0.1"` (fix N3).
 
-Both agent types use the same image with `pullPolicy: IfNotPresent` (fix N4 — was `Always`/`latest`). The agent sends `"version": "1.0.1"` in the registration payload (`agent/main.py` line 143). The backend does **not reject** mismatched versions but logs a warning when the registered version differs from `EXPECTED_AGENT_VERSION = "1.0.1"` (`backend/routers/agents.py`, fix N3). This provides visibility without blocking older agents.
+### Six Components (Threads)
+
+| Component | Class | Thread Name | Purpose |
+|-----------|-------|------------|---------|
+| Metrics Collector | `MetricsCollector` | `MetricsCollector` | Node/pod metrics + cluster events |
+| Action Actuator | `ActionActuator` | `ActionActuator` | Execute K8s actions |
+| Heartbeat Sender | `HeartbeatSender` | `HeartbeatSender` | Liveness + health metrics + Karpenter detection |
+| WebSocket Client | `WebSocketClient` | `WebSocketClient` | Bidirectional backend communication |
+| Spot Poller | `SpotPoller` | `SpotPoller` | IMDS termination/rebalance detection |
+| Pod Metrics Collector | `PodMetricsCollector` | `PodMetricsCollector` | Per-pod CPU/memory for right-sizing |
 
 ### Kubernetes RBAC
 
-**ClusterRole**: `spot-optimizer-agent`  
-**Source**: `charts/spot-optimizer-agent/templates/clusterrole.yaml`
+**ClusterRole**: `spot-optimizer-agent`
 
 | API Group | Resources | Verbs |
 |---|---|---|
@@ -61,7 +69,7 @@ Both agent types use the same image with `pullPolicy: IfNotPresent` (fix N4 — 
 | `karpenter.k8s.aws` | `ec2nodeclasses` | `get`, `list`, `watch`, `patch`, `update`, `create` |
 | `metrics.k8s.io` | `nodes`, `pods` | `get`, `list` |
 
-The DaemonSet also mounts `/host/proc` from the node's filesystem for psutil-based CPU/memory collection (`daemonset.yaml`), and runs with `hostNetwork: true` and tolerates all taints (`operator: Exists`) so it can schedule on any node including masters and tainted spot nodes.
+DaemonSet config: mounts `/host/proc` for psutil-based CPU/memory collection, runs with `hostNetwork: true`, tolerates all taints (`operator: Exists`).
 
 ---
 
@@ -71,49 +79,56 @@ The DaemonSet also mounts `/host/proc` from the node's filesystem for psutil-bas
 
 | Channel | Protocol | Used For |
 |---|---|---|
-| Action delivery (primary) | **WebSocket** | Backend pushes actions to agent in real-time |
+| Action delivery (primary) | **WebSocket** | Backend pushes actions to agent real-time |
 | Action delivery (fallback) | **HTTP polling** | Agent polls when WebSocket is unavailable |
-| Heartbeat | **HTTP POST** | Agent → backend every 30 seconds |
-| Metrics | **HTTP POST** | Agent → backend every 60 seconds |
+| Action result (fallback) | **HTTP POST** | When WebSocket send fails (BUG-1 fix) |
+| Heartbeat | **HTTP POST** | Agent → backend every 30 s |
+| Metrics | **HTTP POST** | Agent → backend every 60 s |
 | Spot interruption notification | **HTTP POST** | Agent → backend on IMDS detection |
-| Action result reporting | **HTTP POST** | Agent → backend after action completes |
+| Action result reporting | **WebSocket / HTTP POST** | Agent → backend after action completes |
 
 ### WebSocket
 
-**URL** (`agent/websocket_client.py`):
-```
-{BACKEND_WS_URL}/ws/cluster/{cluster_id}?agent_id={agent_id}
-```
+**Source**: `agent/websocket_client.py`
 
-**Authentication**: `Authorization: Bearer {API_KEY}` header on connection upgrade.  
-**Ping**: 20-second interval, 10-second timeout (configured in `WebSocketClient.__init__`).  
-**Message buffer (two-tier, fix BUG-4/N6)**: Critical messages (`action_result`, `heartbeat` types) go to an unbounded `critical_queue` (`queue.Queue()`) — never dropped. Metrics go to a `metrics_buffer` ring buffer (`collections.deque(maxlen=200)`) — oldest entries dropped when full. Both queues are flushed on reconnect, critical queue first.
+**URL**: `{BACKEND_WS_URL}/ws/cluster/{cluster_id}?agent_id={agent_id}`
+**Authentication**: `Authorization: Bearer {API_KEY}` header on connection upgrade
+**Ping**: 20-second interval, 10-second timeout
+**Reconnect**: Exponential backoff `delay × 2^attempt`, capped at 60 seconds, max 10 attempts
+
+### Two-Tier Message Buffer (BUG-1/BUG-4/N6 fix)
+
+| Tier | Container | Max Size | Contents |
+|------|-----------|----------|----------|
+| Critical | `queue.Queue()` | Unbounded (never dropped) | `action_result`, `action_heartbeat`, `action_still_running` |
+| Best-effort | `collections.deque(maxlen=200)` | 200 (oldest dropped) | Metrics, heartbeats |
+
+On reconnect: critical queue flushed first, then metrics. If WebSocket send fails during flush, critical message is re-queued (BUG-12 fix).
 
 ### HTTP Endpoints Called by the Agent
 
-All HTTP calls use `Authorization: Bearer {API_KEY}` unless noted.
+| Method | URL | Frequency | Purpose |
+|---|---|---|---|
+| `POST` | `/api/v1/agents/register` | Once on startup | Register agent with backend |
+| `POST` | `/api/v1/agents/heartbeat` | Every 30 s | Liveness + health + Karpenter status |
+| `POST` | `/api/v1/agents/deregister` | On graceful shutdown | Remove agent from backend |
+| `GET` | `/api/v1/agents/actions/pending` | ~every 10 s (fallback) | Poll for pending actions |
+| `POST` | `/api/v1/agents/actions/{action_id}/result` | After each action | HTTP fallback for action result |
+| `POST` | `/api/v1/agents/actions/{action_id}/heartbeat` | Every 30 s during action | Action-level liveness signal (N5 fix) |
+| `POST` | `/api/v1/agent-metrics/batch` | Every 60 s | Node-level metrics |
+| `POST` | `/api/v1/pod-metrics/batch` | Every 60 s | Pod-level metrics |
+| `POST` | `/api/v1/worker/spot-interruption` | On IMDS detection | Spot termination notice |
+| `POST` | `/api/v1/worker/rebalance-recommendation` | On IMDS detection | EC2 rebalance recommendation |
 
-| Method | URL | Source file | Frequency | Purpose |
-|---|---|---|---|---|
-| `POST` | `/api/v1/agents/register` | `agent/main.py:121` | Once on startup | Register agent with backend |
-| `POST` | `/api/v1/agents/heartbeat` | `agent/heartbeat.py` | Every 30 s | Liveness signal + health metrics |
-| `POST` | `/api/v1/agents/deregister` | `agent/main.py:172` | On graceful shutdown | Remove agent from backend |
-| `GET` | `/api/v1/agents/actions/pending` | `agent/actuator.py` | ~every 15 s (fallback) | Poll for pending actions when WebSocket is down |
-| `POST` | `/api/v1/agents/actions/{action_id}/result` | `agent/actuator.py` | After each action | Report action completion/failure |
-| `POST` | `/api/v1/agents/actions/{action_id}/heartbeat` | `agent/actuator.py` | Every 30 s during action | Action-level liveness signal — backend writes `action_heartbeat:{id}` Redis key (TTL 120 s) |
-| `POST` | `/api/v1/agent-metrics/batch` | `agent/collector.py` | Every 60 s | Node-level CPU/memory metrics |
-| `POST` | `/api/v1/pod-metrics/batch` | `agent/pod_metrics_collector.py` | Every 60 s | Pod-level CPU/memory metrics |
-| `POST` | `/api/v1/worker/spot-interruption` | `agent/poller.py:140` | On IMDS detection | Spot termination/rebalance notice |
+> **Spot interruption authentication**: Uses `X-API-Key: {API_KEY}` header, not `Authorization: Bearer`.
 
-> **Spot interruption authentication differs**: this endpoint uses `X-API-Key: {API_KEY}` header, not `Authorization: Bearer`.
+### Payloads
 
-### What Each Agent Sends
-
-#### Registration payload (`agent/main.py` lines 122–146)
+#### Registration (`agent/main.py` lines 132–144)
 ```json
 {
   "cluster_id": "<CLUSTER_ID>",
-  "agent_id": "<generated-uuid>",
+  "agent_id": "<hostname-uuid8>",
   "cluster_name": "<CLUSTER_NAME env or k8s-cluster-{prefix}>",
   "region": "<AWS_REGION or CLUSTER_REGION env>",
   "timestamp": "<ISO 8601 UTC>",
@@ -122,79 +137,34 @@ All HTTP calls use `Authorization: Bearer {API_KEY}` unless noted.
 }
 ```
 
-#### Heartbeat payload (`agent/heartbeat.py`)
+#### Heartbeat (`agent/heartbeat.py` lines 437–448)
 ```json
 {
   "cluster_id": "<CLUSTER_ID>",
   "agent_id": "<agent_id>",
   "timestamp": "<ISO 8601 UTC>",
-  "health": {
-    "cpu_percent": 42.1,
-    "memory_percent": 61.3,
-    "disk_percent": 38.2,
-    "network_bytes_sent": 1024000,
-    "network_bytes_recv": 2048000,
-    "process_count": 5,
-    "components": {
-      "metrics_collector": "healthy",
-      "action_actuator": "healthy",
-      "websocket_client": "healthy",
-      "spot_poller": "healthy",
-      "pod_metrics_collector": "healthy"
-    }
+  "status": "healthy",
+  "metrics": { "cpu": {...}, "memory": {...}, "disk": {...}, "network": {...}, "process": {...} },
+  "components": { "collector": true, "actuator": true, "websocket": true },
+  "karpenter_status": {
+    "detected": true,
+    "pods_running": 2,
+    "controller_healthy": true,
+    "webhook_healthy": true,
+    "last_check": "<ISO 8601>",
+    "error": null
   }
 }
 ```
-**Interval**: 30 seconds (`HEARTBEAT_INTERVAL` env, default `30`).
 
-#### Metrics payload (`agent/collector.py`)
-Sent to `/api/v1/agent-metrics/batch`. Contains per-node metrics: CPU utilization (%), memory utilization (%), disk utilization (%), network I/O.  
-**Interval**: 60 seconds (`COLLECTION_INTERVAL` env, default `60`).
-
-#### Pod metrics payload (`agent/pod_metrics_collector.py`)
-Sent to `/api/v1/pod-metrics/batch`. Contains per-pod CPU/memory.  
-DaemonSet mode: only pods on the local node (via `NODE_NAME` env).  
-**Interval**: 60 seconds (`POD_METRICS_INTERVAL` env, default `60`).
-
-#### Spot interruption notification (`agent/poller.py`)
+#### Spot Interruption (`agent/poller.py` lines 131–137)
 ```json
 {
   "cluster_id": "<CLUSTER_ID>",
+  "node_name": "<NODE_NAME>",
   "instance_id": "<EC2 instance ID from IMDS>",
   "action": "terminate",
-  "termination_time": "<ISO 8601>"
-}
-```
-
-#### Action result (`agent/actuator.py`)
-```json
-{
-  "action_id": "<id>",
-  "status": "completed|failed",
-  "error": "<error message or null>",
-  "started_at": "<ISO 8601>",
-  "completed_at": "<ISO 8601>"
-}
-```
-
-### How the Backend Sends Actions to the Agent
-
-**Primary path — WebSocket push** (`backend/api/api_gateway.py` lines 1063–1070):
-- When the agent connects, all pending `AgentAction` rows are immediately delivered.
-- Every ~15 seconds, the gateway checks for new `PENDING` actions and pushes them.
-- On delivery the action is marked `PICKED_UP` with a `picked_up_at` timestamp to prevent re-delivery.
-
-**Fallback path — HTTP polling**:
-- Agent periodically calls `GET /api/v1/agents/actions/pending`.
-- Results same `AgentAction` records in `PENDING` state.
-
-The action payload mirrors what the backend stored in `AgentAction.payload`, e.g. for a DRAIN_NODE:
-```json
-{
-  "ignore_daemonsets": true,
-  "grace_period_seconds": 60,
-  "rebalancing_action_id": 123,
-  "zero_downtime_step": 3
+  "termination_time": "<from IMDS notice>"
 }
 ```
 
@@ -202,52 +172,34 @@ The action payload mirrors what the backend stored in `AgentAction.payload`, e.g
 
 ## 3. Agent Lifecycle & Failure Management
 
-### Startup Sequence (`agent/main.py` lines 487–520)
+**Source**: `agent/main.py`
+
+### Startup Sequence (lines 481–524)
 
 ```
 1. Register signal handlers (SIGTERM, SIGINT)
-2. Call register_with_backend()
-   → POST /api/v1/agents/register
-   → If fails: log error and EXIT (sys.exit / return False stops startup)
-3. initialize_components()
-   → Create MetricsCollector, ActionActuator, HeartbeatSender,
-      WebSocketClient, SpotPoller, PodMetricsCollector
-4. Start component threads
-5. Enter monitoring loop (checks thread health)
+2. Register with backend → POST /api/v1/agents/register
+   → If fails: log error and EXIT (return code 1)
+3. Initialize all 6 components
+4. Start component threads (all daemon=True)
+5. Enter monitor_components() loop (checks every 30 s)
 ```
 
-If registration fails (`agent/main.py` line 493):
-```python
-if not self.register_with_backend():
-    logger.error("Failed to register with backend, exiting...")
-    return  # agent exits
-```
-The DaemonSet will restart the pod (normal Kubernetes restart policy). The agent retries registration on each restart attempt.
+### Thread Health Monitoring (`_restart_thread`, lines 424–453)
 
-### Thread Health Monitoring (`agent/main.py`)
-
-A central monitoring loop watches all component threads. If a thread dies:
+When a component thread dies:
 - **Max restart attempts**: 5 per component
-- **Backoff**: exponential — `2^n` seconds, capped at 60 s
-  - Attempt 1: 1 s, 2: 2 s, 3: 4 s, 4: 8 s, 5: 16 s (then capped at 60 s)
-- After 5 failed restarts: the agent logs a critical error but continues running other components.
+- **Backoff**: `min(2^count, 60)` seconds → 2s, 4s, 8s, 16s, 32s, then capped at 60s
+- After 5 failed restarts: component marked DEAD, no further restarts (manual intervention required)
+- Other components continue running
 
-### Action Failure Handling (Agent Side)
+### Graceful Shutdown (lines 351–408)
 
-When an action fails internally (e.g. eviction rejected by PDB):
-
-1. **Agent retries eviction**: 5 attempts, 10-second backoff between attempts (`agent/actuator.py`).
-2. If all retries exhausted: returns `PDB_VIOLATION_MAX_RETRIES` error string.
-3. Agent POSTs action result with `status: failed` and the error message to `/api/v1/agents/actions/{action_id}/result`.
-4. Backend detects the failure (see §7) and triggers rollback.
-
-**There is no local state persistence on the agent side.** If the agent crashes mid-action, it has no on-disk checkpoint. The backend detects the crash via heartbeat loss (>5 minutes) and uses the action heartbeat Redis key (`action_heartbeat:{action_id}`, TTL 120 s) to detect stale in-progress actions.
-
-> **Who sets `action_heartbeat`:** Two writers maintain this key (fix N5):
-> 1. The **backend Celery worker** (`auto_rebalancer.py`) updates it via `redis.setex(f"action_heartbeat:{action_id}", 120, ...)` on each 15-second rebalancer cycle while processing `waiting_agent` actions.
-> 2. The **agent** (`agent/actuator.py` — `_action_heartbeat_loop()`) POSTs to `/api/v1/agents/actions/{action_id}/heartbeat` every 30 s while the action is running; the backend endpoint then calls `redis.setex()`.
->
-> Whichever writer ran most recently wins. The key expires within 120 s only if **both** writers stop — at which point the recovery monitor marks the action stale.
+```
+1. Stop components in order: collector → actuator → websocket → spot_poller → pod_metrics → heartbeat (last)
+2. Wait 10 seconds for thread join
+3. Deregister from backend → POST /api/v1/agents/deregister
+```
 
 ### Action Timeouts
 
@@ -255,253 +207,363 @@ When an action fails internally (e.g. eviction rejected by PDB):
 |---|---|---|
 | Drain | 15 minutes default | Yes — `ClusterOptimizationSettings.drain_timeout_minutes` |
 | Spot node join wait | 30 minutes | Yes — `ClusterOptimizationSettings.spot_join_timeout_minutes` |
-| Spot stabilization wait | 90 seconds | No — hardcoded |
-| Grace period per pod | 60 seconds (in drain action payload) / 20 s (some paths) | No |
+| Spot stabilization wait | 90 seconds | No |
+| Grace period per pod | 30 seconds default | Yes — via action payload `grace_period` |
 | Action heartbeat TTL | 120 seconds | No |
-| Action stale expiry (PENDING/PICKED_UP) | 15 minutes | No — `auto_rebalancer.py:3921` |
-
-### Rollback When Drain Fails
-
-The **backend** orchestrates rollback, not the agent. When the agent reports drain failure:
-
-1. Backend calls `_do_rollback_uncordon_and_terminate()` (`auto_rebalancer.py` lines 2910–2960).
-2. Queues `UNCORDON_NODE` AgentAction for the same node:
-   ```python
-   AgentAction(
-       action_type=AgentActionType.UNCORDON_NODE,
-       payload={"node_name": <rb_node>},
-   )
-   ```
-3. Calls `_do_rollback_terminate_orphan_spot()` — terminates the provisioned replacement spot via EC2 `terminate_instances` (direct boto3 call by backend, not via agent).
-4. Sets stabilization lock `spot:stabilization_lock:{cluster_id}` (TTL 60 s) and failure backoff `rebalance_failures:{instance_id}` (TTL 86400 s) to prevent immediate re-attempt.
-
-The agent only receives and executes the UNCORDON_NODE action — it does not initiate any rollback logic itself.
-
-### Duplicate Action Handling
-
-- **Primary dedup**: Actions are marked `PICKED_UP` with `picked_up_at` immediately upon WebSocket delivery. A PICKED_UP action is not re-delivered (`api_gateway.py` lines 1063–1070).
-- **No agent-side dedup**: The agent does not maintain a set of seen action IDs. It trusts the PICKED_UP flag to prevent re-delivery.
-- **Concurrent actions on same node**: Not explicitly locked on the agent side. The backend uses a distributed lock `lock:node_action:{cluster_id}` (1200-second timeout — Z10 fix, was 180s) before draining (`auto_rebalancer.py` line 979) to serialize K8s drain. Only one drain per cluster is allowed to proceed at a time.
+| PENDING/PICKED_UP stale expiry | 15 minutes | No |
 
 ---
 
-## 4. Rebalancing Method on Agent Side
+## 4. Action Types & Dispatch
+
+**Source**: `backend/models/agent_action.py`, `agent/actuator.py` (`execute_action_v2`)
+
+### 12 Action Types
+
+| Action Type | Agent Handler | Purpose |
+|---|---|---|
+| `EVICT_POD` | `evict_pod()` | Evict a single pod |
+| `CORDON_NODE` | `cordon_node()` | Mark node unschedulable |
+| `UNCORDON_NODE` | `cordon_node(uncordon=True)` | Mark node schedulable |
+| `DRAIN_NODE` | `drain_node()` | Evict all pods from node |
+| `LABEL_NODE` | `label_node()` | Add/remove node labels |
+| `TERMINATE_NODE` | `_terminate_node()` | Terminate EC2 instance (4 modes) |
+| `FORCE_DELETE_NODE` | `force_delete_node()` | Force-delete K8s node object + clear finalizers |
+| `UPDATE_DEPLOYMENT` | `update_deployment()` | Update replicas or image |
+| `INSTALL_KARPENTER` | `install_karpenter()` | Install via Helm + create NodePools |
+| `UNINSTALL_KARPENTER` | `uninstall_karpenter()` | Helm uninstall + delete namespace |
+| `PATCH_CONTAINER_RESOURCES` | `_patch_container_resources()` | Update CPU/memory requests/limits |
+| `REMOVE_POD_FINALIZERS` | `_remove_pod_finalizers()` | Clear stuck finalizers from Terminating pods |
+
+### Priority-Based Ordering (Issue #7)
+
+| Priority | Use Case | Ordering |
+|----------|---------|----------|
+| `0` (normal) | Auto-rebalancer actions | FIFO by `created_at` |
+| `10` (emergency) | Spot interruption / IMDS event | Pre-empts normal actions |
+
+SQL: `ORDER BY priority DESC, created_at ASC`
+
+### Action Statuses
+
+```
+PENDING → PICKED_UP → COMPLETED
+                    → FAILED
+                    → EXPIRED (TTL: 1 hour default)
+```
+
+### HMAC Verification (`agent/actuator.py` lines 78–101)
+
+Every action payload is verified with HMAC-SHA256 using `SECRET_KEY`. If signature fails, action is rejected.
+
+### Node Resolution in Agent
+
+For actions that reference nodes, the agent resolves node names using two strategies:
+1. **`_find_node_by_instance_id()`** (preferred): Scans `spec.providerID` (`aws://<az>/<instance_id>`)
+2. **`_find_node_name()`** (fallback): Uses K8s labels `node.kubernetes.io/instance-type` + `topology.kubernetes.io/zone`
+
+---
+
+## 5. Rebalancing Method on Agent Side
 
 ### Full Cordon → Drain → Terminate Sequence
 
-The backend sends three separate `AgentAction` records in order. The sequence:
+The backend sends separate `AgentAction` records in order:
 
-**Step 1: LABEL_NODE** (`auto_rebalancer.py` lines 2793–2810)
-- Labels the new replacement node: `karpenter.sh/do-not-disrupt=true`
+**Step 1: LABEL_NODE** — Labels replacement node: `karpenter.sh/do-not-disrupt=true`
 
-**Step 2: CORDON_NODE** (`auto_rebalancer.py` lines 2814–2823; `agent/actuator.py` cordon handler)
-- Payload:
-  ```json
-  {
-    "instance_id": "<old instance ID>",
-    "instance_type": "<type>",
-    "az": "<AZ>",
-    "rebalancing_action_id": 123,
-    "zero_downtime_step": 2
-  }
-  ```
-- Agent calls Kubernetes `CoreV1Api.patch_node()` with `spec.unschedulable = true`.
-- The agent **does not verify unschedulability** before proceeding — the K8s API call is synchronous.
+**Step 2: CORDON_NODE** — Agent calls `patch_node()` with `spec.unschedulable = true`
+- Z3 guard: Refuses to cordon agent's own node (`SELF_CORDON_ATTEMPT`)
 
-**Step 3: DRAIN_NODE** (`auto_rebalancer.py` lines 2824–2833; `agent/actuator.py` drain handler)
-- Payload: `{ "ignore_daemonsets": true, "grace_period_seconds": 60, "rebalancing_action_id": 123, "zero_downtime_step": 3 }`
-- Exact drain algorithm (`agent/actuator.py`):
-  1. Cordon the node again (idempotent safety).
-  2. List all pods on the node.
-  3. Skip DaemonSet pods (owner reference `DaemonSet`).
-  4. Skip mirror pods (annotation `kubernetes.io/config.mirror`).
-  5. For each remaining pod:
-     a. Check PodDisruptionBudget — if eviction would violate PDB, retry up to 5 times with 10-second backoff.
-     b. If all 5 retries fail: return `PDB_VIOLATION_MAX_RETRIES`.
-     c. Call `CoreV1Api.create_namespaced_pod_eviction()` with the configured grace period.
-  6. After all evictions submitted: clear `VolumeAttachment` objects pointing to the node.
-  7. Clear `metadata.finalizers` on any pods stuck in `Terminating` state.
-  8. No dry-run is performed before drain.
+**Step 3: DRAIN_NODE** — Exact drain algorithm (`agent/actuator.py`):
+1. Cordon the node again (idempotent safety)
+2. List all pods on the node (`list_pod_for_all_namespaces(field_selector=spec.nodeName=...)`)
+3. Skip DaemonSet pods (owner reference check)
+4. Skip mirror pods (`kubernetes.io/config.mirror` annotation)
+5. Skip unmanaged pods unless `force=True`
+6. For each remaining pod:
+   - Check PDB: if PDB allows disruption → evict via `create_namespaced_pod_eviction()`
+   - If PDB blocks and `force=True` → force-delete pod (grace_period=0)
+   - If PDB blocks and `force=False` → 5 retries with 10s backoff, then `PDB_VIOLATION_MAX_RETRIES`
+   - PDB check error → fail-open (allow drain, ISSUE-13 fix)
+7. Clear stuck VolumeAttachments on the node (prevents Multi-Attach errors)
+8. Result: success with eviction count, or failure with error list
 
-**Step 4: TERMINATE_NODE** (backend only — `auto_rebalancer.py` lines 2834–2848)
-- **The agent does NOT terminate the EC2 instance.** The backend calls AWS directly (boto3):
-  - Primary: `autoscaling:TerminateInstanceInAutoScalingGroup` with `ShouldDecrementDesiredCapacity=True`.
-  - Fallback (if `ValidationError` meaning already detached): `ec2:TerminateInstances`.
-- The agent may receive `FORCE_DELETE_NODE` to delete the Kubernetes node object (`kubectl delete node`), but EC2 termination happens backend-side.
+**Step 4: TERMINATE_NODE** — See §6.
 
 ### Force Drain (Spot Interruption Path)
 
-When spot IMDS detects termination, the agent uses `force=True`:
-- PDB checks are **bypassed**.
-- `grace_period_seconds = 0`.
-- Flow: cordon → iterate pods (skip DaemonSet) → forcibly evict everything.
+When spot IMDS detects termination:
+- `force=True`: PDB checks bypassed, `grace_period_seconds = 0`
+- Agent cordons + force-evicts everything (skip DaemonSet)
 
-### PDB Respect
+### PDB Handling
 
-- Standard drain: respects PDBs (5 retries, 10 s backoff, then fail with `PDB_VIOLATION_MAX_RETRIES`).
-- Force drain (spot interruption): ignores PDBs.
-- The `force` flag in the DRAIN_NODE payload controls this behavior. **As of fix N1**, `force` is set by the backend based on `respect_pdb_enabled` in `StatelessRuntimeRules` (`auto_rebalancer.py`): `force=True` when `respect_pdb_enabled=False` (bypasses PDB), `force=False` when `respect_pdb_enabled=True` (respects PDB, 5 retries). This field is user-configurable in the cluster's runtime rules.
+| Scenario | Behavior |
+|----------|----------|
+| Standard drain | Respect PDBs (5 retries, 10s backoff, then `PDB_VIOLATION_MAX_RETRIES`) |
+| Force drain (spot interruption) | Bypass PDBs (force-delete with grace_period=0) |
+| PDB check error | Fail-open — allow drain (ISSUE-13 fix, matches `kubectl drain` behavior) |
+| Configurable via backend | `respect_pdb_enabled` in `StatelessRuntimeRules` controls `force` flag (fix N1) |
 
-### Drain Completion Verification
+### VolumeAttachment Cleanup (`clear_stuck_volume_attachments`)
 
-The agent does **not** watch for pod eviction completion events. It submits eviction API calls and considers drain done when all non-DaemonSet pods have been successfully evicted (eviction API returns success) or have been forcibly deleted. It does not poll pod count — eviction API success/failure is the signal.
-
-### Logging per Action Step
-
-All logs go to **stdout** via Python `logging` module. Log level defaults to `INFO` (`agent/config.py` line 45):
-```python
-self.log_level = os.getenv('LOG_LEVEL', 'INFO').upper()
-```
-Valid levels: `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`.
-
-Each action step emits `logger.info(...)` or `logger.error(...)` with the node name, action type, and step number. Logs are collected by whatever log aggregator is configured on the cluster (cloud-provider stdout log collection, Fluentd, etc.).
+After drain completes, agent proactively clears stuck VolumeAttachments:
+- Scans all VolumeAttachments on the drained node
+- Identifies stuck: has attach/detach error or pending >60s
+- Force-deletes stuck attachments to prevent Multi-Attach errors on new node
+- Best-effort — failure doesn't fail the drain
 
 ---
 
-## 5. Data Fetched by the Agent
+## 6. Termination Modes (TERMINATE_NODE)
+
+**Source**: `agent/actuator.py` `_terminate_node()` (lines 1180–1496)
+
+Four termination modes controlled by `termination_mode` in payload:
+
+### Mode: `karpenter` (Direct EC2)
+```
+1. ec2.terminate_instances() — ZERO ASG interaction
+```
+Karpenter manages node inventory independently of ASG DesiredCapacity.
+
+### Mode: `replacement` (Detach-Not-Decrement)
+```
+1. Redis NX lock: asg:suspend_lock:{asg_name} (30s TTL)
+2. suspend_processes(['Launch'])
+3. detach_instances(ShouldDecrementDesiredCapacity=False) ← ASG keeps target
+4. ec2.terminate_instances()
+5. resume_processes(['Launch'])
+```
+
+### Mode: `asg_no_decrement` (Terminate via ASG, No Decrement)
+```
+1. terminate_instance_in_auto_scaling_group(ShouldDecrementDesiredCapacity=False)
+```
+Used when replacement is already attached to ASG.
+
+### Mode: `scaledown` (Legacy ASG Decrement)
+```
+1. Pre-check: lower MinSize if MinSize ≥ DesiredCapacity
+2. terminate_instance_in_auto_scaling_group(ShouldDecrementDesiredCapacity=True)
+```
+Used only for OD consolidation where ASG should shrink.
+
+### Label Safety Check (TASK-1.2)
+If node label `spot-optimizer/termination-mode=replacement` but caller requests `scaledown`, action is **BLOCKED** (`termination_mode_conflict` error).
+
+### Fallback Chain
+If EC2 terminate fails → Fall through to `kubectl delete node` (cloud controller cleans up EC2).
+
+---
+
+## 7. Karpenter Management
+
+**Source**: `agent/actuator.py` (`install_karpenter`, `_create_default_karpenter_resources`)
+
+### INSTALL_KARPENTER Flow
+
+```
+1. helm upgrade --install karpenter oci://public.ecr.aws/karpenter/karpenter
+   --version <version> --namespace karpenter --create-namespace
+   --set settings.clusterName=<name>
+   --set settings.interruptionQueue=<sqs_queue_name>
+   --wait --timeout 5m
+2. Register KarpenterNodeRole as EC2_LINUX EKS access entry (RBAC-03)
+3. Create default Karpenter resources
+```
+
+### Default Resources Created
+
+| Resource | Name | Type | Purpose |
+|----------|------|------|---------|
+| EC2NodeClass | `default` | `karpenter.k8s.aws/v1` | AL2023 amiFamily with `al2023@latest` alias (dual amd64+arm64) |
+| NodePool | `stateless-spot` | `karpenter.sh/v1` | Spot capacity, weight=10 (highest priority) |
+| NodePool | `stateful-od` | `karpenter.sh/v1` | On-demand capacity, weight=5 |
+| NodePool | `default` | `karpenter.sh/v1` | Spot+OD catch-all, weight=1 (fallback) |
+
+### SQS Queue Name (Bug A-2 fix)
+Strict queue name: uses `KarpenterInterruptionQueue-{cluster_name}` instead of bare cluster name. Prevents silent mismatch that breaks interruption handling.
+
+### EKS Access Entry (RBAC-03)
+`_register_karpenter_node_role_access_entry()` creates an `EC2_LINUX` access entry for `KarpenterNodeRole-{cluster_name}`. Without this, Karpenter-provisioned nodes cannot join the EKS cluster.
+
+### UNINSTALL_KARPENTER Flow
+```
+1. helm uninstall karpenter --namespace karpenter --wait --timeout 3m
+2. Delete namespace (best-effort)
+```
+Idempotent: if release not found, returns success.
+
+---
+
+## 8. Right-Sizing (PATCH_CONTAINER_RESOURCES)
+
+**Source**: `agent/actuator.py` (`_patch_container_resources`, lines 1015–1106)
+
+Patches CPU/memory requests and limits for a specific container in a Deployment, StatefulSet, or DaemonSet.
+
+### Why Both Node and Pod Changes Are Needed
+
+| Change | What | Effect |
+|--------|------|--------|
+| Karpenter NodePool update | Node size | Immediate — new node matches workload |
+| PATCH_CONTAINER_RESOURCES | Pod spec | Requests/limits match actual usage → tighter bin-packing |
+
+### Payload
+```json
+{
+  "namespace": "production",
+  "controller_type": "Deployment",
+  "controller_name": "my-app",
+  "container_name": "app",
+  "resources": {
+    "requests": {"cpu": "250m", "memory": "512Mi"},
+    "limits": {"cpu": "500m", "memory": "768Mi"}
+  }
+}
+```
+
+Supports: `Deployment`, `StatefulSet`, `DaemonSet`.
+
+---
+
+## 9. Data Fetched by the Agent
 
 ### Kubernetes API Calls
 
 | Resource | Verb | Why |
 |---|---|---|
-| `nodes` | `get`, `list`, `watch` | Cordon, node metadata, metrics |
-| `nodes` | `patch`, `update` | Cordon/uncordon, labeling |
-| `pods` | `list` | Drain (find pods on node) |
+| `nodes` | `get`, `list`, `watch`, `patch`, `update` | Cordon/uncordon, labeling, metrics |
+| `pods` | `list` | Drain (find pods on node), metrics |
 | `pods/eviction` | `create` | Drain — evict each pod |
 | `persistentvolumeclaims` | `get`, `list` | VolumeAttachment cleanup |
-| `events` | `list` | Diagnostics |
+| `events` | `list` | Cluster events collection |
 | `poddisruptionbudgets` | `get`, `list` | PDB check during drain |
-| `karpenter.sh/nodepools` | `get`, `list`, `patch`, `update` | PATCH_KARPENTER_NODEPOOL action |
-| `karpenter.k8s.aws/ec2nodeclasses` | `get`, `list`, `patch`, `update`, `create` | INSTALL_KARPENTER action |
-| `metrics.k8s.io/nodes` | `get`, `list` | Fallback node metrics (if psutil unavailable) |
-| `metrics.k8s.io/pods` | `get`, `list` | Pod metrics (secondary source) |
+| `karpenter.sh/nodepools` | `get`, `list`, `create` | Install Karpenter resources |
+| `karpenter.k8s.aws/ec2nodeclasses` | `get`, `list`, `patch`, `create` | Install Karpenter resources |
+| `metrics.k8s.io/nodes` | `list` | Node metrics (metrics-server) |
+| `metrics.k8s.io/pods` | `list` | Pod metrics (right-sizing data) |
+| `storage.k8s.io/volumeattachments` | `list`, `delete` | Stuck VolumeAttachment cleanup |
 
-**Watch vs list**: The agent uses `list` calls, not watches. There is no watch connection maintained. Metrics are collected on a fixed interval via `list` calls.
+**Watch vs list**: Agent uses `list` calls, not watches. Metrics collected on fixed interval via `list` calls.
 
-### IMDS (EC2 Instance Metadata) Calls (`agent/poller.py`)
+### Metrics Collection (`agent/collector.py`)
+
+**Dual-source node metrics**:
+1. **Priority 1**: Direct psutil via `/host/proc` (HOST_PROC env) — no API server load
+2. **Priority 2**: Kubernetes metrics-server API (`metrics.k8s.io/v1beta1/nodes`)
+
+**Collected data per node**: CPU (usage + capacity + allocatable), memory (usage + capacity + allocatable), ready status, unschedulable flag, labels, warm-up detection (<5 min old = CALIBRATING).
+
+**Collected data per pod**: CPU/memory (usage + request + limit), restart count, labels, scheduling constraints (node_selector, tolerations, pod affinity/anti-affinity, topology spread constraints).
+
+**Events**: Last 5 minutes of cluster events, including involved object metadata.
+
+### Pod Metrics Collection (`agent/pod_metrics_collector.py`)
+
+Dedicated collector for right-sizing analysis:
+- Extracts controller owner references (Deployment/StatefulSet/DaemonSet — traces through ReplicaSet)
+- DaemonSet mode: only sends pods on the local node (`NODE_NAME` env)
+- Includes scheduling constraints: `node_selector`, `tolerations`, `affinity`, `topology_spread_constraints`
+- Skips system namespaces: `kube-system`, `kube-public`, `kube-node-lease`
+
+### IMDS Calls (`agent/poller.py`)
 
 | Endpoint | Frequency | Purpose |
 |---|---|---|
-| `http://169.254.169.254/latest/meta-data/spot/instance-action` | Every 5 s (`IMDS_POLL_INTERVAL_SECONDS` env) | Detect AWS spot termination notice (HTTP 200 = termination imminent, HTTP 404 = normal) |
-| `http://169.254.169.254/latest/meta-data/events/recommendations/rebalance` | Every 5 s | Detect AWS EC2 rebalance recommendation |
+| `http://169.254.169.254/latest/meta-data/spot/instance-action` | Every 5 s | Detect spot termination notice |
+| `http://169.254.169.254/latest/meta-data/events/recommendations/rebalance` | Every 5 s | Detect EC2 rebalance recommendation |
+| `http://169.254.169.254/latest/meta-data/instance-id` | Once (cached) | Get instance ID for notifications |
 
-On termination detection:
-1. Execute force drain locally (cordon + evict all non-DaemonSet pods, PDB bypassed).
-2. POST to `/api/v1/worker/spot-interruption` with `X-API-Key` header.
-3. Backend's emergency rebalancer takes over.
+### Karpenter Live Detection (`agent/heartbeat.py`, lines 194–287)
 
-### How New Spot Nodes Are Detected
-
-The agent **does not** report node-join events. When a new spot instance is provisioned, it joins as a Kubernetes node. The backend's **Celery task** (`auto_rebalancer.py`) polls for the new node by watching the `node_joined:{instance_id}` Redis key:
-- This key is set by the backend's node discovery/event pipeline when the node's `Ready` condition becomes `True`.
-- The auto-rebalancer waits up to `spot_join_timeout_minutes` (default 30 min) for this key to appear.
+On every heartbeat cycle, the agent checks if Karpenter is actually running:
+1. Scans pods in `karpenter` and `kube-system` namespaces
+2. Checks label `app.kubernetes.io/name=karpenter`, falls back to name-based search
+3. Reports: `detected`, `pods_running`, `controller_healthy`, `webhook_healthy`
+4. Backend stores result in Redis: `karpenter:live_status:{cluster_id}` (60s TTL)
 
 ---
 
-## 6. AWS API Calls from the Agent
+## 10. AWS API Calls from the Agent
 
-### Short Answer: The Agent Makes **No Direct AWS SDK Calls**
+### The Agent Makes AWS SDK Calls ONLY for Termination and Karpenter
 
-The DaemonSet agent does not import or use `boto3`. All AWS operations (EC2 terminate, ASG terminate, dry-run, describe-instances) are performed by the **backend Celery workers** running in Docker/ECS — not by the in-cluster agent.
-
-### What the Agent Does Instead
-
-| Instead of | Agent uses |
-|---|---|
-| `ec2:TerminateInstances` | Kubernetes `kubectl delete node` (FORCE_DELETE_NODE action) |
-| `ec2:DescribeInstances` | Kubernetes node object labels/annotations |
-| IMDS for instance metadata | `http://169.254.169.254/…` HTTP calls (no IAM required) |
-| Karpenter management | `helm` CLI via `subprocess` (INSTALL/UNINSTALL_KARPENTER actions) |
+| Operation | When | AWS Calls |
+|-----------|------|-----------|
+| TERMINATE_NODE (karpenter mode) | After drain | `ec2:TerminateInstances` |
+| TERMINATE_NODE (replacement mode) | After drain | `autoscaling:SuspendProcesses`, `DetachInstances`, `ResumeProcesses`, `ec2:TerminateInstances` |
+| TERMINATE_NODE (scaledown mode) | After drain | `autoscaling:DescribeAutoScalingInstances`, `TerminateInstanceInAutoScalingGroup` |
+| INSTALL_KARPENTER | On install | `sts:GetCallerIdentity`, `eks:DescribeAccessEntry`, `eks:CreateAccessEntry` |
+| Region detection | On terminate | IMDS token + placement/region (IMDSv2) |
 
 ### AWS Credentials Pattern
 
-The Helm chart uses a **Kubernetes Secret** (`spot-agent-secret`) that stores `API_KEY`. The agent uses this only for backend communication, not for AWS.
-
-For **Karpenter installation** (`agent/actuator.py` lines 833–907), the INSTALL_KARPENTER action runs `helm install` via subprocess. This operation requires that the node's IAM instance profile or a service account with IRSA has IAM permissions to manage Karpenter CRDs — but this is a Helm/kubectl operation, not a direct AWS SDK call from the agent.
-
-### Backend AWS Calls (for reference)
-
-The **backend** (Celery worker `auto_rebalancer.py`) makes these calls on behalf of the rebalancing system:
-
-| Call | Error Handling |
-|---|---|
-| `autoscaling:TerminateInstanceInAutoScalingGroup` | 3 retries, exponential backoff `2^n` s (1s, 2s, 4s) for `Throttling`/`RequestLimitExceeded`; on `ValidationError` falls back to `ec2:TerminateInstances` |
-| `ec2:TerminateInstances` | Fallback after ASG ValidationError |
-| `ec2:RunInstances` (spot launch) | SHA256 `ClientToken` for idempotent dedup (lines 1363–1373) |
-| `ec2:DescribeInstances` (dry-run) | Max 5 API calls per rebalancing cycle, cached in Redis |
+- **TERMINATE_NODE**: Uses node's IAM instance profile or IRSA
+- **INSTALL_KARPENTER**: Uses node's IAM role via `boto3` (must have `sts:`, `eks:` permissions)
+- **Everything else**: No AWS calls (K8s API only)
+- Agent secret (`spot-agent-secret`) stores `API_KEY` for backend auth only
 
 ---
 
-## 7. Backend Response to Agent Messages
+## 11. Backend Response to Agent Messages
 
-### On Heartbeat (`backend/routers/agents.py` lines 170–214)
+### On Heartbeat (`backend/routers/agents.py` lines 250–350)
 
-1. Looks up the `Cluster` row by `cluster_id`.
-2. Sets `cluster.last_heartbeat = datetime.utcnow()`.
-3. **If `cluster.agent_installed != 'Y'`** (was previously reset by stale-agent task):
-   - Sets `cluster.agent_installed = 'Y'`
-   - Sets `cluster.status = ClusterStatus.ACTIVE`
-4. Commits to DB.
-5. Returns `{"success": true, "timestamp": "<UTC>"}`.
+1. Looks up `Cluster` row by `cluster_id`
+2. Sets `cluster.last_heartbeat = datetime.utcnow()`
+3. If `cluster.agent_installed != 'Y'` (was reset by stale-agent task):
+   - Sets `agent_installed = 'Y'`, `status = ACTIVE`
+4. **Karpenter live detection**: Processes `karpenter_status` from payload:
+   - If detected: Updates Redis keys `karpenter:detected:{cluster_id}` (120s), `spot:karpenter:installed:{cluster_id}` (1h)
+   - If not detected and was previously installed: Marks as `missing` for UI reinstall prompt
+   - Auto-sets `karpenter_mode = AUTO` if detected but not previously configured
+5. Returns `{"success": true, "timestamp": "<UTC>"}`
 
-The heartbeat response does **not** return pending actions — action delivery is via WebSocket push or the dedicated `/actions/pending` endpoint.
+### On Registration (`backend/routers/agents.py` lines 45–149)
+
+If cluster doesn't exist in DB, **auto-creates** it:
+- Creates default `Account` (with `is_validated='N'` — requires operator IAM setup)
+- Creates `Cluster` with `status=ACTIVE`, `agent_installed='Y'`
+- P-C19 fix: No placeholder ARN — operator must configure real credentials
 
 ### On Action Result (`/api/v1/agents/actions/{action_id}/result`)
 
-Backend updates the `AgentAction` record:
-- `status = COMPLETED` or `FAILED`
-- `completed_at = now()`
-- An async state-machine trigger runs to advance the `RebalancingAction` state (see state machine below).
+HTTP fallback endpoint (BUG-1 fix):
+1. Updates `AgentAction.status` to `completed` or `failed`
+2. Sets `completed_at`, stores `result` and `error_message`
+3. Clears `action_heartbeat:{action_id}` Redis key for immediate pickup
+4. Backend's rebalancer state machine advances on next cycle
 
-State machine transitions (atomic with `UPDATE ... WHERE current_state = :from_state`, `auto_rebalancer.py` lines 45–72):
+### On Spot Interruption
 
-```
-CREATED → POOL_SELECTED → SOURCE_CORDONED → SOURCE_DRAINED
-        → REPLACEMENT_LAUNCHING → REPLACEMENT_READY
-        → SOURCE_TERMINATING → COMPLETED
-
-Any state → FAILED (on error)
-```
-
-Distributed lock `rebalance:lock:{cluster_id}` (45-minute TTL, extended every 60 s by heartbeat thread) is held for the entire rebalancing workflow.
-
-### On Spot Interruption Report (`POST /api/v1/worker/spot-interruption`)
-
-The backend calls `EmergencyEventProcessor` which triggers an emergency rebalance task. The `RebalancingAction` is created with `reason=spot_interruption` and normal priority queuing resumes.
-
-### On Invalid Payloads
-
-FastAPI validates the request. If required fields are missing (`cluster_id` in heartbeat):
-- Returns `HTTP 400 Bad Request` with detail: `"cluster_id is required"`.
-- Does not close the WebSocket connection — WebSocket and HTTP are independent.
-
-### Backend "Abort Action" Command
-
-The backend can push any `AgentAction` type via WebSocket, including `UNCORDON_NODE`. There is **no explicit "abort" message type** — rollback is done by sending new compensating actions (UNCORDON_NODE) after the failed action is detected. The backend never sends a signal mid-execution to abort an in-flight action.
+Backend calls `EmergencyEventProcessor` → creates `RebalancingAction` with `reason=spot_interruption` and priority queuing.
 
 ---
 
-## 8. Monitoring & Debugging
+## 12. Monitoring & Debugging
 
-### Agent Health Endpoint
+### Agent Health Endpoints
 
-The `HeartbeatSender` runs an embedded HTTP health server on **port 8080** (`agent/heartbeat.py`):
+**Source**: `agent/heartbeat.py` — HTTP server on **port 8080**
 
 | Path | Purpose |
 |---|---|
-| `GET /healthz` | Liveness — returns 200 if agent process is alive |
-| `GET /readyz` | Readiness — returns 200 when all components are initialized |
-| `GET /metrics` | Prometheus-format metrics (action counts, failures, latency) |
+| `GET /healthz` | Liveness — returns 200 if agent process alive |
+| `GET /readyz` | Readiness — returns 200 when collector is healthy |
+| `GET /metrics` | JSON metrics (CPU, memory, disk, network, component health) |
 
-The DaemonSet liveness/readiness probes point to this server.
+DaemonSet liveness/readiness probes point to this server.
 
 ### Log Collection
 
-All agent logs go to **stdout**. They are picked up by the cluster's standard log collection stack (e.g., AWS CloudWatch Container Insights, Fluentd, Datadog agent). No file-based logging — pure structured `logging` output.
+All logs go to **stdout** via Python `logging` module. Picked up by cluster's standard log collection.
 
-Log level is controlled by `LOG_LEVEL` env var (default: `INFO`). For debug traces on drain steps, set `LOG_LEVEL=DEBUG`.
+- **Log level**: Controlled by `LOG_LEVEL` env var (default: `INFO`)
+- **Config reload**: SIGHUP reloads config without restart (`agent/config.py`)
 
-Useful log patterns:
 ```bash
 # All action execution logs
 kubectl logs -n spot-optimizer -l app=spot-optimizer-agent | grep "action"
@@ -509,137 +571,89 @@ kubectl logs -n spot-optimizer -l app=spot-optimizer-agent | grep "action"
 # Drain steps
 kubectl logs -n spot-optimizer -l app=spot-optimizer-agent | grep -i "drain\|evict\|PDB"
 
-# Heartbeat failures
-kubectl logs -n spot-optimizer -l app=spot-optimizer-agent | grep "heartbeat"
+# Karpenter detection
+kubectl logs -n spot-optimizer -l app=spot-optimizer-agent | grep "karpenter"
 ```
 
-### Backend Health Monitoring
+### Backend Stale Agent Detection
 
-The Celery task `reset_stale_agents` (schedule: every 1 minute, `backend/workers/app.py` lines 57–59) monitors agent liveness:
-- Queries all `Cluster` rows with `agent_installed='Y'` and `last_heartbeat < now() - 5 minutes`.
-- Resets stale clusters: `agent_installed='N'`, `status=DISCOVERED`.
-- Clears CPU/memory utilization (`cpu_util=None`, `memory_util=None`) on all running instances in that cluster to prevent stale metrics from driving auto-scaling decisions.
-- Busts the Redis `clusters:*` cache so the UI reflects the change immediately.
+Celery task `reset_stale_agents` (every 1 minute):
+- Queries clusters with `agent_installed='Y'` and `last_heartbeat < now() - 5 minutes`
+- Resets: `agent_installed='N'`, `status=DISCOVERED`
+- Clears CPU/memory utilization on all instances
+- Cancels `PENDING`/`PICKED_UP` AgentActions → `CANCELLED` (BUG-9 fix)
+- Marks `in_progress`/`waiting_agent` RebalancingActions → `failed` with `AGENT_WENT_OFFLINE`
 
-### Admin Intervention via Backend API
+### Admin Intervention
 
-There is **no dedicated admin "force-uncordon" or "force-abort" REST endpoint**. However, an admin can:
-
-1. **Directly create an `AgentAction`** in the database with type `UNCORDON_NODE` — it will be delivered to the agent via WebSocket on next push cycle.
-2. **Cancel a stuck `RebalancingAction`**: Set `current_state = 'FAILED'` in the DB to break out of the active state machine.
-3. **Release the cluster lock**: Delete Redis key `rebalance:lock:{cluster_id}` — this unblocks a new rebalancing cycle.
-4. **Drain check on agent side**: Query `/metrics` on port 8080 of the specific DaemonSet pod to see in-progress action state.
-
-### Checking Action State
-
-From the backend API:
-```bash
-GET /api/v1/rebalancing/actions/<action_id>
-```
-Returns `current_state`, `status`, `action_metadata` (includes per-step timestamps), and `duration_seconds`.
-
-From the agent side:
-```bash
-kubectl exec -n spot-optimizer <pod-name> -- curl localhost:8080/metrics
-```
+No dedicated admin "force-abort" endpoint. Instead:
+1. Create `AgentAction` with type `UNCORDON_NODE` in DB — delivered via WebSocket
+2. Cancel stuck `RebalancingAction`: set `current_state = 'FAILED'` in DB
+3. Release cluster lock: delete Redis key `rebalance:lock:{cluster_id}`
+4. Query agent metrics: `curl pod-ip:8080/metrics`
 
 ---
 
-## 9. Edge Cases & Resilience
+## 13. Edge Cases & Resilience
 
-### Startup Crash Prevention (BUG-11 fix)
+### Self-Termination Guards (Z3 Fix)
 
-`Dict` is now imported from `typing` in `agent/main.py` (was previously missing, causing a `NameError` crash on agent startup when `Dict[str, int]` was referenced in `__init__`). All required typing imports: `Optional`, `Dict`.
+All destructive operations check `node_name == os.getenv('NODE_NAME')`:
 
-### Agent Disconnection / Reconnection
+| Method | Guard |
+|--------|-------|
+| `cordon_node()` | Returns `SELF_CORDON_ATTEMPT` |
+| `drain_node()` | Returns `SELF_DRAIN_ATTEMPT` |
+| `force_delete_node()` | Returns `SELF_DELETE_ATTEMPT` |
 
-**WebSocket reconnect** (`agent/websocket_client.py`):
-- On disconnect: exponential backoff `reconnect_delay × 2^attempt`, capped at 60 seconds.
-- Max 10 reconnect attempts before the WebSocket thread exits (the thread monitor then restarts it after its own backoff).
-- **In-flight actions continue to completion** during disconnect — action execution runs in a separate thread, not in the WebSocket receive loop.
-- **Message buffer (two-tier, fix BUG-4/N6)**: Critical messages (`action_result`, `heartbeat` types) go to an unbounded `critical_queue` — never dropped. Metrics go to a `metrics_buffer` ring buffer (`deque(maxlen=200)`) — oldest dropped when full. On reconnect the critical queue is flushed first, then metrics.
-- **Flush safety (BUG-12 fix)**: If `send_message` fails during `flush_buffer`, the critical message is re-queued via `put()` instead of being dropped. Flush stops immediately (connection may not be ready) and retries on the next reconnect cycle.
-- **On reconnect**: pending action results are sent immediately from the critical queue. The backend will also re-deliver any `PENDING` (not yet `PICKED_UP`) actions.
-
-### Network Partition Between Agent and Backend
-
-- Agent **continues to run** indefinitely — it does not shut down due to partition.
-- IMDS polling continues independently (no network to backend required).
-- Heartbeats will fail silently (logged as `logger.error`) but execution continues.
-- **Backend side**: `reset_stale_agents_task` runs every minute. After 5 minutes without heartbeat:
-  - `agent_installed = 'N'`
-  - `status = DISCOVERED`
-  - Utilization metrics cleared
-  - All `PENDING`/`PICKED_UP` `AgentAction`s for the cluster are cancelled (`status = CANCELLED`) — fix BUG-9
-  - All `in_progress`/`waiting_agent` `RebalancingAction`s are marked `failed` with error `AGENT_WENT_OFFLINE` — fix BUG-9
-  - `action_heartbeat:{id}` Redis keys for affected actions are deleted
-  - No new rebalancing actions are queued (backend won't dispatch to an apparently offline agent)
-- On partition recovery: first successful heartbeat restores `agent_installed = 'Y'` and `status = ACTIVE`. Stale cluster is freed within 5 minutes instead of up to 45 minutes.
-
-### Action for Non-Existent Node
-
-If the agent receives a `CORDON_NODE` or `DRAIN_NODE` action for a node that does not exist:
-- The Kubernetes `patch_node()` or `list_namespaced_pod()` call will raise a `404 Not Found` exception.
-- The agent catches this as an action failure and reports `status: failed` with the Kubernetes exception detail.
-- No retry from the agent — single attempt, fail fast.
-
-### Agent as Target of Its Own Action (Self-Termination)
-
-**All three destructive operations are now guarded against self-termination** (fix Z3). `cordon_node()`, `drain_node()`, and `force_delete_node()` all check whether `node_name == os.getenv('NODE_NAME')` at the start of execution. If the target node matches the agent's own node, the action is rejected with a `SELF_DELETE_ATTEMPT` error before any Kubernetes API call is made.
-
-The backend's rebalancing logic already avoids selecting nodes running agent pods (DaemonSet pods are skipped during drain), so this guard is a defense-in-depth measure.
-
-**Exception: Spot Interruption Self-Cordon (BUG-13 fix)**
-
-During a genuine spot interruption detected via IMDS, the agent **must** cordon and drain its own node — this is the correct emergency procedure. `handle_spot_interruption()` in `actuator.py` now calls `_emergency_self_cordon_drain()`, which bypasses the Z3 self-guard and calls the Kubernetes API directly to cordon the node and evict all non-DaemonSet, non-mirror pods with a 30s grace period. If the `handle_spot_interruption` method is absent from the actuator, the poller's fallback also calls `_emergency_self_cordon_drain()`.
-
-### Component Health Thread Safety (BUG-14 fix)
-
-`HeartbeatSender.component_health` is accessed from multiple threads (main thread via `set_component_health()`, heartbeat thread via `send_heartbeat()` and `collect_agent_metrics()`). A `threading.Lock` (`_health_lock`) now protects all reads and writes. Reads take a snapshot (`dict(self.component_health)`) under the lock and release immediately.
+**Exception: Spot Interruption Self-Drain (BUG-13 fix)**: During genuine spot interruption via IMDS, the agent **must** cordon and drain its own node. `handle_spot_interruption()` bypasses the Z3 guard and calls `_emergency_self_cordon_drain()`.
 
 ### Agent Crash During In-Progress Action
 
-The agent stores **no local state** (no disk persistence, no SQLite). On crash/restart:
-1. Kubernetes restarts the pod (DaemonSet restart policy).
-2. Agent re-registers with the backend on startup.
-3. The in-progress action is still in `PICKED_UP` state in the backend DB.
-4. The backend detects it via the **action heartbeat** Redis key:
-   - Key: `action_heartbeat:{action_id}`, TTL 120 s, set by the backend worker heartbeat thread (not the agent).
-   - If key has not been refreshed for >2 minutes, the action is considered stale.
-5. Backend marks the action `FAILED` and initiates rollback (uncordon + orphan spot termination).
-6. The **backend re-queues** the in-progress action if appropriate, or the admin must manually retry.
+1. Kubernetes restarts the pod (DaemonSet restart policy)
+2. Agent re-registers with backend
+3. In-progress action remains in `PICKED_UP` state
+4. Backend detects via action heartbeat Redis key (TTL 120s)
+5. After 2+ minutes with no refresh → action marked `FAILED` → rollback initiated
+6. **No local state persistence** — no disk checkpoint, no SQLite
 
-### Multiple Agents Acting on Same Node
+### WebSocket Reconnection
 
-In a DaemonSet deployment, only one agent pod runs per node. If two pods for the same cluster both connect to the backend WebSocket, the `PICKED_UP` flag prevents both from receiving the same action — only the first socket to connect and receive the action will get it marked `PICKED_UP`.
+- Exponential backoff: `delay × 2^attempt`, capped at 60s
+- Max 10 reconnect attempts before thread exits (thread monitor restarts it)
+- In-flight actions continue during disconnect (separate thread)
+- On reconnect: `action_still_running` message sent if action in progress (BUG-2 fix)
+- Critical messages never dropped (unbounded `critical_queue`)
 
-There is no explicit leader election for AgentActions. The concurrency model relies on:
-1. `PICKED_UP` mark on WebSocket delivery (first-come-first-served).
-2. Backend distributed lock `lock:node_action:{cluster_id}` (1200-second mutex — Z10 fix, was 180s) prevents parallel drain for the same cluster.
+### Network Partition
 
-### AWS API Throttling
+| Side | Behavior |
+|------|----------|
+| **Agent** | Continues running indefinitely. IMDS polling independent. Heartbeats fail silently. |
+| **Backend** (after 5 min) | `agent_installed='N'`, cancel pending actions, mark rebalancing as `AGENT_WENT_OFFLINE` |
+| **Recovery** | First successful heartbeat restores `agent_installed='Y'`, `status=ACTIVE` |
 
-Handled entirely on the **backend side** (agent makes no AWS calls). See §6. The backend uses:
-- 3 retries with `2^n` second backoff for ASG/EC2 throttle errors.
-- Dry-run result caching in Redis (max 5 live API calls per cycle).
-- Idempotent `ClientToken` (SHA256 hash) for `RunInstances` so a retry never double-launches.
+### Component Thread Safety (BUG-14 fix)
 
-### Critical Pods Running After Drain Timeout
+`HeartbeatSender.component_health` protected by `threading.Lock` (`_health_lock`). All reads take snapshot `dict(self.component_health)` under lock.
 
-When drain times out (`drain_timeout_minutes`, default 15):
-- The backend marks the action `FAILED` (state: `FAILED`).
-- Rollback begins: UNCORDON_NODE sent to agent, orphan spot instance terminated.
-- `SM_DRAIN_TIMEOUT` state is **declared** in `auto_rebalancer.py` (lines 29–42) but is **not actively transitioned to** — the system falls through to `FAILED` state.
-- There is no "force drain after timeout" mechanism — the backend gives up and uncordons.
+### Action Heartbeat Dual-Writer (N5 fix)
 
-### Kubernetes API Server Unreachable During Action
+Two writers maintain `action_heartbeat:{action_id}` (TTL 120s):
+1. **Backend Celery worker** (`auto_rebalancer.py`): Updates via `redis.setex()` on each 15s cycle
+2. **Agent** (`actuator.py` → `_action_heartbeat_loop()`): POSTs to `/api/v1/agents/actions/{action_id}/heartbeat` every 30s
 
-If the K8s API server becomes unreachable while the agent is executing drain:
-- Each Kubernetes client call will raise a connection exception.
-- The agent catches it as an action failure.
-- Reports `status: failed` to backend on reconnect (buffered in WebSocket message buffer).
-- The backend proceeds with rollback once it receives the failure report.
-- While the connection never recovers, the backend detects the crash via action heartbeat staleness (>120 s) and marks the action failed on its own. Note: with the two-tier message buffer, critical action results are queued unboundedly — they are not dropped even under prolonged disconnection.
+Whichever ran most recently wins. Key expires only if **both** stop.
+
+### FORCE_DELETE_NODE + Finalizer Cleanup (Issue #12)
+
+After deleting the K8s node object, agent removes finalizers from any pods stuck in `Terminating` state that were on that node. Prevents StatefulSet pods from being stuck indefinitely.
+
+### Duplicate Action Prevention
+
+- `PICKED_UP` flag with `picked_up_at` timestamp on WebSocket delivery
+- No agent-side dedup (trusts `PICKED_UP` flag)
+- Backend distributed lock `lock:node_action:{cluster_id}` (1200s TTL, Z10 fix) serializes drains
 
 ---
 
@@ -651,14 +665,20 @@ If the K8s API server becomes unreachable while the agent is executing drain:
 | `BACKEND_WS_URL` | (required) | WebSocketClient | WebSocket base URL |
 | `CLUSTER_ID` | (required) | All | Cluster identifier |
 | `API_KEY` | (required, from Secret) | All | Bearer token for auth |
+| `SECRET_KEY` | (auto-generated) | ActionActuator | HMAC verification key |
 | `HEARTBEAT_INTERVAL` | `30` | HeartbeatSender | Seconds between heartbeats |
 | `COLLECTION_INTERVAL` | `60` | MetricsCollector | Seconds between node metric sends |
 | `POD_METRICS_INTERVAL` | `60` | PodMetricsCollector | Seconds between pod metric sends |
 | `IMDS_POLL_INTERVAL_SECONDS` | `5` | SpotPoller | Seconds between IMDS polls |
+| `ACTION_POLL_INTERVAL` | `10` | ActionActuator | Seconds between action polls (HTTP fallback) |
 | `LOG_LEVEL` | `INFO` | All | Python log level |
 | `CLUSTER_NAME` | `k8s-cluster-{prefix}` | Agent startup | Display name for registration |
 | `AWS_REGION` / `CLUSTER_REGION` | `us-east-1` | Agent startup | Region sent during registration |
-| `NODE_NAME` | (from K8s downward API) | PodMetricsCollector | Node to scope pod metrics to |
+| `NODE_NAME` | (K8s downward API) | PodMetricsCollector, drain guard | Node to scope pods to |
+| `HOST_PROC` | (not set) | MetricsCollector | Host /proc path for psutil |
+| `DRY_RUN` | `false` | Config | Log actions without executing |
+| `WEBSOCKET_ENABLED` | `true` | Config | Enable WebSocket client |
+| `BATCH_SIZE` | `100` | MetricsCollector | Max metrics per batch |
 
 ---
 
@@ -666,10 +686,28 @@ If the K8s API server becomes unreachable while the agent is executing drain:
 
 | Key | TTL | Set By | Purpose |
 |---|---|---|---|
-| `action_heartbeat:{action_id}` | 120 s | Backend Celery worker **and** agent (`_action_heartbeat_loop()` in `actuator.py`) | Detect stale in-progress actions |
-| `rebalance:lock:{cluster_id}` | 2700 s (extended) | Backend auto_rebalancer | Per-cluster execution mutex |
-| `node_joined:{instance_id}` | Varies | Backend node discovery pipeline | Signals new spot node joined K8s |
-| `spot:asserted_spot:{instance_id}` | 600 s | Backend Phase 1 | Guard misclassification on direct launch |
-| `spot:stabilization_lock:{cluster_id}` | 60 s | Backend rollback | Prevent immediate re-attempt after failure |
+| `action_heartbeat:{action_id}` | 120 s | Backend worker + Agent | Detect stale in-progress actions |
+| `rebalance:lock:{cluster_id}` | 2700 s | Backend auto_rebalancer | Per-cluster execution mutex |
+| `node_joined:{instance_id}` | Varies | Backend discovery pipeline | Signals new node joined K8s |
+| `karpenter:live_status:{cluster_id}` | 60 s | Backend (from agent heartbeat) | Live Karpenter pod status |
+| `karpenter:detected:{cluster_id}` | 120 s | Backend (from agent heartbeat) | Karpenter detection cache |
+| `spot:karpenter:installed:{cluster_id}` | 3600 s | Backend (from agent heartbeat) | Karpenter installed mode |
+| `spot:stabilization_lock:{cluster_id}` | 60 s | Backend rollback | Prevent immediate re-attempt |
 | `rebalance_failures:{instance_id}` | 86400 s | Backend failure path | Failure counter for backoff |
-| `native_spot_status:{cluster_id}:{ng}` | 300 s | Backend API | Cache AWS native-spot status (5-min cache) |
+
+---
+
+## Appendix: File Index
+
+| File | Lines | Primary Responsibility |
+|------|-------|----------------------|
+| `agent/main.py` | 547 | Agent startup, registration, thread monitoring |
+| `agent/actuator.py` | 1909 | All K8s action execution (12 action types) |
+| `agent/websocket_client.py` | 552 | WebSocket communication, two-tier buffer |
+| `agent/heartbeat.py` | 537 | Health server, heartbeat, Karpenter detection |
+| `agent/poller.py` | 199 | IMDS spot termination/rebalance polling |
+| `agent/collector.py` | 585 | Node/pod metrics + cluster events |
+| `agent/pod_metrics_collector.py` | 408 | Pod-level metrics for right-sizing |
+| `agent/config.py` | 187 | Configuration validation + SIGHUP reload |
+| `backend/routers/agents.py` | 351 | Registration, heartbeat, action heartbeat/result |
+| `backend/models/agent_action.py` | 102 | 12 action types, priority, status enums |

@@ -7,7 +7,8 @@ These endpoints handle:
 - Heartbeat updates (periodic health checks)
 """
 
-from datetime import datetime
+import logging
+from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException, Header, Query
 from pydantic import BaseModel
 from typing import Any, Dict, List, Optional
@@ -16,6 +17,7 @@ from sqlalchemy.orm import Session
 from backend.models.base import get_db
 from backend.models.cluster import Cluster, ClusterStatus
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/agents", tags=["agents"])
 
 
@@ -212,6 +214,30 @@ async def get_pending_actions(
     """
     from backend.models.agent_action import AgentAction, AgentActionStatus
 
+    # Auto-recover stale PICKED_UP actions: if an agent picked up an action
+    # but crashed/restarted before completing it, reset it to PENDING so the
+    # new agent instance can pick it up.  Threshold: 2 minutes (actions should
+    # complete or heartbeat within that window).
+    _stale_cutoff = datetime.utcnow() - timedelta(minutes=2)
+    _stale_actions = (
+        db.query(AgentAction)
+        .filter(
+            AgentAction.cluster_id == cluster.id,
+            AgentAction.status == AgentActionStatus.PICKED_UP,
+            AgentAction.picked_up_at < _stale_cutoff,
+        )
+        .all()
+    )
+    for _sa in _stale_actions:
+        logger.warning(
+            f"Resetting stale PICKED_UP action {_sa.id} ({_sa.action_type.value}) "
+            f"to PENDING — picked up at {_sa.picked_up_at}, agent likely crashed"
+        )
+        _sa.status = AgentActionStatus.PENDING
+        _sa.picked_up_at = None
+    if _stale_actions:
+        db.commit()
+
     pending = (
         db.query(AgentAction)
         .filter(
@@ -224,8 +250,39 @@ async def get_pending_actions(
         .all()
     )
 
-    commands = []
+    # Bug #11 fix: Enforce sequential step ordering for Phase 2 zero-downtime actions.
+    # Only release step N when step N-1 is COMPLETED for the same rebalancing_action_id.
+    # Actions without zero_downtime_step (e.g. standalone LABEL, EVICT) pass through.
+    ready_actions = []
     for action in pending:
+        payload = action.payload or {}
+        zd_step = payload.get("zero_downtime_step")
+        ra_id = payload.get("rebalancing_action_id")
+        if zd_step and ra_id and zd_step > 1:
+            # Check if the previous step is COMPLETED.
+            # ra_id may be stored as int or string in JSONB depending on the code path,
+            # so we check both forms for robust matching.
+            from sqlalchemy import or_
+            _prev_step_int = zd_step - 1
+            prev_step_done = (
+                db.query(AgentAction)
+                .filter(
+                    AgentAction.cluster_id == cluster.id,
+                    or_(
+                        AgentAction.payload.contains({"rebalancing_action_id": ra_id, "zero_downtime_step": _prev_step_int}),
+                        AgentAction.payload.contains({"rebalancing_action_id": str(ra_id), "zero_downtime_step": _prev_step_int}),
+                        AgentAction.payload.contains({"rebalancing_action_id": int(ra_id) if str(ra_id).isdigit() else ra_id, "zero_downtime_step": _prev_step_int}),
+                    ),
+                    AgentAction.status == AgentActionStatus.COMPLETED,
+                )
+                .count() > 0
+            )
+            if not prev_step_done:
+                continue  # Hold back — predecessor not done yet
+        ready_actions.append(action)
+
+    commands = []
+    for action in ready_actions:
         commands.append({
             "action_id": action.id,
             "action_type": action.action_type.value,
@@ -236,7 +293,7 @@ async def get_pending_actions(
         action.status = AgentActionStatus.PICKED_UP
         action.picked_up_at = datetime.utcnow()
 
-    if pending:
+    if ready_actions:
         db.commit()
 
     return {"commands": commands, "count": len(commands)}

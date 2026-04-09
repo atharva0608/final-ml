@@ -55,7 +55,7 @@ class WebSocketClient:
         self.reconnect_delay = 1
         self.max_reconnect_delay = 60
         self.reconnect_attempts = 0
-        self.max_reconnect_attempts = 10
+        self.max_reconnect_attempts = 0  # 0 = unlimited retries
 
         # Message handlers
         self.message_handlers = {}
@@ -458,32 +458,30 @@ class WebSocketClient:
     async def reconnect_loop(self):
         """
         Loop for maintaining connection with reconnection logic.
+        Retries indefinitely with exponential backoff (capped at 60s).
+        Counter resets on each successful connection so transient failures
+        don't accumulate across long sessions.
         """
         while self.running:
             if not self.websocket or self.websocket.closed:
-                if self.reconnect_attempts < self.max_reconnect_attempts:
-                    logger.info(f"Attempting reconnection (attempt {self.reconnect_attempts + 1})")
+                self.reconnect_attempts += 1
+                logger.info(f"Attempting reconnection (attempt {self.reconnect_attempts})")
 
-                    connected = await self.connect()
+                connected = await self.connect()
 
-                    if connected:
-                        logger.info("Reconnection successful")
-                        # Start receive loop
-                        asyncio.create_task(self.receive_loop())
-                    else:
-                        self.reconnect_attempts += 1
-
-                        # Exponential backoff
-                        delay = min(
-                            self.reconnect_delay * (2 ** self.reconnect_attempts),
-                            self.max_reconnect_delay
-                        )
-                        logger.info(f"Reconnection failed, retrying in {delay}s")
-                        await asyncio.sleep(delay)
+                if connected:
+                    logger.info("Reconnection successful, resetting backoff")
+                    self.reconnect_attempts = 0
+                    # Start receive loop
+                    asyncio.create_task(self.receive_loop())
                 else:
-                    logger.error("Max reconnection attempts reached")
-                    self.running = False
-                    break
+                    # Exponential backoff capped at max_reconnect_delay
+                    delay = min(
+                        self.reconnect_delay * (2 ** min(self.reconnect_attempts, 6)),
+                        self.max_reconnect_delay
+                    )
+                    logger.info(f"Reconnection failed, retrying in {delay}s")
+                    await asyncio.sleep(delay)
 
             await asyncio.sleep(1)
 

@@ -79,7 +79,7 @@ const Signup = () => {
       <div className="max-w-md w-full space-y-8">
         {/* Logo and Title */}
         <div className="text-center">
-          <h1 className="text-4xl font-bold text-gray-900 mb-2">Spot Optimizer</h1>
+          <h1 className="text-4xl font-bold text-gray-900 mb-2">Balancekube</h1>
           <h2 className="text-2xl font-semibold text-gray-700">Create your account</h2>
           <p className="mt-2 text-sm text-gray-600">
             Already have an account?{' '}
@@ -191,7 +191,7 @@ const Signup = () => {
 
         {/* Footer */}
         <p className="mt-4 text-center text-xs text-gray-500">
-          © 2024 Spot Optimizer Platform. All rights reserved.
+          © 2024 Balancekube Platform. All rights reserved.
         </p>
       </div>
     </div>

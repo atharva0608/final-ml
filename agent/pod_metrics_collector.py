@@ -336,29 +336,36 @@ class PodMetricsCollector:
             'metrics': metrics
         }
 
-        try:
-            response = requests.post(
-                url,
-                json=payload,
-                headers=headers,
-                timeout=30
-            )
-            response.raise_for_status()
+        max_retries = 3
+        for attempt in range(1, max_retries + 1):
+            try:
+                response = requests.post(
+                    url,
+                    json=payload,
+                    headers=headers,
+                    timeout=30
+                )
+                response.raise_for_status()
 
-            result = response.json()
-            logger.info(f"Successfully sent {result.get('metrics_inserted', 0)} pod metrics to backend")
+                result = response.json()
+                logger.info(f"Successfully sent {result.get('metrics_inserted', 0)} pod metrics to backend")
 
-            if result.get('errors'):
-                logger.warning(f"Some errors occurred: {result['errors']}")
+                if result.get('errors'):
+                    logger.warning(f"Some errors occurred: {result['errors']}")
 
-            return True
+                return True
 
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Failed to send pod metrics to backend: {e}")
-            if hasattr(e, 'response') and e.response is not None:
-                logger.error(f"Response status: {e.response.status_code}")
-                logger.error(f"Response body: {e.response.text}")
-            return False
+            except requests.exceptions.RequestException as e:
+                if attempt < max_retries:
+                    backoff = min(2 ** attempt, 10)
+                    logger.warning(f"Pod metrics send attempt {attempt}/{max_retries} failed: {e}. Retrying in {backoff}s...")
+                    import time
+                    time.sleep(backoff)
+                else:
+                    logger.error(f"Failed to send pod metrics after {max_retries} attempts: {e}")
+                    if hasattr(e, 'response') and e.response is not None:
+                        logger.error(f"Response status: {e.response.status_code}")
+                    return False
 
     def collect_and_send(self):
         """

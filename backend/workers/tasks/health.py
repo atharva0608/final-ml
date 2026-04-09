@@ -115,12 +115,63 @@ def _reset_stale_agents(db: Session, stale_minutes: int = 5):
     ).all()
 
     for cluster in stale:
+        # ── K8s-based agent liveness fallback ────────────────────────────
+        # Before marking DISCONNECTED, check if agent pods are actually Running
+        # on the cluster via direct K8s API. The agent may be running fine but
+        # can't reach this backend URL to send heartbeats (common when backend
+        # is local/docker and agent is on remote EKS). If agent pods are healthy,
+        # refresh the heartbeat timestamp and skip the DISCONNECTED path.
+        try:
+            from backend.services.karpenter_service import KarpenterService as _KS_hb
+            from backend.core.redis_client import get_redis_client as _grc_hb
+            _ks_hb = _KS_hb(db, _grc_hb())
+            _api_client = _ks_hb._get_k8s_client(cluster)
+            from kubernetes import client as _k8s_client
+            _v1 = _k8s_client.CoreV1Api(_api_client)
+            # Check for agent pods in spot-optimizer namespace
+            _agent_pods = _v1.list_namespaced_pod(
+                namespace="spot-optimizer",
+                label_selector="app=spot-agent",
+                timeout_seconds=10,
+            )
+            _running_agents = [
+                p for p in _agent_pods.items
+                if p.status and p.status.phase == 'Running'
+            ]
+            if _running_agents:
+                # Agent pods are Running on K8s — refresh heartbeat, skip DISCONNECTED
+                cluster.last_heartbeat = datetime.utcnow()
+                cluster.status = ClusterStatus.ACTIVE
+                logger.info(
+                    f"[MOD-HEALTH-02] Cluster {cluster.name}: heartbeat stale but "
+                    f"{len(_running_agents)} agent pod(s) Running on K8s — "
+                    f"refreshed heartbeat via K8s liveness check"
+                )
+                # Also refresh Karpenter detection since agent can't do it
+                try:
+                    _det = _ks_hb.detect_karpenter_in_cluster(str(cluster.id), db)
+                    if _det.get('detected'):
+                        logger.info(
+                            f"[MOD-HEALTH-02] Also refreshed Karpenter status for "
+                            f"{cluster.name}: {_det.get('pods_running', 0)} pod(s) detected"
+                        )
+                except Exception:
+                    pass
+                continue  # skip DISCONNECTED path for this cluster
+        except Exception as _k8s_hb_err:
+            logger.debug(
+                f"[MOD-HEALTH-02] K8s agent liveness check failed for "
+                f"{cluster.name}: {_k8s_hb_err} — falling through to DISCONNECTED"
+            )
+
         logger.warning(
             f"[MOD-HEALTH-02] Cluster {cluster.name} agent offline "
-            f"(last heartbeat: {cluster.last_heartbeat}). Resetting to DISCOVERED."
+            f"(last heartbeat: {cluster.last_heartbeat}). Marking as DISCONNECTED."
         )
-        cluster.agent_installed = 'N'
-        cluster.status = ClusterStatus.DISCOVERED
+        # Keep agent_installed='Y' — the agent IS installed, just not sending
+        # heartbeats. Setting it to 'N' causes the UI to show "Install Agent"
+        # which is misleading. Use DISCONNECTED status to signal the issue.
+        cluster.status = ClusterStatus.DISCONNECTED
 
         # Issue 5: Clear stale utilization data so ASCP auto-scaler doesn't act
         # on ghost metrics from a disconnected agent.
@@ -168,6 +219,20 @@ def _reset_stale_agents(db: Session, stale_minutes: int = 5):
                 _sr.status = 'failed'
                 _sr.error_message = 'AGENT_WENT_OFFLINE'
                 _sr.completed_at = datetime.utcnow()
+                # Full resource cleanup: Redis locks, semaphore, AND trigger pods.
+                # Without this, trigger pods remain Pending in the cluster forever
+                # and Redis locks block the node for up to 24h.
+                try:
+                    from backend.core.redis_client import get_redis_client as _grc_sr
+                    from backend.workers.tasks.auto_rebalancer import _cleanup_rebalancing_resources
+                    _sr_redis = _grc_sr()
+                    _sr_meta = dict(_sr.action_metadata or {})
+                    _cleanup_rebalancing_resources(
+                        _sr, _sr_meta, _sr_redis, db,
+                        decr_semaphore=True,
+                    )
+                except Exception:
+                    pass
 
             if _pending_actions or _stuck_rebalances:
                 logger.warning(
@@ -188,7 +253,15 @@ def _reset_stale_agents(db: Session, stale_minutes: int = 5):
                 r.delete(key)
         except Exception:
             pass
-        logger.info(f"[MOD-HEALTH-02] Reset {len(stale)} stale agent(s) to DISCOVERED.")
+        # Count how many were actually marked DISCONNECTED vs refreshed via K8s
+        _actually_disconnected = [
+            c for c in stale if c.status == ClusterStatus.DISCONNECTED
+        ]
+        _refreshed = len(stale) - len(_actually_disconnected)
+        if _actually_disconnected:
+            logger.info(f"[MOD-HEALTH-02] Marked {len(_actually_disconnected)} agent(s) as DISCONNECTED.")
+        if _refreshed:
+            logger.info(f"[MOD-HEALTH-02] Refreshed {_refreshed} agent(s) via K8s liveness check.")
 
 
 # ── Z1 fix: Cleanup zombie OD instances ──────────────────────────────────────

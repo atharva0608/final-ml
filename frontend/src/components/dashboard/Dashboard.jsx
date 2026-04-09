@@ -753,7 +753,7 @@ export default function Dashboard() {
                   <div style={{ width: 32, height: 32, borderRadius: 8, background: C.indigoLight, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16 }}>◈</div>
                   <div>
                     <div style={{ fontWeight: 600, fontSize: 13, display: "flex", alignItems: "center", gap: 6 }}>
-                      ASCP.ai
+                      Balancekube.ai
                       {ascpaiData.status === 'healthy' && <Dot color={C.green} />}
                       {ascpaiData.status === 'degraded' && <Dot color={C.amber} />}
                       {ascpaiData.status === 'error' && <Dot color={C.red} />}
@@ -937,7 +937,7 @@ export default function Dashboard() {
                   <button onClick={() => navigate('/ascp-ai?tab=rankings')} style={{ fontSize: 11, color: C.blue, background: "none", border: "none", cursor: "pointer" }}>Manage →</button>
                 }>
                   <div style={{ color: C.subtle, fontSize: 12, marginBottom: 12 }}>
-                    Templates filter instance pools for ASCP.ai rankings.
+                    Templates filter instance pools for Balancekube.ai rankings.
                   </div>
                   <button onClick={() => navigate('/ascp-ai?tab=rankings')} style={{
                     width: "100%", padding: "7px 0", borderRadius: 8,

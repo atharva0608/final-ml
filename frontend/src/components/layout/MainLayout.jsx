@@ -145,7 +145,7 @@ const NAV_STRUCTURE = [
     items: [
       {
         id: "ascpai",
-        label: "ASCP.ai",
+        label: "Balancekube.ai",
         icon: "◈",
         badge: "ML",
         badgeColor: "#6366f1",
@@ -272,7 +272,7 @@ const NAV_STRUCTURE = [
 ];
 
 const SEARCH_INDEX = [
-  { id: "ascpai", terms: ["ml", "machine learning", "pool", "rankings", "onnx", "spot advisor", "interruption", "heatmap", "rebalancing", "blacklist", "capacity", "ascp.ai", "ascp"] },
+  { id: "ascpai", terms: ["ml", "machine learning", "pool", "rankings", "onnx", "spot advisor", "interruption", "heatmap", "rebalancing", "blacklist", "capacity", "balancekube.ai", "balancekube"] },
   { id: "rightsizing", terms: ["karpenter", "right sizing", "rightsizing", "downsize", "recommendations", "cpu", "memory", "utilization", "overprovisioned", "savings"] },
   { id: "resource-hygiene", terms: ["zombie", "cleanup", "ebs", "ec2", "elastic ip", "s3", "snapshot", "stopped", "orphaned", "waste", "idle", "unused", "delete", "scan"] },
   { id: "hibernation", terms: ["sleep", "wake", "schedule", "namespace sleep", "nuclear", "snapshot restore", "cost schedule", "off hours", "weekends", "nights"] },
@@ -484,7 +484,7 @@ const MainLayout = () => {
                 fontSize: 14, color: "#fff", fontWeight: 700, flexShrink: 0
               }}>S</div>
               <div>
-                <div style={{ color: "#fff", fontWeight: 700, fontSize: 14, letterSpacing: "-0.3px" }}>Spot Optimizer</div>
+                <div style={{ color: "#fff", fontWeight: 700, fontSize: 14, letterSpacing: "-0.3px" }}>Balancekube</div>
                 <div style={{ color: "#4b5563", fontSize: 10, letterSpacing: "0.08em", textTransform: "uppercase" }}>{user?.role || 'USER'}</div>
               </div>
             </div>

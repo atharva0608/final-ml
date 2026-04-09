@@ -591,7 +591,7 @@ const OptimizationSettingsTab = ({ cluster }) => {
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 18 }}>
           <div style={{ paddingRight: 32 }}>
             <div style={{ fontSize: 13, fontWeight: 600, color: C.text }}>Manual Approval Required (RBAC)</div>
-            <div style={{ fontSize: 11, color: C.subtle, marginTop: 4 }}>If the ASCP.ai decision engine proposes infrastructure changes, route to Team Lead / Org Admin for manual approval before execution.</div>
+            <div style={{ fontSize: 11, color: C.subtle, marginTop: 4 }}>If the Balancekube.ai decision engine proposes infrastructure changes, route to Team Lead / Org Admin for manual approval before execution.</div>
           </div>
           <ToggleSwitch
             checked={settings.manual_approval_required}
@@ -1054,11 +1054,6 @@ const ClusterListItem = ({ cluster, selected, onClick }) => {
             letterSpacing: "-0.2px", maxWidth: 130,
             overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
           }}>{cluster.name}</span>
-          {cluster.cluster_uid && (
-            <span style={{ fontSize: 9, color: C.subtle, background: "#f0f1f3", padding: "1px 5px", borderRadius: 3, fontFamily: "monospace", letterSpacing: "0.5px" }}>
-              {cluster.cluster_uid}
-            </span>
-          )}
         </div>
         {/* Status as neutral pill, color only on the dot inside */}
         <div style={{
@@ -1257,11 +1252,6 @@ const ClusterDetail = ({ cluster, onClose }) => {
         <div>
           <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
             <h2 style={{ fontSize: 17, fontWeight: 700, margin: 0, letterSpacing: "-0.4px", color: C.text }}>{cluster.name}</h2>
-            {cluster.cluster_uid && (
-              <span style={{ fontSize: 10, color: C.subtle, background: "#f0f1f3", padding: "2px 7px", borderRadius: 4, fontFamily: "monospace", letterSpacing: "0.5px", border: `1px solid ${C.border}` }}>
-                UID: {cluster.cluster_uid}
-              </span>
-            )}
             {/* Status pill — dot has color, text is neutral */}
             <div style={{
               display: "flex", alignItems: "center", gap: 5,
@@ -1430,7 +1420,7 @@ const ClusterDetail = ({ cluster, onClose }) => {
                 }}>{cluster.agentVersion}</span>
               </div>
               <div style={{ fontSize: 11, color: C.subtle, marginTop: 1 }}>
-                Last heartbeat: {cluster.lastSeen} · Metrics collection active
+                Last heartbeat: {cluster.lastSeen} {cluster.agentHealthy ? '· Metrics collection active' : '· Agent offline or uninstalled'}
               </div>
             </div>
             <div style={{
@@ -1449,7 +1439,7 @@ const ClusterDetail = ({ cluster, onClose }) => {
             <div style={{ flex: 1 }}>
               <div style={{ fontSize: 12, fontWeight: 600, color: C.text }}>Agent Not Installed</div>
               <div style={{ fontSize: 11, color: C.subtle, marginTop: 2 }}>
-                Install the agent to unlock real-time metrics, ASCP.ai, and savings optimization.
+                Install the agent to unlock real-time metrics, Balancekube.ai, and savings optimization.
               </div>
             </div>
             <button
@@ -1624,7 +1614,7 @@ const ClusterDetail = ({ cluster, onClose }) => {
             borderLeft: `3px solid ${cluster.atharva.active ? C.purple : C.border}`,
             borderRadius: 10, padding: "12px 14px",
           }}>
-            <div style={{ fontSize: 11, fontWeight: 600, color: C.muted, marginBottom: 8 }}>ASCP.ai</div>
+            <div style={{ fontSize: 11, fontWeight: 600, color: C.muted, marginBottom: 8 }}>Balancekube.ai</div>
             <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
               <div style={{ width: 6, height: 6, borderRadius: "50%", background: cluster.atharva.active ? C.purple : C.subtle }} />
               <span style={{ fontSize: 11, color: C.muted }}>{cluster.atharva.active ? "Active" : "Inactive"}</span>
@@ -2052,7 +2042,7 @@ const NoAgentDetail = ({ cluster, onClose }) => {
       <div style={{ fontSize: 40, marginBottom: 16, opacity: 0.25 }}>⬡</div>
       <div style={{ fontSize: 16, fontWeight: 700, color: C.text, marginBottom: 6 }}>{cluster.name}</div>
       <div style={{ fontSize: 13, color: C.muted, maxWidth: 340, lineHeight: 1.7, marginBottom: 24 }}>
-        This cluster doesn't have the Spot Optimizer agent installed. Install it to unlock real-time metrics, ASCP.ai ML optimization, and savings tracking.
+        This cluster doesn't have the Balancekube agent installed. Install it to unlock real-time metrics, Balancekube.ai ML optimization, and savings tracking.
       </div>
       <div style={{ display: "flex", gap: 8 }}>
         <button
@@ -2264,10 +2254,9 @@ export default function ClustersPage() {
             agentHealthy = false;
             mappedStatus = "warning";
           } else {
-            // >5 min with no heartbeat → agent is effectively offline
-            agentInstalled = false;
+            // >5 min with no heartbeat → agent is offline but still installed
             agentHealthy = false;
-            mappedStatus = "no-agent";
+            mappedStatus = "warning";
           }
         } else {
           mappedStatus = "warning";
@@ -2362,7 +2351,7 @@ export default function ClustersPage() {
         region: c.region || "us-east-1",
         provider: c.provider || "AWS",
         agentInstalled,
-        agentVersion: c.agent_version || "v1.0.0",
+        agentVersion: c.agent_version || "v1.1.2",
         agentHealthy,
         lastSeen: c.last_heartbeat ? lastSeenText : "Unknown",
         status: mappedStatus,

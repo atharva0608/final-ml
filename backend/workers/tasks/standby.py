@@ -160,17 +160,84 @@ def launch_standby_node(self, cluster_id: str):
         db.close()
 
 
-def find_ready_standby(db, cluster_id: str):
-    """
-    Find a ready standby node for a cluster.
+_ARM64_FAMILIES = {
+    't4g', 'c6g', 'c7g', 'c8g', 'c8gn', 'm6g', 'm7g', 'm8g',
+    'r6g', 'r7g', 'r8g', 'c6gn', 'c6gd', 'm6gd',
+    'r6gd', 'a1', 'hpc7g',
+}
 
-    Returns the Instance record if a standby is available and running,
-    or None otherwise.
+
+def find_ready_standby(
+    db,
+    cluster_id: str,
+    redis_client=None,
+    source_instance_type: str = None,
+    action_id: str = None,
+):
+    """
+    Find and atomically claim a ready standby node for a cluster.
+
+    When redis_client is provided this function:
+      1. Queries the DB for a standby=True, state=running node.
+      2. Checks the node is not already claimed by another action via
+         Redis SET NX on ``spot:replacement_claimed:{instance_id}``.
+      3. Verifies the standby architecture matches ``source_instance_type``
+         (ARM64 vs x86).  If there is a mismatch the key is NOT claimed and
+         None is returned.
+      4. Performs the atomic Redis SET NX claim (TTL 3600 s).  If another
+         caller wins the race, returns None.
+
+    Returns the Instance record on success, None otherwise.
     """
     from backend.models.instance import Instance
 
-    return db.query(Instance).filter(
+    standby = db.query(Instance).filter(
         Instance.cluster_id == cluster_id,
         Instance.standby == True,
         Instance.state == "running",
     ).first()
+
+    if not standby:
+        return None
+
+    # Guard: node_name must be set — otherwise cordon/drain agent actions will fail
+    if not standby.node_name:
+        return None
+
+    if redis_client is not None:
+        _claim_key = f"spot:replacement_claimed:{standby.instance_id}"
+
+        # Fast-exit: key already exists means another action already claimed this node
+        try:
+            if redis_client.exists(_claim_key):
+                return None
+        except Exception:
+            pass
+
+        # Architecture check — do NOT claim if arch mismatches source
+        if source_instance_type and standby.instance_type:
+            _src_fam = source_instance_type.split('.')[0]
+            _sb_fam = standby.instance_type.split('.')[0]
+            if (_src_fam in _ARM64_FAMILIES) != (_sb_fam in _ARM64_FAMILIES):
+                return None
+
+        # Atomic claim: only one caller wins the SET NX
+        try:
+            _claimed = redis_client.set(_claim_key, str(action_id or ''), nx=True, ex=3600)
+            if not _claimed:
+                # Another process claimed it between the exists() check and now
+                return None
+        except Exception:
+            # Redis unavailable — skip standby rather than risk double-claim.
+            # Log at WARNING so operators know standby was bypassed (not that none exists).
+            try:
+                from backend.core.logger import logger as _sb_logger
+                _sb_logger.warning(
+                    f"[find_ready_standby] Redis unavailable for cluster {cluster_id} — "
+                    f"skipping standby claim to prevent double-claim (safe fallback to Phase 1)"
+                )
+            except Exception:
+                pass
+            return None
+
+    return standby

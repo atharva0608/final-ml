@@ -218,11 +218,13 @@ const OverviewTab = ({
         || 0;
     const statefulPods = nodesList.reduce((s, n) => s + (n.stateful_pod_count || 0), 0);
     const spotFriendlyPct = totalPods > 0 ? (spotFriendlyPods / totalPods) * 100 : 0;
+    const nonSpotFriendlyPods = totalPods - spotFriendlyPods;
 
     /* ── Node classification — from nodesDetailed[].classification ─────── */
     const statelessNodes = nodesList.filter(n => n.classification === 'STATELESS').length;
     const statefulNodes  = nodesList.filter(n => n.classification === 'STATEFUL').length;
     const mixedNodes     = nodesList.filter(n => n.classification === 'MIXED').length;
+    const anchorNodes    = nodesList.filter(n => n.classification === 'ANCHOR').length;
     const emptyNodes     = nodesList.filter(n => n.classification === 'EMPTY' || !n.classification).length;
 
     /* ── Costs — derive from nodeRecommendations when metrics are stale ─ */
@@ -231,9 +233,9 @@ const OverviewTab = ({
     // target_spot_price = best available spot hourly rate
     const calcMonthly = (nodeRecommendations || []).reduce(
         (s, r) => s + (r.current_cost || 0) * 730, 0);
-    // Potential additional savings = OD nodes not yet on spot
+    // Potential additional savings = OD nodes not yet on spot (exclude anchor)
     const calcSavings = (nodeRecommendations || [])
-        .filter(r => r.lifecycle !== 'spot' && r.lifecycle !== 'SPOT')
+        .filter(r => r.lifecycle !== 'spot' && r.lifecycle !== 'SPOT' && !r.is_anchor)
         .reduce((s, r) => {
             // Skip nodes with no real spot price — never fabricate savings with a multiplier
             if (!(r.target_spot_price > 0)) return s;
@@ -254,9 +256,10 @@ const OverviewTab = ({
     // Prefer live nodeRecommendations data over stale DB values when available
     const totalCost       = calcMonthly > 0 ? calcMonthly : (metrics?.monthly_cost ?? cluster?.monthly_cost ?? 0);
     const realizedSavings = calcRealized > 0 ? calcRealized : (metrics?.realized_savings ?? 0);
-    // When Karpenter simulation is available, its monthly_savings is the authoritative
-    // potential savings figure (bin-packing consolidation vs 1:1 node swap savings).
-    const addlPotential   = (karpenterSimulation?.monthly_savings > 0)
+    // When Karpenter simulation is available AND right-sizing is enabled,
+    // use simulation monthly_savings (bin-packing consolidation).
+    // When right-sizing is OFF, use 1:1 node swap savings from nodeRecommendations.
+    const addlPotential   = (autoRightsizingEnabled && karpenterSimulation?.monthly_savings > 0)
         ? karpenterSimulation.monthly_savings
         : calcSavings > 0 ? calcSavings : (metrics?.estimated_savings ?? cluster?.estimated_savings ?? 0);
     // savingsPct = total savings (realized + potential) vs all-OD baseline
@@ -264,10 +267,22 @@ const OverviewTab = ({
     const savingsPct      = allODBaseline > 0 ? ((realizedSavings + addlPotential) / allODBaseline) * 100 : 0;
 
     /* ── Agent ─────────────────────────────────────────────────────────── */
-    const isHealthy = ['active', 'ACTIVE'].includes(cluster?.status || '');
+    // Backend stores last_heartbeat as UTC but without a 'Z' suffix,
+    // so JavaScript's Date() would treat it as local time. Force UTC.
+    const _hbUtc = cluster?.last_heartbeat
+        ? (cluster.last_heartbeat.endsWith('Z') ? cluster.last_heartbeat : cluster.last_heartbeat + 'Z')
+        : null;
+    const _hbAgeSec = _hbUtc ? (Date.now() - new Date(_hbUtc)) / 1000 : Infinity;
+    const isHealthy = (() => {
+        if (!cluster?.agent_installed || cluster.agent_installed === 'N') return false;
+        if (!_hbUtc) return false;
+        return _hbAgeSec < 300; // Healthy if heartbeat within last 5 minutes (agent retries with backoff)
+    })();
+    // Stale = agent was recently connected but last heartbeat is 5-15 min old
+    const isStale = !isHealthy && _hbAgeSec < 900 && cluster?.agent_installed === 'Y';
     const lastHbStr = (() => {
-        if (!cluster?.last_heartbeat) return 'Unknown';
-        const s = (Date.now() - new Date(cluster.last_heartbeat)) / 1000;
+        if (!_hbUtc) return 'Unknown';
+        const s = _hbAgeSec;
         if (s < 60)   return 'Just now';
         if (s < 3600) return `${Math.floor(s / 60)}m ago`;
         return `${Math.floor(s / 3600)}h ago`;
@@ -280,8 +295,8 @@ const OverviewTab = ({
     const karpDetectedVia = karpenterInstallStatus?.detected_via;
 
     /* ── Optimization ──────────────────────────────────────────────────── */
-    // Agent is active if the cluster status is 'active' (agent_installed field is unreliable)
-    const ascpActive  = isHealthy;
+    // Agent is considered active if healthy OR stale (cached data still valid)
+    const ascpActive  = isHealthy || isStale;
     const rsCount     = rightsizing?.length || 0;
     const policyCount = policy ? 1 : 0;
 
@@ -324,10 +339,11 @@ const OverviewTab = ({
     const curMem     = currentConfigRows.reduce((s, r) => s + r.qty * r.memGib, 0);
 
     /* ── Optimized config rows ─────────────────────────────────────────── */
-    // When Karpenter simulation is available, use consolidated bin-packed nodes
-    // instead of the 1:1 node-level recommendations.
+    // When Karpenter simulation is available AND right-sizing is enabled,
+    // use consolidated bin-packed nodes. When right-sizing is OFF, show 1:1
+    // spot replacement recommendations (auto-rebalancer behavior).
     const optimizedConfigRows = useMemo(() => {
-        if (karpenterSimulation?.consolidated_nodes?.length > 0) {
+        if (autoRightsizingEnabled && karpenterSimulation?.consolidated_nodes?.length > 0) {
             // Karpenter mode: show consolidated bin-packed nodes
             return karpenterSimulation.consolidated_nodes
                 .map(n => ({
@@ -346,14 +362,24 @@ const OverviewTab = ({
                 .sort((a, b) => b.totalMonthly - a.totalMonthly);
         }
         // Non-Karpenter mode: 1:1 rebalancing (current behavior)
+        // Anchor nodes stay at current OD type+cost — not converted to spot.
         const byType = {};
         (nodeRecommendations || []).forEach(r => {
-            const t = r.target_type || r.current_type;
-            if (!t) return;
-            const price = (r.target_spot_price != null && r.target_spot_price > 0) ? r.target_spot_price : 0;
-            const isSpot = r.target_type !== r.current_type || r.lifecycle === 'spot';
-            if (!byType[t]) byType[t] = { qty: 0, hourly: price, isSpot };
-            byType[t].qty++;
+            if (r.is_anchor) {
+                // Anchor node: keep at current OD type and cost
+                const t = r.current_type;
+                if (!t) return;
+                const price = r.current_cost || r.od_cost || 0;
+                if (!byType[t]) byType[t] = { qty: 0, hourly: price, isSpot: false };
+                byType[t].qty++;
+            } else {
+                const t = r.target_type || r.current_type;
+                if (!t) return;
+                const price = (r.target_spot_price != null && r.target_spot_price > 0) ? r.target_spot_price : 0;
+                const isSpot = r.target_type !== r.current_type || r.lifecycle === 'spot';
+                if (!byType[t]) byType[t] = { qty: 0, hourly: price, isSpot };
+                byType[t].qty++;
+            }
         });
         return Object.entries(byType)
             .map(([type, d]) => ({
@@ -371,35 +397,66 @@ const OverviewTab = ({
     const optCpu   = optimizedConfigRows.reduce((s, r) => s + r.qty * r.vcpu, 0);
     const optMem   = optimizedConfigRows.reduce((s, r) => s + r.qty * r.memGib, 0);
 
-    /* ── Right-sizing combined savings (when both toggles ON) ──────── */
+    /* ── Right-sizing combined savings ────────────────────────────── */
     const bothActive = autoRightsizingEnabled && autoRebalanceEnabled;
     const rsSavingsTotal = (rightsizing || []).reduce((s, r) => s + (r.savings_monthly || 0), 0);
-    // When both toggles are active, the karpenter_simulation already
+    // When right-sizing is active, the karpenter_simulation already
     // accounts for right-sized pod resources (use_rightsized=true on the API).
     // The optTotal from consolidated_nodes already reflects tighter bin-packing.
     // We use it directly — no extra subtraction needed.
 
     /* ── Optimized Config title ────────────────────────────────────── */
     const optimizedConfigTitle = (() => {
-        if (karpenterSimulation && bothActive)
+        if (autoRightsizingEnabled && karpenterSimulation)
             return "Optimized Configuration (Karpenter + Right-Sizing)";
-        if (karpenterSimulation)
-            return "Optimized Cluster Configuration (Karpenter Consolidation)";
         if (bothActive)
             return "Optimized Cluster Configuration (Right-Sizing + Rebalance)";
+        if (autoRebalanceEnabled)
+            return "Optimized Cluster Configuration (Spot Replacement)";
         return "Optimized Cluster Configuration";
     })();
 
+    /* ── Effective optimal cost ─────────────────────────────────────────
+       When the Karpenter simulation is active (rightsizing ON) and produced
+       consolidated nodes, the optimized cost from the simulation is far more
+       accurate than the 1:1 per-node addlPotential.  Use optTotal as the
+       source of truth so KPI cards, chart, and config table all agree.
+    ────────────────────────────────────────────────────────────────────── */
+    const useSimCost = autoRightsizingEnabled && optTotal > 0 && karpenterSimulation?.consolidated_nodes?.length > 0;
+    const effectiveOptCost   = useSimCost ? optTotal : Math.max(0, totalCost - addlPotential);
+    const effectiveSavings   = totalCost > 0 ? Math.max(0, totalCost - effectiveOptCost) : 0;
+    const effectiveSavingPct = totalCost > 0 ? (effectiveSavings / totalCost) * 100 : 0;
+
     /* ── Cost trend chart ──────────────────────────────────────────────── */
     const trendData = useMemo(() => {
-        const pts = costTrends?.data_points || costTrends?.points || [];
-        if (!pts.length) return [];
-        const frac = totalCost > 0 && addlPotential > 0 ? addlPotential / totalCost : 0;
+        const frac = totalCost > 0 && effectiveSavings > 0 ? effectiveSavings / totalCost : 0;
         const now = Date.now();
-        const cutoff = trendWindow === '24h' ? now - 86_400_000 : now - 7 * 86_400_000;
+        const is24h = trendWindow === '24h';
+        const cutoff = is24h ? now - 86_400_000 : now - 7 * 86_400_000;
 
-        // Backend daily values may use a different pricing source than nodeRecommendations.
-        // Normalise so the chart's average current equals totalCost (single source of truth).
+        const pts = costTrends?.data_points || costTrends?.points || [];
+
+        // For 24h: backend only has daily points, so we may get 0-1 points.
+        // Synthesize hourly data from current totalCost so the graph is always visible.
+        if (is24h) {
+            // Generate 24 hourly points as a stable flat line at current cost.
+            // As rebalancing events occur and cost snapshots accumulate, these
+            // will diverge and the line will show real movement.
+            if (totalCost <= 0) return [];
+            const points = [];
+            for (let h = 23; h >= 0; h--) {
+                const t = new Date(now - h * 3_600_000);
+                points.push({
+                    time: t.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+                    current: +totalCost.toFixed(2),
+                    optimal: +((totalCost * (1 - frac))).toFixed(2),
+                });
+            }
+            return points;
+        }
+
+        // 7-day mode: use backend daily data
+        if (!pts.length) return [];
         const filtered = pts.filter(p => new Date(p.timestamp).getTime() >= cutoff);
         const rawAvg = filtered.length > 0
             ? filtered.reduce((s, p) => s + (p.value || 0), 0) / filtered.length
@@ -411,14 +468,13 @@ const OverviewTab = ({
             current: +(p.value * 30 * scale).toFixed(2),
             optimal: +(p.value * (1 - frac) * 30 * scale).toFixed(2),
         }));
-    }, [costTrends, trendWindow, totalCost, addlPotential]);
+    }, [costTrends, trendWindow, totalCost, effectiveSavings]);
 
-    // trendData values are already $/month (daily × 30); chart shows trend shape.
-    // KPI cards always derive from totalCost/addlPotential (nodeRecommendations live data)
-    // to maintain a single source of truth — avoiding drift between pricing helpers.
+    // KPI cards use simulation-aware values when rightsizing is active,
+    // otherwise fall back to 1:1 nodeRecommendations-based savings.
     const avgMonthly      = totalCost;
-    const avgMonthlyOpt   = Math.max(0, totalCost - addlPotential);
-    const availSavingsPct = savingsPct;
+    const avgMonthlyOpt   = effectiveOptCost;
+    const availSavingsPct = effectiveSavingPct;
 
     /* ── Spot analysis rows ────────────────────────────────────────────── */
     const spotAnalysisRows = useMemo(() =>
@@ -437,9 +493,9 @@ const OverviewTab = ({
         })),
     [nodeRecommendations]);
 
-    // Available savings — single source of truth: dollar-weighted savingsPct
+    // Available savings — single source of truth: simulation-aware savings %
     // (same value shown in the Cost & Savings donut and chart KPIs)
-    const totalAvailSavings = savingsPct > 0 ? savingsPct.toFixed(1) : '0';
+    const totalAvailSavings = effectiveSavingPct > 0 ? effectiveSavingPct.toFixed(1) : '0';
 
     /* ──────────────────────────────────────────────────────────────────── */
     return (
@@ -447,18 +503,25 @@ const OverviewTab = ({
 
             {/* ── Agent Banner ───────────────────────────────────────── */}
             <div className={`bg-white rounded-lg px-5 py-3 flex items-center justify-between shadow-sm border border-l-4 ${
-                isHealthy ? 'border-green-200 border-l-green-500' : 'border-orange-200 border-l-orange-400'
+                isHealthy ? 'border-green-200 border-l-green-500' : isStale ? 'border-yellow-200 border-l-yellow-500' : 'border-orange-200 border-l-orange-400'
             }`}>
                 <div>
                     <div className="flex items-center gap-2">
-                        <span className="text-sm font-semibold text-gray-900">{isHealthy ? 'Agent Healthy' : 'Agent Degraded'}</span>
+                        <span className="text-sm font-semibold text-gray-900">
+                            {isHealthy ? 'Agent Healthy' : isStale ? 'Agent Reconnecting' : 'Agent Disconnected'}
+                        </span>
                         <span className="text-[10px] text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded uppercase tracking-wide">
                             {cluster?.version || 'v1.0.0'}
                         </span>
                     </div>
-                    <p className="text-xs text-gray-500 mt-0.5">Last heartbeat: {lastHbStr} · Metrics collection active</p>
+                    <p className="text-xs text-gray-500 mt-0.5">
+                        Last heartbeat: {lastHbStr}
+                        {isHealthy ? ' · Metrics collection active' : isStale ? ' · Showing cached data · Agent will auto-reconnect' : ' · Agent offline or uninstalled'}
+                    </p>
                 </div>
-                <div className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${isHealthy ? 'bg-green-500' : 'bg-orange-400'}`} />
+                <div className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${
+                    isHealthy ? 'bg-green-500' : isStale ? 'bg-yellow-500 animate-pulse' : 'bg-orange-400'
+                }`} />
             </div>
 
             {/* ── Top row: Cost & Savings | Node Composition | Pods ── */}
@@ -468,7 +531,7 @@ const OverviewTab = ({
                 <div className="bg-white border border-gray-200 rounded-lg p-4">
                     <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-widest mb-3">Cost &amp; Savings</p>
                     <div className="flex items-center gap-4">
-                        <SavingsDonut pct={savingsPct} />
+                        <SavingsDonut pct={effectiveSavingPct} />
                         <div className="min-w-0">
                             <p className="text-xs text-gray-500">Monthly Cost</p>
                             <p className="text-2xl font-bold text-gray-900 leading-tight">{formatCurrency(totalCost)}</p>
@@ -479,7 +542,7 @@ const OverviewTab = ({
                                 </div>
                                 <div>
                                     <p className="text-[10px] text-gray-400">Potential</p>
-                                    <p className="text-sm font-semibold text-orange-500">{formatCurrency(addlPotential)}</p>
+                                    <p className="text-sm font-semibold text-orange-500">{formatCurrency(effectiveSavings)}</p>
                                 </div>
                             </div>
                         </div>
@@ -532,7 +595,7 @@ const OverviewTab = ({
                         </div>
                     ) : (
                         <div className="space-y-2.5">
-                            {/* Top row: total + spot-friendly */}
+                            {/* Top row: total + spot-friendly + non-spot-friendly */}
                             <div className="flex items-center gap-3">
                                 <div>
                                     <p className="text-2xl font-bold text-gray-900">{totalPods}</p>
@@ -542,6 +605,12 @@ const OverviewTab = ({
                                     <p className="text-base font-bold text-green-700">{spotFriendlyPods}</p>
                                     <p className="text-[10px] text-green-600 font-medium">Spot-friendly · {spotFriendlyPct.toFixed(0)}%</p>
                                 </div>
+                                {nonSpotFriendlyPods > 0 && (
+                                    <div className="flex-1 bg-blue-50 border border-blue-100 rounded-lg px-2.5 py-1.5 text-center">
+                                        <p className="text-base font-bold text-blue-700">{nonSpotFriendlyPods}</p>
+                                        <p className="text-[10px] text-blue-600 font-medium">Non spot-friendly</p>
+                                    </div>
+                                )}
                                 {statefulPods > 0 && (
                                     <div className="flex-1 bg-orange-50 border border-orange-100 rounded-lg px-2.5 py-1.5 text-center">
                                         <p className="text-base font-bold text-orange-600">{statefulPods}</p>
@@ -558,6 +627,12 @@ const OverviewTab = ({
                                             <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-green-50 text-green-700 border border-green-200">
                                                 <span className="w-1.5 h-1.5 rounded-full bg-green-500 inline-block" />
                                                 {statelessNodes} Stateless → <span className="text-green-600">SPOT safe</span>
+                                            </span>
+                                        )}
+                                        {anchorNodes > 0 && (
+                                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-indigo-50 text-indigo-700 border border-indigo-200">
+                                                <span className="w-1.5 h-1.5 rounded-full bg-indigo-500 inline-block" />
+                                                {anchorNodes} Anchor → <span className="text-indigo-600">OD locked</span>
                                             </span>
                                         )}
                                         {statefulNodes > 0 && (
@@ -599,7 +674,7 @@ const OverviewTab = ({
                 <div className="grid grid-cols-2 md:grid-cols-4 divide-y md:divide-y-0 md:divide-x divide-gray-100">
                     {/* ASCP.ai */}
                     <div className="px-5 py-4">
-                        <p className="text-xs font-semibold text-gray-700 mb-1">ASCP.ai</p>
+                        <p className="text-xs font-semibold text-gray-700 mb-1">Balancekube.ai</p>
                         <div className="flex items-center gap-1.5 mb-1">
                             <span className={`w-1.5 h-1.5 rounded-full ${ascpActive ? 'bg-green-500' : 'bg-gray-400'}`} />
                             <span className="text-xs text-gray-500">{ascpActive ? 'Active' : 'Inactive'}</span>
@@ -791,7 +866,7 @@ const OverviewTab = ({
                         totalInstances={optInst}
                         totalCpu={optCpu}
                         totalMem={optMem}
-                        karpenterSimulation={karpenterSimulation}
+                        karpenterSimulation={autoRightsizingEnabled ? karpenterSimulation : null}
                         rightsizingSavings={bothActive ? rsSavingsTotal : 0}
                     />
                 </div>
@@ -875,8 +950,8 @@ const OverviewTab = ({
                                             wrapperStyle={{ fontSize: 10, paddingTop: 10 }}
                                             formatter={v => v === 'current' ? 'Current Cluster Cost' : v === 'optimal' ? 'Optimal Cluster Cost' : 'Total Savings Potential'}
                                         />
-                                        <Area type="monotone" dataKey="current" name="current" stroke="#3b82f6" strokeWidth={2} fill="url(#gCurrent)" dot={false} />
-                                        <Area type="monotone" dataKey="optimal"  name="optimal"  stroke="#22c55e" strokeWidth={2} fill="url(#gOptimal)"  dot={false} />
+                                        <Area type="linear" dataKey="current" name="current" stroke="#3b82f6" strokeWidth={2} fill="url(#gCurrent)" dot={false} activeDot={false} />
+                                        <Area type="linear" dataKey="optimal"  name="optimal"  stroke="#22c55e" strokeWidth={2} fill="url(#gOptimal)"  dot={false} activeDot={false} />
                                     </AreaChart>
                                 </ResponsiveContainer>
                             </div>

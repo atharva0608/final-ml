@@ -37,7 +37,7 @@ def run_health_monitor(self):
     Pillar 6 — idempotency: if this exact task execution already ran, skip.
     """
     from backend.models.base import SessionLocal
-    from backend.models.cluster import Cluster
+    from backend.models.cluster import Cluster, ClusterStatus
     from backend.models.rebalancing_action import RebalancingAction
     from backend.core.redis_client import get_redis_client
 
@@ -53,7 +53,9 @@ def run_health_monitor(self):
 
     db = SessionLocal()
     try:
-        clusters = db.query(Cluster).filter(Cluster.status != 'DELETED').all()
+        clusters = db.query(Cluster).filter(
+            Cluster.status.notin_([ClusterStatus.DELETED, ClusterStatus.TERMINATED])
+        ).all()
         for cluster in clusters:
             try:
                 health = _compute_cluster_health(db, redis, cluster)

@@ -21,6 +21,160 @@ router = APIRouter(prefix="/api/v1/agent-metrics", tags=["agent-metrics"])
 logger = logging.getLogger(__name__)
 
 
+def _resolve_ec2_instance_ids(db: Session, cluster_id: str, region: str):
+    """
+    Resolve ip- placeholder instance IDs to real EC2 i- IDs via AWS DescribeInstances.
+    Uses private IP address extracted from K8s hostname: ip-192-168-58-117 → 192.168.58.117.
+    Cached in Redis for 10 minutes per cluster to avoid excessive AWS API calls.
+    """
+    from ..models.instance import Instance
+    from ..core.redis_client import get_redis_client
+
+    redis = get_redis_client()
+    cache_key = f"ec2_id_resolve:{cluster_id}"
+
+    # Skip if recently resolved (10 min cache)
+    if redis and redis.get(cache_key):
+        return
+
+    # Find running instances with ip- placeholder IDs
+    ip_instances = db.query(Instance).filter(
+        Instance.cluster_id == cluster_id,
+        Instance.state == 'running',
+        Instance.instance_id.like('ip-%'),
+    ).all()
+
+    if not ip_instances:
+        # All instances already have real IDs — cache and skip
+        if redis:
+            redis.setex(cache_key, 600, "resolved")
+        return
+
+    # Extract private IPs from hostnames: ip-192-168-58-117 → 192.168.58.117
+    ip_map = {}  # private_ip → Instance ORM object
+    for inst in ip_instances:
+        parts = inst.instance_id.replace('ip-', '').split('-')
+        if len(parts) == 4 and all(p.isdigit() for p in parts):
+            private_ip = '.'.join(parts)
+            ip_map[private_ip] = inst
+
+    if not ip_map:
+        return
+
+    # Load platform AWS credentials
+    from ..models.system_config import SystemConfig
+    pk = db.query(SystemConfig).filter(SystemConfig.key == "PLATFORM_AWS_ACCESS_KEY").first()
+    ps = db.query(SystemConfig).filter(SystemConfig.key == "PLATFORM_AWS_SECRET").first()
+    plat_key = pk.value if pk and pk.value else None
+    plat_secret = ps.value if ps and ps.value else None
+    if not plat_key or not plat_secret:
+        return
+
+    # Try to assume role if configured, otherwise use platform creds directly
+    from ..models.cluster import Cluster
+    cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
+    role_arn = cluster.aws_role_arn if cluster else None
+    ext_id = cluster.aws_external_id if cluster else None
+    if not role_arn and cluster and cluster.account_id:
+        try:
+            from ..models.account import Account
+            acct = db.query(Account).filter(Account.id == cluster.account_id).first()
+            if acct:
+                role_arn = acct.role_arn
+                ext_id = acct.external_id
+        except Exception:
+            pass
+
+    import boto3
+    ec2_kwargs = {"region_name": region}
+    if role_arn:
+        try:
+            sts = boto3.client(
+                "sts",
+                aws_access_key_id=plat_key,
+                aws_secret_access_key=plat_secret,
+                region_name=region,
+            )
+            assume_kw = {"RoleArn": role_arn, "RoleSessionName": "ec2-id-resolve"}
+            if ext_id:
+                assume_kw["ExternalId"] = ext_id
+            creds = sts.assume_role(**assume_kw)["Credentials"]
+            ec2_kwargs.update({
+                "aws_access_key_id": creds["AccessKeyId"],
+                "aws_secret_access_key": creds["SecretAccessKey"],
+                "aws_session_token": creds["SessionToken"],
+            })
+        except Exception as e:
+            logger.debug(f"[ec2_resolve] STS assume_role failed, using platform creds: {e}")
+            ec2_kwargs.update({
+                "aws_access_key_id": plat_key,
+                "aws_secret_access_key": plat_secret,
+            })
+    else:
+        ec2_kwargs.update({
+            "aws_access_key_id": plat_key,
+            "aws_secret_access_key": plat_secret,
+        })
+
+    ec2 = boto3.client("ec2", **ec2_kwargs)
+    private_ips = list(ip_map.keys())
+
+    try:
+        resp = ec2.describe_instances(
+            Filters=[
+                {"Name": "private-ip-address", "Values": private_ips},
+                {"Name": "instance-state-name", "Values": ["running", "pending"]},
+            ]
+        )
+    except Exception as e:
+        logger.warning(f"[ec2_resolve] DescribeInstances failed: {e}")
+        # Cache failure to avoid retrying on every batch
+        if redis:
+            redis.setex(cache_key, 120, "failed")
+        return
+
+    resolved = 0
+    for reservation in resp.get("Reservations", []):
+        for ec2_inst in reservation.get("Instances", []):
+            ec2_id = ec2_inst.get("InstanceId", "")
+            priv_ip = ec2_inst.get("PrivateIpAddress", "")
+            if ec2_id.startswith("i-") and priv_ip in ip_map:
+                inst = ip_map[priv_ip]
+                # Remove any stale/duplicate record that already has this EC2 ID
+                # (e.g. terminated instances from previous discovery runs)
+                stale = db.query(Instance).filter(
+                    Instance.cluster_id == cluster_id,
+                    Instance.instance_id == ec2_id,
+                    Instance.id != inst.id,
+                ).all()
+                for s in stale:
+                    logger.info(
+                        f"[ec2_resolve] Removing stale record {s.instance_id} "
+                        f"(state={s.state}) to make room for live node"
+                    )
+                    db.delete(s)
+                if stale:
+                    db.flush()  # Ensure deletes are visible before update
+
+                logger.info(
+                    f"[ec2_resolve] Resolved {inst.instance_id} → {ec2_id} "
+                    f"(private IP {priv_ip}, node {inst.node_name})"
+                )
+                inst.instance_id = ec2_id
+                # Also update architecture from EC2 metadata
+                arch = ec2_inst.get("Architecture", "")
+                if arch in ("x86_64", "arm64"):
+                    inst.architecture = "arm64" if arch == "arm64" else "amd64"
+                resolved += 1
+
+    if resolved > 0:
+        db.commit()
+        logger.info(f"[ec2_resolve] Upgraded {resolved}/{len(ip_instances)} instance IDs for cluster {cluster_id}")
+
+    if redis:
+        redis.setex(cache_key, 600, f"resolved:{resolved}")
+
+
 @router.post("/batch")
 async def receive_metrics_batch(
     payload: Dict[str, Any],
@@ -150,11 +304,21 @@ async def receive_metrics_batch(
             # Short ID: use first DNS label (e.g. "ip-192-168-3-201") to fit VARCHAR(20)
             short_id = node_name.split('.')[0][:20]
 
-            # Try to match existing instance by node_name OR short instance_id
-            inst = db.query(Instance).filter(
-                Instance.cluster_id == cluster_id,
-                (Instance.node_name == node_name) | (Instance.instance_id == short_id),
-            ).first()
+            # Extract real EC2 instance ID from provider_id if agent reported it
+            ec2_instance_id = node.get("provider_id")  # e.g. "i-0abc123def456"
+
+            # Try to match existing instance by node_name, short instance_id, or EC2 ID
+            inst = None
+            if ec2_instance_id:
+                inst = db.query(Instance).filter(
+                    Instance.cluster_id == cluster_id,
+                    Instance.instance_id == ec2_instance_id,
+                ).first()
+            if not inst:
+                inst = db.query(Instance).filter(
+                    Instance.cluster_id == cluster_id,
+                    (Instance.node_name == node_name) | (Instance.instance_id == short_id),
+                ).first()
 
             if inst:
                 # Mark as running (daemon set is reporting it — it's alive)
@@ -163,6 +327,13 @@ async def receive_metrics_batch(
                 inst.memory_util = mem_util_pct
                 if instance_type and instance_type != "unknown":
                     inst.instance_type = instance_type
+                # Upgrade placeholder ip- instance_id to real EC2 i- ID when available
+                if ec2_instance_id and not inst.instance_id.startswith('i-'):
+                    logger.info(
+                        f"[metrics] Upgrading instance_id {inst.instance_id} → "
+                        f"{ec2_instance_id} for {node_name}"
+                    )
+                    inst.instance_id = ec2_instance_id
                 if az and az != "unknown":
                     inst.az = az
                 # RC3 guard: K8s label SPOT→OD must be observed 3× (~90s) before accepting.
@@ -233,7 +404,7 @@ async def receive_metrics_batch(
                 new_inst = Instance(
                     id=generate_uuid(),
                     cluster_id=cluster_id,
-                    instance_id=short_id,   # "ip-192-168-3-201" fits VARCHAR(20)
+                    instance_id=ec2_instance_id or short_id,  # prefer real EC2 ID
                     node_name=node_name,
                     instance_type=instance_type,
                     az=az,
@@ -244,8 +415,9 @@ async def receive_metrics_batch(
                 )
                 db.add(new_inst)
                 db.flush()  # make record visible to subsequent iterations in same request
+                _disp_id = ec2_instance_id or short_id
                 logger.info(
-                    f"[metrics] Created Instance record for {node_name} (id={short_id}) "
+                    f"[metrics] Created Instance record for {node_name} (id={_disp_id}) "
                     f"({instance_type}, {lifecycle}, {az}) — auto-registered from node metrics"
                 )
 
@@ -332,6 +504,17 @@ async def receive_metrics_batch(
         cluster.cpu_total = true_cluster_cpu_cores
         cluster.mem_total = true_cluster_mem_gb
 
+        # Self-heal cluster status: receiving a metrics batch proves the agent is alive.
+        # The HTTP heartbeat may not reach the backend (e.g. agent behind NAT/firewall),
+        # so upgrade status here to prevent the UI from showing "Install Agent" prompts.
+        # ALWAYS update last_heartbeat so the Celery stale-agent task (5-min threshold)
+        # doesn't reset the cluster back to DISCOVERED between metrics batches.
+        from backend.models.cluster import ClusterStatus as _CS
+        cluster.last_heartbeat = datetime.utcnow()
+        if cluster.status != _CS.ACTIVE or cluster.agent_installed != 'Y':
+            cluster.status = _CS.ACTIVE
+            cluster.agent_installed = 'Y'
+
         logger.debug(f"Updated cluster: node_count={cluster.node_count}, cpu_total={cluster.cpu_total}, mem_total={cluster.mem_total}")
 
         # Calculate cluster usage percentages
@@ -365,7 +548,7 @@ async def receive_metrics_batch(
         cluster.spot_count = spot_count
 
         # Store aggregated metrics in database
-        if pod_metrics or node_metrics or event_metrics:
+        if (pod_metrics or node_metrics or event_metrics) and cluster_id:
             cluster_metric = ClusterMetric(
                 cluster_id=cluster_id,
                 metric_type="aggregated",
@@ -391,6 +574,16 @@ async def receive_metrics_batch(
         db.commit()
         logger.debug(f"Committed - cluster.cpu_usage_pct={cluster.cpu_usage_pct}, cluster.mem_usage_pct={cluster.mem_usage_pct}")
 
+        # ── Resolve ip- placeholder instance IDs to real EC2 i- IDs via AWS ──
+        # The agent collector may only report K8s hostnames (ip-192-168-x-x).
+        # The rebalancer requires real EC2 instance IDs (i-xxx) to operate.
+        # This resolver uses DescribeInstances with private-IP filters to upgrade
+        # placeholder IDs. Cached in Redis (10 min) to avoid hammering AWS.
+        try:
+            _resolve_ec2_instance_ids(db, cluster_id, cluster.region or 'ap-south-1')
+        except Exception as _ec2_resolve_err:
+            logger.debug(f"[metrics] EC2 ID resolution skipped: {_ec2_resolve_err}")
+
         # Cache latest metrics in Redis for fast access
         try:
             redis_client = get_redis_client()
@@ -399,7 +592,7 @@ async def receive_metrics_batch(
                 cache_key = f"metrics:node:{cluster_id}:{node_metric.get('node_name')}"
                 redis_client.setex(
                     cache_key,
-                    300,  # 5 minute TTL
+                    900,  # 15 minute TTL — survives missed agent cycles
                     str(node_metric)
                 )
 
@@ -408,7 +601,7 @@ async def receive_metrics_batch(
             cache_key = f"metrics:cluster:{cluster_id}:summary"
             redis_client.setex(
                 cache_key,
-                60,  # 1 minute TTL
+                600,  # 10 minute TTL — prevents blank UI during transient agent gaps
                 str({
                     "total_pods": len(pod_metrics),
                     "running_pods": running_pods,

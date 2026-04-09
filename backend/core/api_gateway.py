@@ -91,6 +91,25 @@ app = FastAPI(
 @app.middleware("http")
 async def add_cors_headers(request: Request, call_next):
     """Ensure CORS headers are present on all responses, including 500 errors"""
+    # ── Dynamic backend URL tracker ──────────────────────────────────────
+    # Capture the public URL (ngrok, production domain, etc.) from the
+    # incoming request and persist it in Redis.  agent_injector and
+    # cluster_service read this key instead of a stale env-var fallback.
+    # Only runs on non-agent paths to avoid the agent overwriting with its
+    # own internal URL, and rate-limited to once per 60s to avoid Redis spam.
+    try:
+        _host = request.headers.get("x-forwarded-host") or request.headers.get("host") or ""
+        if _host and "localhost" not in _host and "127.0.0.1" not in _host:
+            _scheme = request.headers.get("x-forwarded-proto") or request.url.scheme or "https"
+            _live_url = f"{_scheme}://{_host}"
+            from backend.core.redis_client import get_redis_client as _grc
+            _r = _grc()
+            # SET with EX=86400 (1 day TTL as safety) — refreshed on every request
+            _r.set("platform:backend_public_url", _live_url, ex=86400)
+    except Exception:
+        pass  # Non-critical — best effort
+    # ─────────────────────────────────────────────────────────────────────
+
     from fastapi.responses import JSONResponse as _JR
     try:
         response = await call_next(request)
@@ -560,7 +579,31 @@ async def _push_pending_actions(websocket: WebSocket, cluster_id: str):
                 AgentAction.status == AgentActionStatus.PENDING,
             ).order_by(AgentAction.created_at).limit(20).all()
 
+            # Bug #11 fix: Enforce sequential step ordering for Phase 2 actions.
+            # Only push step N when step N-1 is COMPLETED for same rebalancing_action_id.
+            # ra_id may be stored as int or string in JSONB, so check both forms.
+            ready_actions = []
             for action in pending:
+                payload = action.payload or {}
+                zd_step = payload.get("zero_downtime_step")
+                ra_id = payload.get("rebalancing_action_id")
+                if zd_step and ra_id and zd_step > 1:
+                    from sqlalchemy import or_
+                    _prev_step_int = zd_step - 1
+                    prev_step_done = db.query(AgentAction).filter(
+                        AgentAction.cluster_id == cluster_id,
+                        or_(
+                            AgentAction.payload.contains({"rebalancing_action_id": ra_id, "zero_downtime_step": _prev_step_int}),
+                            AgentAction.payload.contains({"rebalancing_action_id": str(ra_id), "zero_downtime_step": _prev_step_int}),
+                            AgentAction.payload.contains({"rebalancing_action_id": int(ra_id) if str(ra_id).isdigit() else ra_id, "zero_downtime_step": _prev_step_int}),
+                        ),
+                        AgentAction.status == AgentActionStatus.COMPLETED,
+                    ).count() > 0
+                    if not prev_step_done:
+                        continue  # Hold back — predecessor not done yet
+                ready_actions.append(action)
+
+            for action in ready_actions:
                 command = {
                     "type": "command",
                     "action_id": action.id,
@@ -571,9 +614,9 @@ async def _push_pending_actions(websocket: WebSocket, cluster_id: str):
                 action.status = AgentActionStatus.PICKED_UP
                 from datetime import datetime as _dt
                 action.picked_up_at = _dt.utcnow()
-            if pending:
+            if ready_actions:
                 db.commit()
-                logger.info(f"[ws] Pushed {len(pending)} pending actions to agent for cluster {cluster_id}")
+                logger.info(f"[ws] Pushed {len(ready_actions)} pending actions to agent for cluster {cluster_id}")
         finally:
             db.close()
     except Exception as e:
@@ -637,9 +680,11 @@ async def _handle_agent_message(cluster_id: str, raw: str):
             cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
             if cluster:
                 cluster.last_heartbeat = _dt.utcnow()
-                if cluster.agent_installed != 'Y':
-                    cluster.agent_installed = 'Y'
-                    cluster.status = ClusterStatus.ACTIVE
+                # Always ensure ACTIVE + agent_installed=Y on every heartbeat.
+                # Previous logic only set these when agent_installed != 'Y', which
+                # left clusters in DISCOVERED state if something else reset status.
+                cluster.agent_installed = 'Y'
+                cluster.status = ClusterStatus.ACTIVE
 
                 # Process Karpenter live detection from agent heartbeat
                 karpenter_status = msg.get("karpenter_status") or msg.get("data", {}).get("karpenter_status")

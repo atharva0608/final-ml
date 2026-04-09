@@ -782,6 +782,36 @@ class MetricsService:
             savings_percentage=savings_percentage
         )
 
+    def _get_accessible_clusters(
+        self,
+        user_id: str,
+        cluster_id: Optional[str] = None,
+        team_id: Optional[str] = None,
+    ) -> List:
+        """Return clusters accessible to the user, optionally filtered by cluster_id/team_id."""
+        user = self.db.query(User).filter(User.id == user_id).first()
+        if not user or not user.organization_id:
+            return []
+
+        org_account_ids = [
+            acc.id for acc in self.db.query(Account.id).filter(
+                Account.organization_id == user.organization_id
+            ).all()
+        ]
+        if not org_account_ids:
+            return []
+
+        query = self.db.query(Cluster).filter(
+            Cluster.account_id.in_(org_account_ids)
+        )
+
+        if cluster_id:
+            query = query.filter(Cluster.id == cluster_id)
+
+        # team_id filtering reserved for future use
+
+        return query.all()
+
     def _calculate_hibernation_savings(
         self,
         user_id: str,

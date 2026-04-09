@@ -109,6 +109,22 @@ class ResourcePricingService:
         # Fallback to static pricing table
         return self._get_fallback_instance_price(instance_type, hours)
 
+    def get_instance_price(
+        self,
+        instance_type: str,
+        region: str = 'us-east-1',
+        lifecycle: str = 'on-demand',
+        availability_zone: str = None,
+    ) -> float:
+        """Return the hourly price for an instance type.
+
+        Wraps calculate_instance_cost(hours=1) for callers that need an hourly rate.
+        The lifecycle and availability_zone params are accepted for API compatibility
+        but this implementation always returns on-demand pricing.
+        """
+        cost = self.calculate_instance_cost(instance_type=instance_type, region=region, hours=1)
+        return float(cost)
+
     def calculate_volume_cost(
         self,
         volume_type: str,
