@@ -96,6 +96,30 @@ def get_client_credentials(account_id: str, role_arn: str) -> dict:
         return result
 
 
+def _get_wie_enrichment(redis_client, json_mod, cluster_id: str, namespace: str, owner_kind: str) -> dict:
+    """
+    Read v4.3 WIE classification from Redis and return enrichment fields.
+    Returns all None values if engine hasn't run yet (backward compatible).
+    """
+    empty = {"wie_tier": None, "wie_confidence": None, "wie_spot_score": None, "wie_spot_friendly": None}
+    if not redis_client or not owner_kind or owner_kind in ('', 'Pod'):
+        return empty
+    try:
+        key = f"spot:wie:classification:{cluster_id}:{namespace}/{owner_kind}"
+        raw = redis_client.get(key)
+        if not raw:
+            return empty
+        data = json_mod.loads(raw)
+        return {
+            "wie_tier": data.get("tier"),
+            "wie_confidence": data.get("confidence_state"),
+            "wie_spot_score": data.get("spot_score"),
+            "wie_spot_friendly": data.get("spot_friendly"),
+        }
+    except Exception:
+        return empty
+
+
 class ClusterService:
     def __init__(self, db: Session):
         self.db = db
@@ -655,6 +679,39 @@ class ClusterService:
                 auto_rebalance_enabled=bool(cluster.auto_rebalance_enabled),
                 rightsizing_enabled=bool(getattr(cluster, 'rightsizing_enabled', False)),
             ))
+
+        # Batch-read health scores (one pipeline round-trip for the whole page).
+        # Key written by health_monitor every 5 min: cluster_health:{cluster_id}
+        # overall_health is 0-100; map to letter grades matching monitor thresholds.
+        try:
+            _hr = redis.from_url(os.getenv("REDIS_URL", "redis://redis:6379/0"))
+            _pipe = _hr.pipeline(transaction=False)
+            for _ci in cluster_list_items:
+                _pipe.get(f"cluster_health:{_ci.id}")
+            _health_raws = _pipe.execute()
+
+            def _grade(score_raw) -> Optional[str]:
+                if score_raw is None:
+                    return None
+                try:
+                    _s = json.loads(score_raw).get("overall_health", None)
+                    if _s is None:
+                        return None
+                    _s = float(_s)
+                    if _s >= 85:
+                        return "A"
+                    if _s >= 70:
+                        return "B"
+                    if _s >= 50:
+                        return "C"
+                    return "D"
+                except Exception:
+                    return None
+
+            for _ci, _raw in zip(cluster_list_items, _health_raws):
+                _ci.health_score = _grade(_raw)
+        except Exception as _he:
+            logger.debug(f"Health score enrichment failed (non-blocking): {_he}")
 
         result = ClusterList(
             clusters=cluster_list_items,
@@ -1415,7 +1472,8 @@ echo "✅ Agent successfully deployed!"
         recent_pods = self.db.query(
             PodMetric.pod_name,
             PodMetric.namespace,
-            PodMetric.pod_metadata
+            PodMetric.pod_metadata,
+            PodMetric.controller_kind
         ).filter(
             PodMetric.cluster_id == cluster_id,
             PodMetric.timestamp >= ten_minutes_ago
@@ -1429,15 +1487,19 @@ echo "✅ Agent successfully deployed!"
         for pod in recent_pods:
             pod_metadata = pod.pod_metadata or {}
 
-            # Check for PVC volumes in metadata
-            volumes = pod_metadata.get('volumes', [])
-            has_pvc = any('persistentVolumeClaim' in vol for vol in volumes) if isinstance(volumes, list) else False
+            # Check for PVC volumes in metadata.
+            # agent v1.1.7+ sets 'has_pvc' directly; older agents/fallback: volumes list.
+            has_pvc = pod_metadata.get('has_pvc', False)
+            if not has_pvc:
+                volumes = pod_metadata.get('volumes', [])
+                has_pvc = any('persistentVolumeClaim' in vol for vol in volumes) if isinstance(volumes, list) else False
 
             if has_pvc:
                 pvc_pod_count += 1
 
-            # Check if pod is part of StatefulSet
-            owner_kind = pod_metadata.get('owner_kind', '')
+            # Use the dedicated controller_kind DB column (populated by agent directly).
+            # pod_metadata['owner_kind'] was never set by the agent — always fell back to ''.
+            owner_kind = pod.controller_kind or pod_metadata.get('owner_kind', '')
             if owner_kind == 'StatefulSet':
                 statefulset_pod_count += 1
 
@@ -1482,6 +1544,29 @@ echo "✅ Agent successfully deployed!"
         cluster = self.db.query(Cluster).filter(Cluster.id == cluster_id).first()
         if not cluster:
             raise ResourceNotFoundError("Cluster", cluster_id)
+
+        # If the EKS cluster was deleted, return empty immediately — no ghost nodes in the UI.
+        _dead_statuses = {'DEGRADED', 'DISCONNECTED'}
+        _cluster_status = cluster.status.value if hasattr(cluster.status, 'value') else str(cluster.status)
+        if _cluster_status in _dead_statuses:
+            # Also clear any leftover instances so future calls are fast
+            from backend.models.instance import Instance as _Inst_dd
+            _leftover = self.db.query(_Inst_dd).filter(_Inst_dd.cluster_id == cluster_id).count()
+            if _leftover > 0:
+                self.db.query(_Inst_dd).filter(_Inst_dd.cluster_id == cluster_id).delete(synchronize_session=False)
+                self.db.commit()
+            return {
+                "cluster_id": cluster_id,
+                "cluster_name": cluster.name,
+                "total_nodes": 0,
+                "total_pods": 0,
+                "spot_friendly_pods": 0,
+                "non_spot_friendly_pods": 0,
+                "stable_node": None,
+                "nodes": [],
+                "timestamp": datetime.utcnow().isoformat(),
+                "warning": f"Cluster is {_cluster_status}. No live node data available."
+            }
 
         # Only show RUNNING instances — terminated/shutting-down nodes must not appear in the UI
         _all_instances = self.db.query(Instance).filter(
@@ -1542,27 +1627,89 @@ echo "✅ Agent successfully deployed!"
             or (i.instance_id or '').startswith('ip-')
         ]
 
-        # RC5+: extend pod metrics freshness window to 30 minutes.
-        # Daemon set reports every 1 min; 30× window tolerates agent restarts,
-        # ngrok tunnel rotations, and brief network outages without blanking
-        # out all utilisation data in the fleet view.
-        cutoff_time = datetime.utcnow() - timedelta(minutes=30)
+        # Agent reports pod metrics every ~1 minute. Use a 5-minute window:
+        # fresh enough to exclude stale pods from terminated/replaced nodes,
+        # while tolerating brief agent restarts or tunnel hiccups.
+        cutoff_time = datetime.utcnow() - timedelta(minutes=5)
 
-        latest_subq = self.db.query(
-            PodMetric.pod_name,
-            PodMetric.node_name,
-            func.max(PodMetric.timestamp).label('max_ts')
-        ).filter(
-            PodMetric.cluster_id == cluster_id,
-            PodMetric.timestamp >= cutoff_time
-        ).group_by(PodMetric.pod_name, PodMetric.node_name).subquery()
+        # Use PostgreSQL DISTINCT ON (pod_name) to get exactly one row per pod —
+        # the most recent report. This is immune to timestamp ties (multiple agents
+        # on different nodes can insert the same pod at the same second) and to
+        # cancelled/rescheduled pods that left stale rows in the window.
+        from sqlalchemy import text as _sa_text
+        _raw_pods = self.db.execute(
+            _sa_text("""
+                SELECT DISTINCT ON (pod_name)
+                    id, cluster_id, pod_name, node_name, namespace,
+                    cpu_usage_millicores, cpu_request_millicores,
+                    memory_usage_bytes, memory_request_bytes,
+                    controller_kind, pod_metadata, timestamp
+                FROM pod_metrics
+                WHERE cluster_id = :cluster_id
+                  AND timestamp >= :cutoff
+                ORDER BY pod_name, timestamp DESC
+            """),
+            {"cluster_id": cluster_id, "cutoff": cutoff_time}
+        ).fetchall()
 
-        recent_pods = self.db.query(PodMetric).join(
-            latest_subq,
-            (PodMetric.pod_name == latest_subq.c.pod_name) &
-            (PodMetric.node_name == latest_subq.c.node_name) &
-            (PodMetric.timestamp == latest_subq.c.max_ts)
-        ).all()
+        # Re-query full ORM objects for the deduplicated set so downstream code
+        # can use ORM attributes (pod.pod_metadata, pod.controller_kind, etc.)
+        _dedup_ids = [r[0] for r in _raw_pods]
+        recent_pods = (
+            self.db.query(PodMetric).filter(PodMetric.id.in_(_dedup_ids)).all()
+            if _dedup_ids else []
+        )
+
+
+        # Load node-level classification from Redis (WorkloadInspector scan, 9-min TTL).
+        # Keys: node_name → "STATELESS_ELIGIBLE" | "STATEFUL_PROTECTED" | "DRAIN_UNSAFE" | "SYSTEM_PROTECTED"
+        _node_classification: dict = {}
+        _workload_tier_cache: dict = {}
+        try:
+            from backend.core.redis_client import get_redis_client as _grc_pod
+            import json as _json_pod
+            _redis_pod = _grc_pod()
+            _raw_nc = _redis_pod.get(f"spot:node_classification:{cluster_id}")
+            if _raw_nc:
+                _node_classification = _json_pod.loads(_raw_nc)
+        except Exception:
+            pass  # best-effort; falls back to simple checks below
+
+        # System namespaces whose pods are never spot-migratable
+        _SYSTEM_NS = frozenset({
+            "kube-system", "kube-public", "kube-node-lease",
+            "karpenter", "spot-optimizer", "cert-manager", "monitoring",
+            "istio-system", "linkerd",
+        })
+
+        # Pod-name patterns for known stateful workloads (fallback when agent
+        # doesn't report PVC metadata or workload tier isn't cached in Redis).
+        # Matches: postgres-0, redis-master-xyz, my-mongodb-5f8b, etc.
+        import re as _re_cls
+        _STATEFUL_POD_NAME_RE = _re_cls.compile(
+            r"(?:postgres|postgresql|pgbouncer|patroni|spilo|"
+            r"redis|keydb|dragonfly|"
+            r"mongo|mysql|mariadb|percona|"
+            r"elasticsearch|opensearch|"
+            r"cassandra|scylladb|"
+            r"kafka|zookeeper|"
+            r"rabbitmq|nats|activemq|"
+            r"etcd|consul|memcached|"
+            r"minio|cockroachdb|clickhouse|influxdb|neo4j|couchdb)",
+            _re_cls.IGNORECASE,
+        )
+
+        # Control-plane pod names that must be SPREAD, not packed onto one node.
+        # These are Deployments in kube-system / argocd / karpenter that provide
+        # cluster services. They should land on OD but be distributed.
+        _CONTROL_PLANE_POD_RE = _re_cls.compile(
+            r"^(?:coredns|karpenter|metrics-server|"
+            r"argocd-(?:server|controller|repo|application|redis|dex|notifications)|"
+            r"cluster-autoscaler|aws-load-balancer-controller|"
+            r"ebs-csi-controller|efs-csi-controller|"
+            r"cert-manager|external-dns|ingress-nginx-controller)",
+            _re_cls.IGNORECASE,
+        )
 
         pods_by_node: dict = {}
         for pod in recent_pods:
@@ -1571,16 +1718,74 @@ echo "✅ Agent successfully deployed!"
                 pods_by_node[node_name] = []
 
             pod_metadata = pod.pod_metadata or {}
-            volumes = pod_metadata.get('volumes', [])
-            has_pvc = (
-                any('persistentVolumeClaim' in vol for vol in volumes)
-                if isinstance(volumes, list) else False
+            # agent v1.1.7+ sets 'has_pvc' directly; older agents/fallback: volumes list.
+            has_pvc = pod_metadata.get('has_pvc', False)
+            if not has_pvc:
+                volumes = pod_metadata.get('volumes', [])
+                has_pvc = any('persistentVolumeClaim' in vol for vol in volumes) if isinstance(volumes, list) else False
+            # Use the dedicated controller_kind DB column; pod_metadata['owner_kind'] was never set by the agent.
+            owner_kind = pod.controller_kind or pod_metadata.get('owner_kind', 'Pod')
+            namespace = pod.namespace or ''
+
+            # ── Determine is_stateful using all classification signals ──────
+            # Factor 1: PVC or StatefulSet (always stateful by nature)
+            _stateful_by_nature = has_pvc or owner_kind == 'StatefulSet'
+
+            # Factor 3: System namespace pods are never spot-migratable (by nature)
+            if not _stateful_by_nature and namespace in _SYSTEM_NS:
+                _stateful_by_nature = True
+
+            # Factor 4: DaemonSet — runs on every node (by nature, not migratable)
+            _is_daemonset = owner_kind == 'DaemonSet'
+            if not _stateful_by_nature and _is_daemonset:
+                _stateful_by_nature = True
+
+            # Factor 5: Smart classifier tier from Redis (TIER_0 / TIER_1 = not spot-friendly)
+            if not _stateful_by_nature and owner_kind not in ('', 'Pod'):
+                _tier_key = f"spot:workload_tier:{cluster_id}:{namespace}/{owner_kind}"
+                if _tier_key not in _workload_tier_cache:
+                    try:
+                        _raw_tier = _redis_pod.get(_tier_key)
+                        _workload_tier_cache[_tier_key] = _json_pod.loads(_raw_tier) if _raw_tier else None
+                    except Exception:
+                        _workload_tier_cache[_tier_key] = None
+                _tier_data = _workload_tier_cache.get(_tier_key)
+                if _tier_data and _tier_data.get('tier', 4) <= 1:
+                    _stateful_by_nature = True
+
+            # Factor 6: Pod name matches known stateful image patterns (fallback
+            # for when agent doesn't send PVC metadata or tier isn't cached yet)
+            if not _stateful_by_nature:
+                _pod_nm = pod.pod_name or ''
+                if _STATEFUL_POD_NAME_RE.search(_pod_nm):
+                    _stateful_by_nature = True
+
+            # ── Determine control-plane vs DaemonSet sub-type ────────────────
+            # DaemonSets: scheduled on every node automatically, skip in placement
+            # Control-plane: must SPREAD across nodes (not pack into one)
+            _is_control_plane = False
+            _pod_nm_cp = pod.pod_name or ''
+            if namespace in _SYSTEM_NS and not _is_daemonset:
+                if _CONTROL_PLANE_POD_RE.search(_pod_nm_cp):
+                    _is_control_plane = True
+
+            # Factor 2: Node-level WorkloadInspector result (STATEFUL_PROTECTED/DRAIN_UNSAFE)
+            # A spot-friendly pod found on a stateful-classified node = misplaced
+            _stateful_by_placement = False
+            if not _stateful_by_nature:
+                _nstatus = _node_classification.get(node_name, '')
+                if _nstatus in ('STATEFUL_PROTECTED', 'DRAIN_UNSAFE'):
+                    _stateful_by_placement = True
+
+            _stateful = _stateful_by_nature or _stateful_by_placement
+            _stateful_reason = (
+                "by_nature" if _stateful_by_nature
+                else ("by_placement" if _stateful_by_placement else None)
             )
-            owner_kind = pod_metadata.get('owner_kind', 'Pod')
 
             pods_by_node[node_name].append({
                 "pod_name": pod.pod_name,
-                "namespace": pod.namespace,
+                "namespace": namespace,
                 "cpu_usage_millicores": pod.cpu_usage_millicores,
                 "cpu_request_millicores": pod.cpu_request_millicores,
                 "memory_usage_bytes": pod.memory_usage_bytes,
@@ -1593,9 +1798,25 @@ echo "✅ Agent successfully deployed!"
                 ) if pod.memory_request_bytes else 0,
                 "has_pvc": has_pvc,
                 "controller_type": owner_kind,
-                "is_stateful": has_pvc or owner_kind == 'StatefulSet',
-                "status": pod_metadata.get('status', 'Unknown')
+                "is_stateful": _stateful,
+                "stateful_reason": _stateful_reason,
+                "is_daemonset": _is_daemonset,
+                "is_control_plane": _is_control_plane,
+                "status": pod_metadata.get('status', 'Unknown'),
+                # v4.3 WIE enrichment — additive, does NOT change is_stateful logic
+                # Defaults to None when engine hasn't run yet for this workload (backward compatible)
+                **_get_wie_enrichment(_redis_pod, _json_pod, cluster_id, namespace, owner_kind),
             })
+
+        # Drop pods from dead/replaced nodes — only keep pods whose node_name
+        # matches a currently-running instance. This prevents stale pod_metrics
+        # rows (within the 5-min window) from terminated nodes inflating counts.
+        _live_node_names = {i.node_name for i in instances if i.node_name}
+        pods_by_node = {
+            node: pods
+            for node, pods in pods_by_node.items()
+            if node in _live_node_names
+        }
 
         _VCPU_MAP = {
             "t3.nano": 2, "t3.micro": 2, "t3.small": 2, "t3.medium": 2, "t3.large": 2, "t3.xlarge": 4, "t3.2xlarge": 8,
@@ -1874,6 +2095,12 @@ echo "✅ Agent successfully deployed!"
             for n in nodes_detailed
         ) - _non_spot_friendly_count
 
+        # Count misplaced pods: spot-friendly pods currently on stateful-classified nodes
+        _misplaced_pods = sum(
+            len([p for p in n["pods"] if p.get("stateful_reason") == "by_placement"])
+            for n in nodes_detailed
+        )
+
         return {
             "cluster_id": cluster_id,
             "cluster_name": cluster.name,
@@ -1881,6 +2108,7 @@ echo "✅ Agent successfully deployed!"
             "total_pods": _total_pods,
             "spot_friendly_pods": _spot_friendly_pods,
             "non_spot_friendly_pods": _total_pods - _spot_friendly_pods,
+            "misplaced_pods": _misplaced_pods,
             "stable_node": _stable_node_info,
             "nodes": nodes_detailed,
             "timestamp": datetime.utcnow().isoformat(),

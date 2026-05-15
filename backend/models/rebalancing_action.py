@@ -5,9 +5,20 @@ Tracks auto-rebalancing actions triggered by:
 - Graceful: 10-minute proactive rebalancing to safer pools
 """
 
-from sqlalchemy import Column, Integer, String, DateTime, Float, Text, func, Index, ForeignKey
+from sqlalchemy import Column, Integer, String, DateTime, Float, Text, Boolean, func, Index, ForeignKey
 from sqlalchemy.dialects.postgresql import JSONB
 from backend.models.base import Base
+
+
+# ── Karpenter action step journal ────────────────────────────────────────────
+# Persisted step for crash-safe Phase 1 → 2 execution.
+# NULL means the action predates this column OR is not a Karpenter action.
+ACTION_STEP_INJECTED    = 'INJECTED'     # NodePool patched with target instance type
+ACTION_STEP_WAITING     = 'WAITING_SPOT' # Trigger pod created; awaiting Karpenter provision
+ACTION_STEP_DRAINING    = 'DRAINING'     # New spot node ready; CORDON+DRAIN agent actions queued
+ACTION_STEP_TERMINATING = 'TERMINATING'  # DRAIN complete; TERMINATE_NODE dispatched
+ACTION_STEP_CLEANUP     = 'CLEANUP'      # Termination called; cleaning pods/Redis
+ACTION_STEP_DONE        = 'DONE'         # action.status = 'completed'
 
 
 class RebalancingAction(Base):
@@ -63,6 +74,20 @@ class RebalancingAction(Base):
     state_history = Column(JSONB, nullable=True)                             # [{state, entered_at, exited_at}]
     lock_version = Column(Integer, nullable=True, server_default='0')        # optimistic-lock counter
     source_instance_id = Column(String(50), nullable=True, index=True)       # EC2 instance ID of replaced node
+
+    # Crash-safe Karpenter journal — persisted step so a worker crash between
+    # Phase 1 and Phase 2 resumes from the right point rather than restarting.
+    # Values: INJECTED | WAITING_SPOT | DRAINING | TERMINATING | CLEANUP | DONE
+    # NULL = non-Karpenter action or action predates this column.
+    action_step = Column(String(20), nullable=True, index=True)
+
+    # Phase 4 — pod-level visibility columns (§6 plan v1.1).
+    # migration_type: 'node_level' (auto_rebalancer) | 'pod_level' | 'stateful_pod' (placement_controller)
+    # source: which engine created this record
+    # agent_action_id: FK to agent_actions.id (nullable — node-level actions have no linked AgentAction)
+    migration_type = Column(String(20), nullable=False, server_default="node_level")
+    source = Column(String(30), nullable=False, server_default="auto_rebalancer")
+    agent_action_id = Column(String(36), ForeignKey("agent_actions.id", ondelete="SET NULL"), nullable=True, index=True)
 
     def __repr__(self):
         return f"<RebalancingAction(id={self.id}, cluster={self.cluster_id}, {self.source_pool} → {self.target_pool}, status={self.status})>"

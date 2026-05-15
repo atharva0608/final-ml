@@ -2,6 +2,55 @@
 # Spot Optimizer Platform - Docker Startup Script
 # Generated: 2026-01-06
 # Purpose: Bridges the gap between git repo and running Docker containers
+#
+# ════════════════════════════════════════════════════════════════════
+# QUICK REFERENCE — ALL COMMANDS & FLAGS
+# ════════════════════════════════════════════════════════════════════
+#
+# USAGE: ./start.sh [command] [flags]
+#
+# ── Flags (combine with any command) ────────────────────────────────
+#   -novolume              Rebuild/restart WITHOUT touching volumes (preserves data) [DEFAULT for up]
+#   --all                  Apply to all containers (default behaviour)
+#   --container <name>     Target a specific container/service only
+#   --full                 Wipe volumes + images + networks, then rebuild
+#
+# ── Primary Commands ─────────────────────────────────────────────────
+#   ./start.sh                                   # Rebuild all containers, volumes preserved (default)
+#   ./start.sh up                                # Same as above
+#   ./start.sh up -novolume                      # Explicit: rebuild all, keep volumes
+#   ./start.sh up --all                          # Rebuild all containers, volumes preserved
+#   ./start.sh up --full                         # Wipe everything (volumes/images/networks) + rebuild
+#   ./start.sh up --container backend            # Rebuild only the backend container
+#   ./start.sh up --container backend -novolume  # Rebuild backend, keep volumes
+#   ./start.sh up --container backend --full     # Full wipe + rebuild backend only
+#
+#   ./start.sh down                              # Stop all containers (volumes preserved)
+#   ./start.sh down -novolume                    # Stop containers, explicitly keep volumes
+#   ./start.sh down --full                       # Full teardown incl. volumes + images + networks
+#   ./start.sh down --container frontend         # Stop and remove one container
+#
+#   ./start.sh restart                           # Restart all services
+#   ./start.sh restart --all                     # Restart all services
+#   ./start.sh restart --container celery-worker # Restart one service
+#
+#   ./start.sh status                            # Show service status + health checks
+#
+# ── Maintenance Commands ──────────────────────────────────────────────
+#   ./start.sh logs                              # Stream logs for all services
+#   ./start.sh logs --container frontend         # Stream logs for frontend only
+#   ./start.sh build                             # Rebuild all Docker images
+#   ./start.sh build --container backend         # Rebuild only backend image
+#   ./start.sh fresh                             # Full fresh install (stops, rebuilds, migrates, starts)
+#   ./start.sh migrate                           # Run database migrations
+#   ./start.sh clean                             # Remove containers, volumes, images (interactive)
+#
+# ── Development Commands ──────────────────────────────────────────────
+#   ./start.sh shell                             # Shell into backend container (default)
+#   ./start.sh shell --container frontend        # Shell into specific container
+#   ./start.sh test                              # Run test suite
+#
+# ════════════════════════════════════════════════════════════════════
 
 set -e  # Exit on error
 
@@ -117,143 +166,258 @@ echo ""
 
 # Parse command line arguments
 MODE="${1:-up}"
-DETACH="${2:--d}"
+shift 2>/dev/null || true
+
+# Default flag values
+FLAG_NOVOLUME=false
+FLAG_ALL=false
+FLAG_CONTAINER=""
+FLAG_FULL=false
+SERVICE=""
+
+# Parse remaining flags and positional arguments
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -novolume)
+            FLAG_NOVOLUME=true
+            shift
+            ;;
+        --all)
+            FLAG_ALL=true
+            shift
+            ;;
+        --container)
+            if [[ -z "${2:-}" ]]; then
+                echo -e "${RED}❌ --container requires a container/service name${NC}"
+                exit 1
+            fi
+            FLAG_CONTAINER="$2"
+            shift 2
+            ;;
+        --full)
+            FLAG_FULL=true
+            shift
+            ;;
+        *)
+            SERVICE="$1"
+            shift
+            ;;
+    esac
+done
+
+# Flag conflict validation
+if [[ "$FLAG_FULL" == "true" && "$FLAG_NOVOLUME" == "true" ]]; then
+    echo -e "${RED}❌ Conflicting flags: --full and -novolume cannot be used together${NC}"
+    exit 1
+fi
+if [[ -n "$FLAG_CONTAINER" && "$FLAG_ALL" == "true" ]]; then
+    echo -e "${RED}❌ Conflicting flags: --container and --all cannot be used together${NC}"
+    exit 1
+fi
+
+# Helper: start databases first, then all services, then wait for health
+start_all_services() {
+    echo -e "${BLUE}🗄️  Starting database services...${NC}"
+    $COMPOSE_CMD -f docker/docker-compose.yml up -d postgres redis
+    echo ""
+    echo -e "${BLUE}⏳ Waiting for databases...${NC}"
+    wait_for_service "postgres" || {
+        echo -e "${RED}❌ PostgreSQL failed to start${NC}"
+        $COMPOSE_CMD -f docker/docker-compose.yml logs postgres
+        exit 1
+    }
+    wait_for_service "redis" || {
+        echo -e "${RED}❌ Redis failed to start${NC}"
+        $COMPOSE_CMD -f docker/docker-compose.yml logs redis
+        exit 1
+    }
+    echo ""
+    echo -e "${BLUE}🐳 Starting application services...${NC}"
+    echo -e "${YELLOW}  ↳ Database tables will be auto-created on startup${NC}"
+    $COMPOSE_CMD -f docker/docker-compose.yml up -d
+    echo ""
+    echo -e "${BLUE}⏳ Waiting for services to be healthy...${NC}"
+    wait_for_service "backend" || {
+        echo -e "${RED}❌ Backend failed to start${NC}"
+        echo -e "${YELLOW}Showing last 50 lines of backend logs:${NC}"
+        $COMPOSE_CMD -f docker/docker-compose.yml logs --tail=50 backend
+        exit 1
+    }
+    wait_for_service "celery-worker" || {
+        echo -e "${YELLOW}⚠️  Celery worker issues (non-critical)${NC}"
+    }
+    wait_for_service "frontend" || {
+        echo -e "${RED}❌ Frontend failed to start${NC}"
+        exit 1
+    }
+    echo ""
+}
+
+# Helper: print access points and credentials after a successful startup
+show_access_points() {
+    echo -e "${GREEN}✅ All services started successfully!${NC}"
+    echo ""
+    echo -e "${BLUE}📊 Service Status:${NC}"
+    $COMPOSE_CMD -f docker/docker-compose.yml ps
+    echo ""
+    echo -e "${BLUE}📋 Backend Initialization Logs:${NC}"
+    $COMPOSE_CMD -f docker/docker-compose.yml logs backend | grep -E "(Database tables|Created default admin|Application starting)" | tail -5
+    echo ""
+    echo -e "${GREEN}========================================${NC}"
+    echo -e "${GREEN}✅ Platform is READY!${NC}"
+    echo -e "${GREEN}========================================${NC}"
+    echo ""
+    echo -e "${BLUE}📍 Access Points:${NC}"
+    echo -e "  Frontend:    ${GREEN}http://localhost${NC}"
+    echo -e "  Backend API: ${GREEN}http://localhost:8000${NC}"
+    echo -e "  API Docs:    ${GREEN}http://localhost:8000/docs${NC}"
+    echo ""
+    echo -e "${BLUE}🔑 Login Credentials:${NC}"
+    echo ""
+    echo -e "  ${YELLOW}Super Admin:${NC}"
+    echo -e "    Email:    ${GREEN}admin@spotoptimizer.com${NC}"
+    echo -e "    Password: ${GREEN}admin123${NC}"
+    echo ""
+    echo -e "  ${YELLOW}Demo Client:${NC}"
+    echo -e "    Email:    ${GREEN}demo@spotoptimizer.com${NC}"
+    echo -e "    Password: ${GREEN}demo1234${NC}"
+    echo ""
+    echo -e "${YELLOW}⚠️  Change default passwords immediately!${NC}"
+    echo ""
+    echo -e "${BLUE}🔧 Useful Commands:${NC}"
+    echo -e "  View logs:      ./start.sh logs [--container <name>]"
+    echo -e "  Stop all:       ./start.sh down"
+    echo -e "  Service status: ./start.sh status"
+    echo ""
+}
 
 case "$MODE" in
     up)
-        echo -e "${BLUE}🚀 One-Click Deployment: Spot Optimizer Platform${NC}"
-        echo -e "${BLUE}This will clean and rebuild everything from scratch${NC}"
-        echo ""
+        # ── Specific container: stop → rebuild → start one service ───────────
+        if [[ -n "$FLAG_CONTAINER" ]]; then
+            echo -e "${BLUE}🔄 Targeting container: ${YELLOW}$FLAG_CONTAINER${NC}"
+            echo ""
+            if [[ "$FLAG_FULL" == "true" ]]; then
+                echo -e "${YELLOW}🗑️  Full teardown of $FLAG_CONTAINER (container + volumes + image)...${NC}"
+                $COMPOSE_CMD -f docker/docker-compose.yml stop "$FLAG_CONTAINER" 2>/dev/null || true
+                $COMPOSE_CMD -f docker/docker-compose.yml rm -f -v "$FLAG_CONTAINER" 2>/dev/null || true
+                docker images | grep -E "docker[-_]${FLAG_CONTAINER}|${FLAG_CONTAINER}" | awk '{print $3}' | xargs -r docker rmi -f 2>/dev/null || true
+                echo -e "${GREEN}✅ $FLAG_CONTAINER fully cleared${NC}"
+            elif [[ "$FLAG_NOVOLUME" == "true" ]]; then
+                echo -e "${YELLOW}🛑 Stopping $FLAG_CONTAINER (preserving volumes)...${NC}"
+                $COMPOSE_CMD -f docker/docker-compose.yml stop "$FLAG_CONTAINER" 2>/dev/null || true
+                $COMPOSE_CMD -f docker/docker-compose.yml rm -f "$FLAG_CONTAINER" 2>/dev/null || true
+            else
+                echo -e "${YELLOW}🛑 Stopping $FLAG_CONTAINER...${NC}"
+                $COMPOSE_CMD -f docker/docker-compose.yml stop "$FLAG_CONTAINER" 2>/dev/null || true
+                $COMPOSE_CMD -f docker/docker-compose.yml rm -f "$FLAG_CONTAINER" 2>/dev/null || true
+            fi
+            echo ""
+            echo -e "${BLUE}🔨 Rebuilding $FLAG_CONTAINER...${NC}"
+            $COMPOSE_CMD -f docker/docker-compose.yml build --no-cache "$FLAG_CONTAINER"
+            echo -e "${BLUE}🚀 Starting $FLAG_CONTAINER...${NC}"
+            $COMPOSE_CMD -f docker/docker-compose.yml up -d "$FLAG_CONTAINER"
+            echo ""
+            echo -e "${GREEN}✅ $FLAG_CONTAINER rebuilt and restarted${NC}"
+            $COMPOSE_CMD -f docker/docker-compose.yml ps "$FLAG_CONTAINER"
 
-        # Stop and remove ALL existing containers, volumes, and images
-        echo -e "${YELLOW}🗑️  Cleaning up existing resources...${NC}"
+        # ── --full: wipe volumes + images + networks, then rebuild all ────────
+        elif [[ "$FLAG_FULL" == "true" ]]; then
+            echo -e "${BLUE}🔥 Full Wipe + Rebuild: containers, volumes, images, networks${NC}"
+            echo ""
+            echo -e "${YELLOW}🗑️  Removing all containers, volumes, images, and networks...${NC}"
+            $COMPOSE_CMD -f docker/docker-compose.yml down --volumes --rmi all --remove-orphans 2>/dev/null || true
+            echo -e "${YELLOW}  ↳ Pruning unused Docker networks...${NC}"
+            docker network prune -f
+            echo -e "${GREEN}✅ Full cleanup complete${NC}"
+            echo ""
+            echo -e "${BLUE}🔨 Building Docker images from scratch...${NC}"
+            $COMPOSE_CMD -f docker/docker-compose.yml build --no-cache
+            echo -e "${GREEN}✅ Docker images built${NC}"
+            echo ""
+            start_all_services
+            show_access_points
 
-        # Stop all containers
-        if $COMPOSE_CMD -f docker/docker-compose.yml ps -q 2>/dev/null | grep -q .; then
-            echo -e "${YELLOW}  ↳ Stopping running containers...${NC}"
-            $COMPOSE_CMD -f docker/docker-compose.yml down -v 2>/dev/null || true
+        # ── -novolume: rebuild code/images, preserve volume data ─────────────
+        elif [[ "$FLAG_NOVOLUME" == "true" ]]; then
+            echo -e "${BLUE}🔨 Rebuild (volumes preserved): Spot Optimizer Platform${NC}"
+            echo ""
+            echo -e "${YELLOW}🛑 Stopping containers (volumes are preserved)...${NC}"
+            $COMPOSE_CMD -f docker/docker-compose.yml down 2>/dev/null || true
+            echo -e "${YELLOW}  ↳ Removing old Docker images...${NC}"
+            docker images | grep "docker-" | awk '{print $3}' | xargs -r docker rmi -f 2>/dev/null || true
+            echo -e "${GREEN}✅ Containers stopped, volumes intact${NC}"
+            echo ""
+            echo -e "${BLUE}🔨 Building Docker images from scratch...${NC}"
+            $COMPOSE_CMD -f docker/docker-compose.yml build --no-cache
+            echo -e "${GREEN}✅ Docker images built${NC}"
+            echo ""
+            start_all_services
+            show_access_points
+
+        # ── Default / --all: rebuild all containers, volumes preserved ─────────
+        else
+            echo -e "${BLUE}🔨 Rebuild All Containers (volumes preserved): Spot Optimizer Platform${NC}"
+            echo -e "${BLUE}Containers and images will be rebuilt — your data volumes are safe${NC}"
+            echo ""
+            echo -e "${YELLOW}🛑 Stopping containers (volumes are preserved)...${NC}"
+            $COMPOSE_CMD -f docker/docker-compose.yml down 2>/dev/null || true
+            echo -e "${YELLOW}  ↳ Removing old Docker images...${NC}"
+            docker images | grep "docker-" | awk '{print $3}' | xargs -r docker rmi -f 2>/dev/null || true
+            echo -e "${GREEN}✅ Containers stopped, volumes intact${NC}"
+            echo ""
+            echo -e "${BLUE}🔨 Building Docker images from scratch...${NC}"
+            $COMPOSE_CMD -f docker/docker-compose.yml build --no-cache
+            echo -e "${GREEN}✅ Docker images built${NC}"
+            echo ""
+            start_all_services
+            show_access_points
         fi
-
-        # Remove old images
-        echo -e "${YELLOW}  ↳ Removing old Docker images...${NC}"
-        docker images | grep "docker-" | awk '{print $3}' | xargs -r docker rmi -f 2>/dev/null || true
-
-        echo -e "${GREEN}✅ Cleanup complete${NC}"
-        echo ""
-
-        # Build fresh images
-        echo -e "${BLUE}🔨 Building Docker images from scratch...${NC}"
-        $COMPOSE_CMD -f docker/docker-compose.yml build --no-cache
-        echo -e "${GREEN}✅ Docker images built${NC}"
-        echo ""
-
-        # Start database services first
-        echo -e "${BLUE}🗄️  Starting database services...${NC}"
-        $COMPOSE_CMD -f docker/docker-compose.yml up -d postgres redis
-        echo ""
-
-        # Wait for databases to be ready
-        echo -e "${BLUE}⏳ Waiting for databases...${NC}"
-        wait_for_service "postgres" || {
-            echo -e "${RED}❌ PostgreSQL failed to start${NC}"
-            $COMPOSE_CMD -f docker/docker-compose.yml logs postgres
-            exit 1
-        }
-        wait_for_service "redis" || {
-            echo -e "${RED}❌ Redis failed to start${NC}"
-            $COMPOSE_CMD -f docker/docker-compose.yml logs redis
-            exit 1
-        }
-        echo ""
-
-        # Start all application services (tables auto-created on backend startup)
-        echo -e "${BLUE}🐳 Starting application services...${NC}"
-        echo -e "${YELLOW}  ↳ Database tables will be auto-created on startup${NC}"
-        $COMPOSE_CMD -f docker/docker-compose.yml up -d
-        echo ""
-
-        # Wait for critical services
-        echo -e "${BLUE}⏳ Waiting for services to be healthy...${NC}"
-        wait_for_service "backend" || {
-            echo -e "${RED}❌ Backend failed to start${NC}"
-            echo -e "${YELLOW}Showing last 50 lines of backend logs:${NC}"
-            $COMPOSE_CMD -f docker/docker-compose.yml logs --tail=50 backend
-            exit 1
-        }
-        wait_for_service "celery-worker" || {
-            echo -e "${YELLOW}⚠️  Celery worker issues (non-critical)${NC}"
-        }
-        wait_for_service "frontend" || {
-            echo -e "${RED}❌ Frontend failed to start${NC}"
-            exit 1
-        }
-        echo ""
-
-        # Seed demo data (users, accounts, templates)
-        # Seeding is now handled by the backend startup event (backend/core/api_gateway.py)
-        # echo -e "${BLUE}🌱 Seeding demo data...${NC}"
-        # $COMPOSE_CMD -f docker/docker-compose.yml exec -T backend python scripts/seed_demo_data.py
-        # echo ""
-
-        # Show service status
-        echo -e "${GREEN}✅ All services started successfully!${NC}"
-        echo ""
-        echo -e "${BLUE}📊 Service Status:${NC}"
-        $COMPOSE_CMD -f docker/docker-compose.yml ps
-        echo ""
-
-        # Show logs snippet for verification
-        echo -e "${BLUE}📋 Backend Initialization Logs:${NC}"
-        $COMPOSE_CMD -f docker/docker-compose.yml logs backend | grep -E "(Database tables|Created default admin|Application starting)" | tail -5
-        echo ""
-
-        echo -e "${GREEN}========================================${NC}"
-        echo -e "${GREEN}✅ Platform is READY!${NC}"
-        echo -e "${GREEN}========================================${NC}"
-        echo ""
-        echo -e "${BLUE}📍 Access Points:${NC}"
-        echo -e "  Frontend:    ${GREEN}http://localhost${NC}"
-        echo -e "  Backend API: ${GREEN}http://localhost:8000${NC}"
-        echo -e "  API Docs:    ${GREEN}http://localhost:8000/docs${NC}"
-        echo ""
-        echo -e "${BLUE}🔑 Login Credentials:${NC}"
-        echo ""
-        echo -e "  ${YELLOW}Super Admin:${NC}"
-        echo -e "    Email:    ${GREEN}admin@spotoptimizer.com${NC}"
-        echo -e "    Password: ${GREEN}admin123${NC}"
-        echo ""
-        echo -e "  ${YELLOW}Demo Client:${NC}"
-        echo -e "    Email:    ${GREEN}demo@spotoptimizer.com${NC}"
-        echo -e "    Password: ${GREEN}demo1234${NC}"
-        echo ""
-        echo -e "${YELLOW}⚠️  Change default passwords immediately!${NC}"
-        echo ""
-        echo -e "${BLUE}🔧 Useful Commands:${NC}"
-        echo -e "  View logs:    ./start.sh logs [service]"
-        echo -e "  Stop all:     ./start.sh down"
-        echo -e "  Service status: ./start.sh status"
-        echo ""
         ;;
 
     down)
-        echo -e "${YELLOW}🛑 Stopping Spot Optimizer Platform...${NC}"
-        $COMPOSE_CMD -f docker/docker-compose.yml down
-        echo -e "${GREEN}✅ All services stopped${NC}"
+        if [[ -n "$FLAG_CONTAINER" ]]; then
+            echo -e "${YELLOW}🛑 Stopping container: $FLAG_CONTAINER${NC}"
+            $COMPOSE_CMD -f docker/docker-compose.yml stop "$FLAG_CONTAINER"
+            $COMPOSE_CMD -f docker/docker-compose.yml rm -f "$FLAG_CONTAINER"
+            echo -e "${GREEN}✅ $FLAG_CONTAINER stopped and removed${NC}"
+        elif [[ "$FLAG_FULL" == "true" ]]; then
+            echo -e "${RED}🗑️  Full teardown: ALL containers, volumes, images, networks...${NC}"
+            $COMPOSE_CMD -f docker/docker-compose.yml down --volumes --rmi all --remove-orphans 2>/dev/null || true
+            docker network prune -f
+            echo -e "${GREEN}✅ Full teardown complete${NC}"
+        elif [[ "$FLAG_NOVOLUME" == "true" ]]; then
+            echo -e "${YELLOW}🛑 Stopping all containers (preserving volumes)...${NC}"
+            $COMPOSE_CMD -f docker/docker-compose.yml down
+            echo -e "${GREEN}✅ All services stopped (volumes preserved)${NC}"
+        else
+            echo -e "${YELLOW}🛑 Stopping Spot Optimizer Platform...${NC}"
+            $COMPOSE_CMD -f docker/docker-compose.yml down
+            echo -e "${GREEN}✅ All services stopped${NC}"
+        fi
         ;;
 
     restart)
-        echo -e "${YELLOW}🔄 Restarting Spot Optimizer Platform...${NC}"
-        $COMPOSE_CMD -f docker/docker-compose.yml restart
-        echo -e "${GREEN}✅ All services restarted${NC}"
-        echo ""
-        $COMPOSE_CMD -f docker/docker-compose.yml ps
+        if [[ -n "$FLAG_CONTAINER" ]]; then
+            echo -e "${YELLOW}🔄 Restarting container: $FLAG_CONTAINER${NC}"
+            $COMPOSE_CMD -f docker/docker-compose.yml restart "$FLAG_CONTAINER"
+            echo -e "${GREEN}✅ $FLAG_CONTAINER restarted${NC}"
+            echo ""
+            $COMPOSE_CMD -f docker/docker-compose.yml ps "$FLAG_CONTAINER"
+        else
+            echo -e "${YELLOW}🔄 Restarting Spot Optimizer Platform...${NC}"
+            $COMPOSE_CMD -f docker/docker-compose.yml restart
+            echo -e "${GREEN}✅ All services restarted${NC}"
+            echo ""
+            $COMPOSE_CMD -f docker/docker-compose.yml ps
+        fi
         ;;
 
     logs)
-        SERVICE="${2:-}"
-        if [ -n "$SERVICE" ]; then
-            echo -e "${BLUE}📋 Showing logs for $SERVICE (Ctrl+C to exit)...${NC}"
-            $COMPOSE_CMD -f docker/docker-compose.yml logs -f "$SERVICE"
+        TARGET="${FLAG_CONTAINER:-$SERVICE}"
+        if [[ -n "$TARGET" ]]; then
+            echo -e "${BLUE}📋 Showing logs for $TARGET (Ctrl+C to exit)...${NC}"
+            $COMPOSE_CMD -f docker/docker-compose.yml logs -f "$TARGET"
         else
             echo -e "${BLUE}📋 Showing logs for all services (Ctrl+C to exit)...${NC}"
             $COMPOSE_CMD -f docker/docker-compose.yml logs -f
@@ -261,9 +425,15 @@ case "$MODE" in
         ;;
 
     build)
-        echo -e "${BLUE}🔨 Rebuilding Docker images...${NC}"
-        $COMPOSE_CMD -f docker/docker-compose.yml build --no-cache
-        echo -e "${GREEN}✅ Build complete${NC}"
+        if [[ -n "$FLAG_CONTAINER" ]]; then
+            echo -e "${BLUE}🔨 Rebuilding Docker image for: $FLAG_CONTAINER${NC}"
+            $COMPOSE_CMD -f docker/docker-compose.yml build --no-cache "$FLAG_CONTAINER"
+            echo -e "${GREEN}✅ Build complete for $FLAG_CONTAINER${NC}"
+        else
+            echo -e "${BLUE}🔨 Rebuilding all Docker images...${NC}"
+            $COMPOSE_CMD -f docker/docker-compose.yml build --no-cache
+            echo -e "${GREEN}✅ Build complete${NC}"
+        fi
         ;;
 
     fresh)
@@ -328,9 +498,9 @@ case "$MODE" in
         ;;
 
     shell)
-        SERVICE="${2:-backend}"
-        echo -e "${BLUE}🐚 Opening shell in $SERVICE container...${NC}"
-        $COMPOSE_CMD -f docker/docker-compose.yml exec "$SERVICE" bash
+        TARGET="${FLAG_CONTAINER:-${SERVICE:-backend}}"
+        echo -e "${BLUE}🐚 Opening shell in $TARGET container...${NC}"
+        $COMPOSE_CMD -f docker/docker-compose.yml exec "$TARGET" bash
         ;;
 
     test)
@@ -365,40 +535,48 @@ case "$MODE" in
         echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
         echo ""
         echo -e "${BLUE}Usage:${NC}"
-        echo -e "  ./start.sh [command] [options]"
+        echo -e "  ./start.sh [command] [flags]"
         echo ""
         echo -e "${BLUE}🚀 Primary Commands:${NC}"
-        echo -e "  ${GREEN}up${NC}       Start all services (default, use -d for detached mode)"
+        echo -e "  ${GREEN}up${NC}       Start/rebuild all services (default)"
         echo -e "  ${GREEN}down${NC}     Stop all services"
         echo -e "  ${GREEN}restart${NC}  Restart all services"
         echo -e "  ${GREEN}status${NC}   Show service status and health checks"
         echo ""
+        echo -e "${BLUE}🏳️  Flags (combine with any command):${NC}"
+        echo -e "  ${YELLOW}-novolume${NC}            Rebuild/restart without touching volumes (preserve data)"
+        echo -e "  ${YELLOW}--all${NC}                Apply to all containers (default behaviour)"
+        echo -e "  ${YELLOW}--container <name>${NC}   Target a specific container/service only"
+        echo -e "  ${YELLOW}--full${NC}               Full wipe: remove volumes + images + networks, then rebuild"
+        echo ""
         echo -e "${BLUE}🔧 Maintenance Commands:${NC}"
-        echo -e "  ${GREEN}logs${NC}     Show logs (add service name for specific service)"
-        echo -e "  ${GREEN}build${NC}    Rebuild Docker images from scratch"
+        echo -e "  ${GREEN}logs${NC}     Show logs (use --container for a specific service)"
+        echo -e "  ${GREEN}build${NC}    Rebuild Docker images (use --container for a specific service)"
         echo -e "  ${GREEN}fresh${NC}    Fresh installation (stops, rebuilds, migrates, starts)"
         echo -e "  ${GREEN}migrate${NC}  Run database migrations"
-        echo -e "  ${GREEN}clean${NC}    Remove all containers, volumes, and images"
+        echo -e "  ${GREEN}clean${NC}    Remove all containers, volumes, and images (interactive)"
         echo ""
         echo -e "${BLUE}🐚 Development Commands:${NC}"
-        echo -e "  ${GREEN}shell${NC}    Open bash shell in container (specify service name)"
+        echo -e "  ${GREEN}shell${NC}    Open bash shell in container (use --container to specify)"
         echo -e "  ${GREEN}test${NC}     Run test suite"
         echo ""
         echo -e "${BLUE}📋 Examples:${NC}"
-        echo -e "  ./start.sh                  # Start all services in detached mode"
-        echo -e "  ./start.sh up -f            # Start in foreground (see live logs)"
-        echo -e "  ./start.sh status           # Check service health"
-        echo -e "  ./start.sh logs backend     # View backend logs only"
-        echo -e "  ./start.sh shell frontend   # Open shell in frontend container"
-        echo -e "  ./start.sh fresh            # Clean install (for troubleshooting)"
-        echo -e "  ./start.sh migrate          # Run database migrations"
-        echo ""
-        echo -e "${BLUE}🩺 Quick Health Check:${NC}"
-        echo -e "  After starting, verify services are running:"
-        echo -e "    ${GREEN}./start.sh status${NC}"
-        echo -e "  or visit:"
-        echo -e "    Frontend:  ${GREEN}http://localhost${NC}"
-        echo -e "    Backend:   ${GREEN}http://localhost:8000/docs${NC}"
+        echo -e "  ./start.sh                                    # Full rebuild (removes volumes)"
+        echo -e "  ./start.sh up -novolume                       # Rebuild, keep existing data"
+        echo -e "  ./start.sh up --full                          # Wipe everything and rebuild"
+        echo -e "  ./start.sh up --all                           # Rebuild all (same as default)"
+        echo -e "  ./start.sh up --container backend             # Rebuild only the backend"
+        echo -e "  ./start.sh up --container backend --full      # Full wipe + rebuild backend only"
+        echo -e "  ./start.sh up --container backend -novolume   # Rebuild backend, keep volumes"
+        echo -e "  ./start.sh restart --all                      # Restart all services"
+        echo -e "  ./start.sh restart --container celery-worker  # Restart one service"
+        echo -e "  ./start.sh down -novolume                     # Stop containers, keep volumes"
+        echo -e "  ./start.sh down --full                        # Full teardown incl. volumes"
+        echo -e "  ./start.sh down --container frontend          # Stop and remove one container"
+        echo -e "  ./start.sh logs --container frontend          # Stream logs for frontend"
+        echo -e "  ./start.sh build --container backend          # Rebuild only backend image"
+        echo -e "  ./start.sh shell --container frontend         # Shell into frontend container"
+        echo -e "  ./start.sh status                             # Check service health"
         echo ""
         echo -e "${BLUE}💡 First Time Setup:${NC}"
         echo -e "  1. Ensure Docker is running"

@@ -252,6 +252,37 @@ def run_drift_detector(self):
         except Exception as e:
             logger.warning(f"[drift_detector] stuck check failed: {e}")
 
+        # ── Check 1b P3-B: Expire stuck PICKED_UP AgentActions > 30 min ────
+        # If an agent picked up an action but never completed it (crash / restart),
+        # the semaphore stays inflated and PlacementController is blocked.
+        try:
+            from backend.models.agent_action import AgentAction, AgentActionStatus
+            _stuck_cutoff = now - timedelta(minutes=30)
+            _stuck_aa = db.query(AgentAction).filter(
+                AgentAction.status == AgentActionStatus.PICKED_UP,
+                AgentAction.picked_up_at <= _stuck_cutoff,
+            ).all()
+            for _aa in _stuck_aa:
+                _aa.status = AgentActionStatus.EXPIRED
+                _aa.error_message = "auto-expired by health_monitor after 30 min in PICKED_UP"
+                alerts.append(
+                    f"EXPIRED_ACTION: agent_action={_aa.id} cluster={_aa.cluster_id} "
+                    f"type={_aa.action_type} stuck PICKED_UP "
+                    f"{(now - _aa.picked_up_at).total_seconds() / 60:.0f} min"
+                )
+                # Decrement per-cluster semaphore to unblock future PC/AR cycles
+                try:
+                    _sem_key = f"rebalance:active_count:{_aa.cluster_id}"
+                    _new_val = redis.decr(_sem_key)
+                    if _new_val < 0:
+                        redis.set(_sem_key, 0, ex=300)
+                except Exception:
+                    pass
+            if _stuck_aa:
+                db.commit()
+        except Exception as e:
+            logger.warning(f"[drift_detector] PICKED_UP expiry check failed: {e}")
+
         # ── Check 2: Stale spot_advisor data ───────────────────────────────
         try:
             clusters = db.query(Cluster).filter(Cluster.status != 'DELETED').all()

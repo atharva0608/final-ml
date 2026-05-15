@@ -17,11 +17,12 @@ import Signup from './components/auth/Signup';
 
 // Main Pages
 import Dashboard from './components/dashboard/Dashboard';
+import Overview from './pages/overview/Overview';
 import Onboarding from './pages/Onboarding';
-import ClusterList from './components/clusters/ClusterList';
+import ClusterList from './pages/infrastructure/clusters/Clusters';
 import PolicyConfig from './components/policies/PolicyConfig';
-import { HibernationDashboard } from './components/hibernation';
-import ASCPAiPage from './pages/ASCPAiPage';
+import { HibernationDashboard } from './pages/infrastructure/hibernation';
+
 import AuditLog from './components/audit/AuditLog';
 import Settings from './components/settings/Settings';
 import AdminDashboard from './components/admin/AdminDashboard';
@@ -31,26 +32,43 @@ import AdminExperiments from './components/admin/AdminExperiments';
 import AdminConfig from './components/admin/AdminConfig';
 import AdminBilling from './components/admin/AdminBilling';
 import AdminOrganizations from './components/admin/AdminOrganizations';
-import RightSizingDashboard from './components/right-sizing/RightSizingDashboard';
+import ScalingActivity from './pages/execution/ScalingActivity';
+import NodeActivity from './pages/execution/NodeActivity';
+import EventTimeline from './pages/execution/EventTimeline';
+import ActiveActions from './pages/execution/ActiveActions';
+import NodeSelector from './pages/optimize/nodes/NodeSelector';
+import NodeScaling from './pages/optimize/nodes/NodeScaling';
+import NodeBinPacking from './pages/optimize/nodes/NodeBinPacking';
+import WorkloadProfiling from './pages/optimize/workloads/WorkloadProfiling';
+import WorkloadPlacement from './pages/optimize/workloads/WorkloadPlacement';
+import WorkloadScaling from './pages/optimize/workloads/WorkloadScaling';
+import WorkloadMigration from './pages/optimize/workloads/WorkloadMigration';
+import Karpenter from './pages/infrastructure/provisioning/Karpenter';
+import NodePool from './pages/infrastructure/provisioning/NodePool';
+import KarpenterStatus from './pages/infrastructure/integrations/KarpenterStatus';
+import KedaStatus from './pages/infrastructure/integrations/KedaStatus';
 import CleanupDashboard from './components/cleanup/CleanupDashboard';
 import GovernanceSettings from './components/settings/GovernanceSettings';
 import TagPoliciesManager from './components/settings/TagPoliciesManager';
 
-import Teams from './pages/Teams';
-import TeamDetails from './pages/TeamDetails';
-import Roles from './pages/Roles';
+import Teams from './pages/governance/Teams';
+import TeamDetails from './pages/governance/TeamDetails';
+import Roles from './pages/governance/Roles';
 import InviteAcceptance from './components/auth/InviteAcceptance';
 import RIAnalysis from './components/ri/RIAnalysis';
 import S3Analysis from './components/s3/S3Analysis';
 import RDSAnalysis from './components/rds/RDSAnalysis';
 import TransferAnalysis from './components/transfer/TransferAnalysis';
-import AccountAnalytics from './pages/AccountAnalytics';
-import Approvals from './pages/Approvals';
+import AccountAnalytics from './pages/cost/AccountAnalytics';
+import Approvals from './pages/governance/Approvals';
 import TicketRequestModal from './components/approvals/TicketRequestModal';
 import PermissionGate from './components/governance/PermissionGate';
-import NodeTemplates from './pages/NodeTemplates';
+import NodeTemplates from './pages/infrastructure/provisioning/NodeTemplates';
 import VolatilityMonitor from './components/ascpai/VolatilityMonitor';
 import ErrorBoundary from './components/shared/ErrorBoundary';
+import CostSavings from './pages/cost/CostSavings';
+import StorageTransfer from './pages/cost/StorageTransfer';
+import Integrations from './pages/infrastructure/Integrations';
 
 // Protected Route Component
 const ProtectedRoute = ({ children }) => {
@@ -95,8 +113,8 @@ const AdminRoute = ({ children }) => {
   const isSuperAdmin = user?.role === 'SUPER_ADMIN' || user?.role === 'super_admin';
 
   if (!isSuperAdmin) {
-    // Redirect non-admin users back to dashboard
-    return <Navigate to="/dashboard" replace />;
+    // Redirect non-admin users back to overview
+    return <Navigate to="/overview" replace />;
   }
 
   return children;
@@ -238,64 +256,29 @@ function App() {
               </ProtectedRoute>
             }
           >
-            <Route index element={<Navigate to="/dashboard" replace />} />
-            <Route path="dashboard" element={<Dashboard />} />
-            <Route path="clusters" element={
-              <PermissionGate
-                featureId="compute:view"
-                sectionName="Clusters"
-                sectionDescription="View and manage your AWS clusters and compute resources"
-              >
-                <ClusterList />
-              </PermissionGate>
-            } />
-            <Route path="policies" element={
-              <PermissionGate
-                featureId="policy:manage"
-                sectionName="Policies"
-                sectionDescription="Create and manage optimization policies"
-              >
-                <PolicyConfig />
-              </PermissionGate>
-            } />
+            <Route index element={<Navigate to="/overview" replace />} />
+            {/* Overview */}
+            <Route path="overview" element={<Overview />} />
 
-            <Route path="right-sizing" element={
-              <PermissionGate
-                featureId="compute:view"
-                sectionName="Right-Sizing"
-                sectionDescription="View and apply instance right-sizing recommendations"
-              >
-                <RightSizingDashboard />
-              </PermissionGate>
-            } />
-            <Route path="hibernation/:clusterId?" element={
-              <PermissionGate
-                featureId="hibernation:view"
-                sectionName="Hibernation Schedule"
-                sectionDescription="Manage cluster hibernation schedules"
-              >
-                <HibernationDashboard />
-              </PermissionGate>
-            } />
-            <Route path="automation-settings" element={
-              <PermissionGate
-                featureId="policy:manage"
-                sectionName="Automation Settings"
-                sectionDescription="Configure system-wide automation and approval controls"
-              >
-                <GovernanceSettings />
-              </PermissionGate>
-            } />
-            <Route path="audit" element={
-              <PermissionGate
-                featureId="audit:view"
-                sectionName="Audit Logs"
-                sectionDescription="View system audit logs and compliance reports"
-              >
-                <AuditLog />
-              </PermissionGate>
-            } />
-            <Route path="hygiene" element={
+            {/* Optimize -> Nodes */}
+            <Route path="optimize/nodes/selection" element={<NodeSelector />} />
+            <Route path="optimize/nodes/bin-packing" element={<NodeBinPacking />} />
+
+            {/* Optimize -> Workloads */}
+            <Route path="optimize/workloads/profiling" element={<WorkloadProfiling />} />
+            <Route path="optimize/workloads/placement" element={<WorkloadPlacement />} />
+            <Route path="optimize/workloads/scaling" element={<WorkloadScaling />} />
+            <Route path="optimize/workloads/migration" element={<WorkloadMigration />} />
+
+            {/* Execution */}
+            <Route path="execution/active-actions" element={<ActiveActions />} />
+            <Route path="execution/timeline" element={<EventTimeline />} />
+
+            {/* Cost */}
+            <Route path="cost/overview" element={<AccountAnalytics />} />
+            <Route path="cost/savings" element={<CostSavings />} />
+            <Route path="cost/ri" element={<RIAnalysis />} />
+            <Route path="cost/hygiene" element={
               <PermissionGate
                 featureId="hygiene:view"
                 sectionName="Resource Hygiene"
@@ -304,9 +287,41 @@ function App() {
                 <CleanupDashboard />
               </PermissionGate>
             } />
-            <Route path="approvals" element={<Approvals />} />
-            <Route path="settings" element={<Settings />} />
-            <Route path="tagging-policies" element={
+            <Route path="cost/storage-transfer" element={<StorageTransfer />} />
+
+            {/* Infrastructure */}
+            <Route path="infrastructure/clusters" element={
+              <PermissionGate
+                featureId="compute:view"
+                sectionName="Clusters"
+                sectionDescription="View and manage your AWS clusters and compute resources"
+              >
+                <ClusterList />
+              </PermissionGate>
+            } />
+            <Route path="infrastructure/hibernation" element={
+              <PermissionGate
+                featureId="hibernation:view"
+                sectionName="Hibernation Schedule"
+                sectionDescription="Manage cluster hibernation schedules"
+              >
+                <HibernationDashboard />
+              </PermissionGate>
+            } />
+            <Route path="infrastructure/integrations" element={<Integrations />} />
+
+            {/* Governance */}
+            <Route path="governance/policies" element={
+              <PermissionGate
+                featureId="policy:manage"
+                sectionName="Policies"
+                sectionDescription="Create and manage optimization policies"
+              >
+                <PolicyConfig />
+              </PermissionGate>
+            } />
+            <Route path="governance/approvals" element={<Approvals />} />
+            <Route path="governance/tag-rules" element={
               <PermissionGate
                 featureId="policy:manage"
                 sectionName="Tagging Policies"
@@ -315,8 +330,57 @@ function App() {
                 <TagPoliciesManager />
               </PermissionGate>
             } />
+            <Route path="governance/teams" element={
+              <PermissionGate
+                featureId="team:view"
+                sectionName="Teams"
+                sectionDescription="View and manage teams and team members"
+              >
+                <Teams />
+              </PermissionGate>
+            } />
 
-            <Route path="node-templates" element={
+            {/* Settings */}
+            <Route path="settings" element={<Settings />} />
+
+            {/* Hidden / Secondary Routes */}
+            <Route path="governance/teams/:teamId" element={
+              <PermissionGate
+                featureId="team:view"
+                sectionName="Team Details"
+                sectionDescription="View team details and members"
+              >
+                <TeamDetails />
+              </PermissionGate>
+            } />
+            <Route path="governance/roles" element={
+              <PermissionGate
+                featureId="team:manage_roles"
+                sectionName="Roles & Permissions"
+                sectionDescription="Manage roles and assign permissions"
+              >
+                <Roles />
+              </PermissionGate>
+            } />
+            <Route path="settings/automation" element={
+              <PermissionGate
+                featureId="policy:manage"
+                sectionName="Automation Settings"
+                sectionDescription="Configure system-wide automation and approval controls"
+              >
+                <GovernanceSettings />
+              </PermissionGate>
+            } />
+            <Route path="settings/audit" element={
+              <PermissionGate
+                featureId="audit:view"
+                sectionName="Audit Logs"
+                sectionDescription="View system audit logs and compliance reports"
+              >
+                <AuditLog />
+              </PermissionGate>
+            } />
+            <Route path="infrastructure/node-templates" element={
               <PermissionGate
                 featureId="compute:view"
                 sectionName="Node Templates"
@@ -326,39 +390,6 @@ function App() {
               </PermissionGate>
             } />
 
-            <Route path="teams" element={
-              <PermissionGate
-                featureId="team:view"
-                sectionName="Teams"
-                sectionDescription="View and manage teams and team members"
-              >
-                <Teams />
-              </PermissionGate>
-            } />
-            <Route path="teams/:teamId" element={
-              <PermissionGate
-                featureId="team:view"
-                sectionName="Team Details"
-                sectionDescription="View team details and members"
-              >
-                <TeamDetails />
-              </PermissionGate>
-            } />
-            <Route path="roles" element={
-              <PermissionGate
-                featureId="team:manage_roles"
-                sectionName="Roles & Permissions"
-                sectionDescription="Manage roles and assign permissions"
-              >
-                <Roles />
-              </PermissionGate>
-            } />
-            <Route path="accounts/:accountId/analytics" element={<AccountAnalytics />} />
-            <Route path="ri-analysis" element={<RIAnalysis />} />
-            <Route path="s3-analysis" element={<S3Analysis />} />
-            <Route path="rds-analysis" element={<RDSAnalysis />} />
-            <Route path="transfer-analysis" element={<TransferAnalysis />} />
-            <Route path="ascp-ai" element={<ASCPAiPage />} />
 
             {/* Admin Routes (SUPER_ADMIN only) */}
             <Route path="admin" element={<AdminRoute><AdminDashboard /></AdminRoute>} />
@@ -371,7 +402,7 @@ function App() {
           </Route>
 
           {/* Catch All - 404 */}
-          <Route path="*" element={<Navigate to="/dashboard" replace />} />
+          <Route path="*" element={<Navigate to="/overview" replace />} />
         </Routes>
       </div>
     </BrowserRouter>

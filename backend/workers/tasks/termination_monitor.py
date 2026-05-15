@@ -349,7 +349,7 @@ def trigger_emergency_rebalancing(
 
         # Fallback: Report termination to DE for blacklisting
         try:
-            from backend.services.decision_engine_service import DecisionEngineService
+            from backend.pipeline.stage4_decision.engine import DecisionEngineService
             from backend.core.redis_client import get_redis_client
             de = DecisionEngineService(db, get_redis_client())
             de.report_termination(pool_key=source_pool)

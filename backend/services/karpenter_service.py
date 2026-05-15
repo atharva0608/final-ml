@@ -54,7 +54,8 @@ class KarpenterService:
         self,
         cluster_id: str,
         top_pools: List[Dict],
-        nodepool_name: str = "default"
+        nodepool_name: str = "default",
+        capacity_type: str = "spot"
     ) -> Dict:
         """
         Syncs ML-ranked instance types to Karpenter NodePool.
@@ -81,12 +82,42 @@ class KarpenterService:
                 f"to NodePool '{nodepool_name}' in cluster {cluster.name}"
             )
 
+            # v4.3 WIE observation: collect statistics on how many workloads would
+            # change NodePool assignment. No enforcement in Phase 3 observation mode.
+            try:
+                from backend.core.redis_client import get_redis_client as _wie_redis_fn
+                import json as _wie_json
+                _wie_redis = _wie_redis_fn()
+                _wie_would_change = {"stateful_od": 0, "stateless_spot": 0}
+                for _wkey in (_wie_redis.scan_iter(f"spot:wie:classification:{cluster_id}:*", count=100)):
+                    try:
+                        _wd = _wie_json.loads(_wie_redis.get(_wkey) or b'{}')
+                        if _wd.get("confidence_state") == "CONFIRMED":
+                            _tier = _wd.get("tier", "Bronze")
+                            _spot_f = _wd.get("spot_friendly", False)
+                            if _tier in ("Platinum", "Gold"):
+                                _wie_would_change["stateful_od"] += 1
+                            elif _spot_f:
+                                _wie_would_change["stateless_spot"] += 1
+                    except Exception:
+                        continue
+                if any(_wie_would_change.values()):
+                    logger.info(
+                        f"[WIE observation] Karpenter NodePool assignment preview for {cluster.name}: "
+                        f"stateful_od={_wie_would_change['stateful_od']} "
+                        f"stateless_spot={_wie_would_change['stateless_spot']} "
+                        f"(enforcement disabled — Phase 3 observation only)"
+                    )
+            except Exception as _wie_karp_err:
+                logger.debug(f"WIE karpenter observation skipped: {_wie_karp_err}")
+
             updated = self._update_nodepool(
                 api_client=api_client,
                 nodepool_name=nodepool_name,
                 instance_types=instance_types,
                 azs=azs,
-                cluster=cluster
+                cluster=cluster,
+                capacity_type=capacity_type
             )
 
             return {
@@ -188,7 +219,8 @@ class KarpenterService:
                         }
                     },
                     "disruption": {
-                        "consolidationPolicy": "WhenEmptyOrUnderutilized",
+                        "consolidationPolicy": "WhenEmpty",
+                        "consolidateAfter": "Never",
                         "expireAfter": "720h"
                     },
                     "limits": {"cpu": "1000", "memory": "1000Gi"}
@@ -701,7 +733,9 @@ class KarpenterService:
     def _update_nodepool(
         self, api_client, nodepool_name: str,
         instance_types: List[str], azs: List[str],
-        cluster: Cluster, capacity_type: str = "spot"
+        cluster: Cluster, capacity_type: str = "spot",
+        consolidation_policy: Optional[str] = None,
+        consolidate_after: Optional[str] = None,
     ) -> bool:
         """
         Updates Karpenter NodePool with ML-approved instance types.
@@ -711,6 +745,12 @@ class KarpenterService:
 
         Args:
             capacity_type: "spot" or "on-demand"
+            consolidation_policy: "WhenEmpty" | "WhenEmptyOrUnderutilized" | None.
+                When None, the existing NodePool's policy is preserved on update,
+                and "WhenEmptyOrUnderutilized" is used for new NodePools.
+            consolidate_after: "Never" | "30s" | None.
+                When None, the existing value is preserved on update; defaults
+                to "30s" for new NodePools.
 
         Returns:
             True if existing NodePool was updated, False if created new
@@ -736,6 +776,45 @@ class KarpenterService:
         try:
             custom_api = client.CustomObjectsApi(api_client)
 
+            # Resolve consolidation settings: if not passed, preserve existing values;
+            # fall back to safe defaults only when creating a brand-new NodePool.
+            _existing_disruption: dict = {}
+            try:
+                _existing_np = custom_api.get_cluster_custom_object(
+                    group="karpenter.sh", version="v1",
+                    plural="nodepools", name=nodepool_name,
+                )
+                _existing_disruption = (
+                    _existing_np.get("spec", {}).get("disruption", {})
+                )
+            except ApiException as _lookup_e:
+                if _lookup_e.status != 404:
+                    raise  # unexpected — re-raise
+
+            _resolved_policy = (
+                consolidation_policy
+                or _existing_disruption.get("consolidationPolicy", "WhenEmpty")
+            )
+            _resolved_after = (
+                consolidate_after
+                or _existing_disruption.get("consolidateAfter", "Never")
+            )
+
+            # Bug 3 fix: only include disruption in the patch when the caller
+            # explicitly requested a consolidation change.  For plain instance-type
+            # updates on an *existing* NodePool we leave the disruption section out
+            # so we don't race with patch_consolidation_policy() and overwrite a
+            # recently-set WhenEmpty with a stale read-back.
+            _has_explicit_disruption = (
+                consolidation_policy is not None or consolidate_after is not None
+            )
+
+            _disruption_section = {
+                "consolidationPolicy": _resolved_policy,
+                "consolidateAfter": _resolved_after,
+                "expireAfter": _existing_disruption.get("expireAfter", "720h"),
+            }
+
             nodepool_spec = {
                 "apiVersion": "karpenter.sh/v1",
                 "kind": "NodePool",
@@ -759,12 +838,19 @@ class KarpenterService:
                             "nodeClassRef": {
                                 "group": "karpenter.k8s.aws",
                                 "kind": "EC2NodeClass",
-                                "name": "default"
+                                # K-7: read from cluster config instead of hardcoding 'default'
+                                "name": (
+                                    getattr(cluster, "ec2_node_class_name", None)
+                                    or "default"
+                                ),
                             }
                         }
                     },
-                    "disruption": {"consolidationPolicy": "WhenEmptyOrUnderutilized", "expireAfter": "720h"},
-                    "limits": {"cpu": "1000", "memory": "1000Gi"}
+                    "limits": {"cpu": "1000", "memory": "1000Gi"},
+                    # K-8: weight controls Karpenter pool selection priority.
+                    # OD pools (weight=100) are strongly preferred for OD-affinity pods.
+                    # Spot pools (weight=10) are used for burst / spot-burst pods.
+                    "weight": 100 if capacity_type == "on-demand" else 10,
                 }
             }
 
@@ -777,6 +863,12 @@ class KarpenterService:
                     plural="nodepools", name=nodepool_name
                 )
                 logger.info(f"Updating existing NodePool '{nodepool_name}' with retry logic")
+
+                # Bug 3 fix: only include disruption in PATCH when explicitly requested.
+                # This prevents overwriting a WhenEmpty policy set by
+                # patch_consolidation_policy() via a stale read-back race.
+                if _has_explicit_disruption:
+                    nodepool_spec["spec"]["disruption"] = _disruption_section
 
                 # Retry loop for PATCH operations
                 # Enhancement 8: Non-blocking retries — attempt once, if it fails
@@ -800,6 +892,8 @@ class KarpenterService:
 
             except ApiException as e:
                 if e.status == 404:
+                    # New NodePool — always include disruption with safe defaults
+                    nodepool_spec["spec"]["disruption"] = _disruption_section
                     logger.info(f"Creating new NodePool '{nodepool_name}'")
                     custom_api.create_cluster_custom_object(
                         group="karpenter.sh", version="v1",
@@ -1000,6 +1094,297 @@ class KarpenterService:
             logger.error(f"[karpenter] detect_karpenter_in_cluster failed: {e}")
             return {'detected': False, 'error': str(e)}
 
+    def install_karpenter(self, cluster_id: str, db) -> Dict:
+        """
+        Queue an INSTALL_KARPENTER AgentAction to install Karpenter via Helm.
+
+        Guards:
+          1. Already-installed: if detect_karpenter_in_cluster() returns detected=True, skip.
+          2. Duplicate in-progress: if a PENDING/PICKED_UP INSTALL_KARPENTER action exists, skip.
+          3. Sets spot:karpenter_installing:{cluster_id} Redis flag (TTL=600s) so
+             get_karpenter_install_status() can return install_in_progress=True.
+
+        Returns dict with success, action_id, message, or error.
+        """
+        from backend.models.agent_action import AgentAction, AgentActionType, AgentActionStatus
+
+        cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
+        if not cluster:
+            return {"success": False, "error": f"Cluster {cluster_id} not found"}
+
+        # ── Already-installed guard ────────────────────────────────────────────
+        detection = self.detect_karpenter_in_cluster(cluster_id, db)
+        if detection.get("detected"):
+            logger.info(
+                f"[karpenter] install_karpenter called but Karpenter already running "
+                f"on cluster {cluster_id} (source={detection.get('source')}) — skipping"
+            )
+            return {
+                "success": True,
+                "already_installed": True,
+                "message": "Karpenter is already installed and running",
+                "cluster_id": cluster_id,
+                "karpenter_mode": detection.get("karpenter_mode"),
+                "pods_running": detection.get("pods_running", 0),
+            }
+
+        # ── Duplicate in-progress Redis flag ──────────────────────────────────
+        _install_key = f"spot:karpenter_installing:{cluster_id}"
+        if self.redis:
+            try:
+                if self.redis.exists(_install_key):
+                    return {
+                        "success": True,
+                        "install_in_progress": True,
+                        "message": "Karpenter installation is already in progress",
+                        "cluster_id": cluster_id,
+                    }
+            except Exception:
+                pass
+
+        # ── Duplicate in-progress DB action guard ─────────────────────────────
+        pending_action = (
+            db.query(AgentAction)
+            .filter(
+                AgentAction.cluster_id == cluster_id,
+                AgentAction.action_type == AgentActionType.INSTALL_KARPENTER,
+                AgentAction.status.in_([
+                    AgentActionStatus.PENDING,
+                    AgentActionStatus.PICKED_UP,
+                ]),
+            )
+            .first()
+        )
+        if pending_action:
+            logger.info(
+                f"[karpenter] INSTALL_KARPENTER action {pending_action.id} already in "
+                f"progress for cluster {cluster_id} — skipping duplicate"
+            )
+            return {
+                "success": True,
+                "install_in_progress": True,
+                "action_id": pending_action.id,
+                "message": "Karpenter installation is already in progress",
+            }
+
+        # ── Set in-progress flag ───────────────────────────────────────────────
+        if self.redis:
+            try:
+                self.redis.setex(_install_key, 600, "1")
+                self.redis.delete(f"karpenter:detected:{cluster_id}")
+                self.redis.delete(f"karpenter:live_status:{cluster_id}")
+            except Exception as _re:
+                logger.warning(f"[karpenter] install flag write failed: {_re}")
+
+        try:
+            action = AgentAction(
+                cluster_id=cluster_id,
+                action_type=AgentActionType.INSTALL_KARPENTER,
+                status=AgentActionStatus.PENDING,
+                payload={"cluster_name": cluster.name},
+            )
+            db.add(action)
+            db.commit()
+            db.refresh(action)
+            logger.info(
+                f"[karpenter] Queued INSTALL_KARPENTER action {action.id} "
+                f"for cluster {cluster_id}"
+            )
+            # K-1: Flag that a default NodePool must be bootstrapped after install completes.
+            # auto_rebalancer checks this flag each cycle and calls bootstrap_default_nodepool().
+            if self.redis:
+                try:
+                    self.redis.setex(
+                        f"spot:karpenter_nodepool_bootstrap_needed:{cluster_id}", 7200, "1"
+                    )
+                except Exception:
+                    pass
+            return {
+                "success": True,
+                "action_id": action.id,
+                "message": "Karpenter installation queued — agent will run Helm install",
+                "bootstrap_needed": True,
+            }
+        except Exception as exc:
+            logger.error(f"[karpenter] install_karpenter failed for cluster {cluster_id}: {exc}")
+            if self.redis:
+                try:
+                    self.redis.delete(_install_key)
+                except Exception:
+                    pass
+            return {"success": False, "error": str(exc)}
+
+    def get_karpenter_install_status(self, cluster_id: str, db) -> Dict:
+        """
+        Return combined Karpenter install status (mirrors keda_service.get_install_status).
+
+        Combines:
+          - detect_karpenter_in_cluster() for live detection
+          - spot:karpenter_installing:{cluster_id} Redis flag for in-progress state
+          - Latest INSTALL_KARPENTER / UNINSTALL_KARPENTER AgentAction status
+        """
+        from backend.models.agent_action import AgentAction, AgentActionType
+
+        install_in_progress = False
+        if self.redis:
+            try:
+                install_in_progress = bool(
+                    self.redis.exists(f"spot:karpenter_installing:{cluster_id}")
+                )
+            except Exception:
+                pass
+
+        action_status = None
+        action_id = None
+        try:
+            latest_action = (
+                db.query(AgentAction)
+                .filter(
+                    AgentAction.cluster_id == cluster_id,
+                    AgentAction.action_type.in_([
+                        AgentActionType.INSTALL_KARPENTER,
+                        AgentActionType.UNINSTALL_KARPENTER,
+                    ]),
+                )
+                .order_by(AgentAction.created_at.desc())
+                .first()
+            )
+            if latest_action:
+                action_status = (
+                    latest_action.status.value
+                    if hasattr(latest_action.status, "value")
+                    else str(latest_action.status)
+                )
+                action_id = latest_action.id
+                # Clear the installing flag if the action has completed or failed
+                if (
+                    install_in_progress
+                    and action_status in ("COMPLETED", "FAILED", "completed", "failed")
+                ):
+                    if self.redis:
+                        try:
+                            self.redis.delete(f"spot:karpenter_installing:{cluster_id}")
+                        except Exception:
+                            pass
+                    install_in_progress = False
+        except Exception as exc:
+            logger.warning(
+                f"[karpenter] get_karpenter_install_status action query failed: {exc}"
+            )
+
+        detection = self.detect_karpenter_in_cluster(cluster_id, db)
+        return {
+            "cluster_id":           cluster_id,
+            "detected":             detection.get("detected", False),
+            "karpenter_mode":       detection.get("karpenter_mode", "none"),
+            "source":               detection.get("source"),
+            "pods_running":         detection.get("pods_running", 0),
+            "controller_healthy":   detection.get("controller_healthy", False),
+            "install_in_progress":  install_in_progress,
+            "action_status":        action_status,
+            "action_id":            action_id,
+            "error":                detection.get("error"),
+        }
+
+    def bootstrap_default_nodepool(self, cluster_id: str) -> Dict:
+        """
+        K-1: Create a safe 'spot-general' NodePool after Karpenter install if none exists.
+
+        Called by auto_rebalancer when spot:karpenter_nodepool_bootstrap_needed:{cluster_id}
+        is set. Skipped if any spot NodePool already exists. Safe to call multiple times.
+
+        Returns dict with success, created (bool), nodepool_name, or error.
+        """
+        try:
+            cluster = self.db.query(Cluster).filter(Cluster.id == cluster_id).first()
+            if not cluster:
+                return {"success": False, "error": f"Cluster {cluster_id} not found"}
+
+            api_client = self._get_k8s_client(cluster)
+            custom_api = client.CustomObjectsApi(api_client)
+
+            # Check if any spot NodePool already exists
+            existing = custom_api.list_cluster_custom_object(
+                group="karpenter.sh", version="v1", plural="nodepools"
+            )
+            spot_pools = [
+                item for item in existing.get("items", [])
+                if any(
+                    req.get("key") == "karpenter.sh/capacity-type"
+                    and "spot" in (req.get("values") or [])
+                    for req in (
+                        item.get("spec", {})
+                        .get("template", {})
+                        .get("spec", {})
+                        .get("requirements", [])
+                    )
+                )
+            ]
+            if spot_pools:
+                logger.info(
+                    f"[karpenter] bootstrap_default_nodepool: {len(spot_pools)} spot NodePool(s) "
+                    f"already exist for cluster {cluster_id} — skipping bootstrap"
+                )
+                if self.redis:
+                    self.redis.delete(f"spot:karpenter_nodepool_bootstrap_needed:{cluster_id}")
+                return {"success": True, "created": False, "existing_pools": len(spot_pools)}
+
+            # Determine safe initial instance types from region (diverse set for first bootstrap)
+            region = getattr(cluster, "region", "us-east-1") or "us-east-1"
+            _safe_types = ["m5.xlarge", "m5.2xlarge", "c5.xlarge"]
+            azs = self._get_region_azs(region)
+
+            logger.info(
+                f"[karpenter] K-1: bootstrapping 'spot-general' NodePool for cluster {cluster_id} "
+                f"region={region} instance_types={_safe_types}"
+            )
+            self._update_nodepool(
+                api_client=api_client,
+                nodepool_name="spot-general",
+                instance_types=_safe_types,
+                azs=azs,
+                cluster=cluster,
+                capacity_type="spot",
+                consolidation_policy="WhenEmptyOrUnderutilized",
+                consolidate_after="30s",
+            )
+
+            # Change 7: Also bootstrap od-general NodePool for MNG takeover path.
+            # od-general targets on-demand capacity only — used during takeover to
+            # receive workloads from MNG nodes one at a time before spot migration.
+            _od_safe_types = ["m5.xlarge", "m5.2xlarge", "m5.4xlarge"]
+            try:
+                self._update_nodepool(
+                    api_client=api_client,
+                    nodepool_name="od-general",
+                    instance_types=_od_safe_types,
+                    azs=azs,
+                    cluster=cluster,
+                    capacity_type="on-demand",
+                    consolidation_policy="WhenEmpty",
+                    consolidate_after="60s",
+                )
+                logger.info(
+                    f"[karpenter] K-1: 'od-general' NodePool created for cluster {cluster_id}"
+                )
+            except Exception as _od_exc:
+                logger.warning(
+                    f"[karpenter] K-1: 'od-general' NodePool creation failed (non-fatal): {_od_exc}"
+                )
+
+            # Clear the bootstrap flag
+            if self.redis:
+                self.redis.delete(f"spot:karpenter_nodepool_bootstrap_needed:{cluster_id}")
+
+            logger.info(
+                f"[karpenter] K-1: 'spot-general' NodePool created for cluster {cluster_id}"
+            )
+            return {"success": True, "created": True, "nodepool_name": "spot-general", "od_nodepool": "od-general"}
+
+        except Exception as exc:
+            logger.error(f"[karpenter] bootstrap_default_nodepool failed for {cluster_id}: {exc}")
+            return {"success": False, "error": str(exc)}
+
     def add_allowed_instance_type_all_spot(self, cluster_id: str, instance_type: str):
         """Add instance type to ALL spot-capable NodePools so Karpenter provisions
         the correct type regardless of which NodePool the trigger pod matches.
@@ -1040,13 +1425,18 @@ class KarpenterService:
 
     def add_allowed_instance_type(self, cluster_id: str, instance_type: str, nodepool_name: str = "default") -> bool:
         """
-        Add a single instance type to the NodePool's allowed instance-type list.
-        Called by the auto-rebalancer to ensure the target type is in the NodePool
-        before Karpenter provisions a node.
+        Inject an instance type into a NodePool using full-replace semantics.
+
+        On the first call for a given (cluster, nodepool) pair, the current types are
+        snapshotted as the **baseline** in Redis (key:
+        ``karpenter:nodepool_baseline:{cluster_id}:{nodepool_name}``).  Every subsequent
+        call PATCHes the NodePool to exactly (baseline ∪ {instance_type}), so the list
+        never grows beyond one injected type beyond what was there originally.
 
         Returns True on success, False if NodePool not found or update fails.
-        Idempotent: if the type is already present, returns True without patching.
+        Idempotent: if the type is already present in the effective set, returns True.
         """
+        _BASELINE_KEY = f"karpenter:nodepool_baseline:{cluster_id}:{nodepool_name}"
         try:
             cluster = self.db.query(Cluster).filter(Cluster.id == cluster_id).first()
             if not cluster:
@@ -1070,48 +1460,70 @@ class KarpenterService:
                     return False
                 raise
 
-            # Extract instance-type requirement
             requirements = nodepool.get('spec', {}).get('template', {}).get('spec', {}).get('requirements', [])
-            found_req = False
+
+            # ── Baseline snapshot (first call only) ──────────────────────────────────
+            _baseline_types: list[str] = []
+            _baseline_from_redis = False
+            if self.redis:
+                _raw = self.redis.get(_BASELINE_KEY)
+                if _raw:
+                    _baseline_types = json.loads(_raw)
+                    _baseline_from_redis = True
+
+            if not _baseline_from_redis:
+                # Snapshot what is currently in the NodePool before we touch it.
+                for req in requirements:
+                    if req.get('key') == 'node.kubernetes.io/instance-type':
+                        _baseline_types = sorted(req.get('values', []))
+                        break
+                if self.redis:
+                    self.redis.setex(_BASELINE_KEY, 86400, json.dumps(_baseline_types))  # 24h TTL (W3.0c)
+                    logger.info(
+                        f"[karpenter] Snapshotted baseline types for NodePool '{nodepool_name}' "
+                        f"cluster {cluster_id}: {_baseline_types}"
+                    )
+
+            # ── Build effective set: baseline ∪ {instance_type} ─────────────────────
+            _effective_types = sorted(set(_baseline_types) | {instance_type})
+
+            # Idempotent check — skip patch if nothing changes
+            _current_types: list[str] = []
             for req in requirements:
                 if req.get('key') == 'node.kubernetes.io/instance-type':
-                    values = set(req.get('values', []))
-                    if instance_type in values:
-                        logger.info(
-                            f"[karpenter] {instance_type} already in NodePool '{nodepool_name}' "
-                            f"for cluster {cluster_id} — no patch needed"
-                        )
-                        return True
-                    values.add(instance_type)
-                    req['values'] = sorted(values)
-                    found_req = True
+                    _current_types = sorted(req.get('values', []))
                     break
+            if _current_types == _effective_types:
+                logger.info(
+                    f"[karpenter] {instance_type} already in NodePool '{nodepool_name}' "
+                    f"for cluster {cluster_id} — no patch needed"
+                )
+                return True
 
-            if not found_req:
-                # No instance-type requirement exists; create one
+            # Update the instance-type requirement to the effective set
+            _req_found = False
+            for req in requirements:
+                if req.get('key') == 'node.kubernetes.io/instance-type':
+                    req['values'] = _effective_types
+                    _req_found = True
+                    break
+            if not _req_found:
                 requirements.append({
                     'key': 'node.kubernetes.io/instance-type',
                     'operator': 'In',
-                    'values': [instance_type]
+                    'values': _effective_types,
                 })
 
-            # Keep kubernetes.io/arch in sync with the instance types list
+            # Keep kubernetes.io/arch in sync with the effective instance types
             _ARM64_FAMILIES = {
                 't4g', 'c6g', 'c7g', 'c8g', 'm6g', 'm7g', 'm8g', 'r6g', 'r7g', 'r8g',
                 'c6gn', 'c6gd', 'm6gd', 'r6gd', 'a1', 'hpc7g', 'x2gd', 'im4gn', 'is4gen',
             }
-            # Collect all instance types currently in the NodePool
-            _all_types = set()
-            for req in requirements:
-                if req.get('key') == 'node.kubernetes.io/instance-type':
-                    _all_types.update(req.get('values', []))
-            _derived_archs = set()
-            for _it in _all_types:
+            _derived_archs: set[str] = set()
+            for _it in _effective_types:
                 _fam = _it.split('.')[0] if '.' in _it else _it
                 _derived_archs.add('arm64' if _fam in _ARM64_FAMILIES else 'amd64')
             _arch_list = sorted(_derived_archs) if _derived_archs else ['amd64', 'arm64']
-
-            # Update or create the kubernetes.io/arch requirement
             _arch_req_found = False
             for req in requirements:
                 if req.get('key') == 'kubernetes.io/arch':
@@ -1119,31 +1531,49 @@ class KarpenterService:
                     _arch_req_found = True
                     break
             if not _arch_req_found:
-                requirements.append({
-                    'key': 'kubernetes.io/arch',
-                    'operator': 'In',
-                    'values': _arch_list,
-                })
+                requirements.append({'key': 'kubernetes.io/arch', 'operator': 'In', 'values': _arch_list})
 
-            # Patch the NodePool
+            # ── Bug 4 fix: freeze Karpenter consolidation during active injection ──
+            # Save the original consolidateAfter value so remove_allowed_instance_type()
+            # can restore it later.  Set consolidateAfter=Never so Karpenter does not
+            # consolidate (i.e. replace nodes with cheaper types) while the rebalancer
+            # is mid-migration.
+            _CONSOLIDATE_AFTER_KEY = (
+                f"karpenter:nodepool_consolidate_after_baseline:{cluster_id}:{nodepool_name}"
+            )
+            if self.redis and not self.redis.exists(_CONSOLIDATE_AFTER_KEY):
+                _original_after = (
+                    nodepool.get('spec', {}).get('disruption', {}).get('consolidateAfter', '30s')
+                )
+                self.redis.set(_CONSOLIDATE_AFTER_KEY, _original_after, ex=86400)  # 24h TTL — prevents orphaned freeze
+                logger.info(
+                    f"[karpenter] Saved consolidateAfter baseline '{_original_after}' "
+                    f"for NodePool '{nodepool_name}' cluster {cluster_id}"
+                )
+
+            # Patch the NodePool: update instance types AND freeze consolidation
             patch_body = {
-                "spec": {"template": {"spec": {"requirements": requirements}}}
+                "spec": {
+                    "template": {"spec": {"requirements": requirements}},
+                    "disruption": {"consolidateAfter": "Never"},
+                }
             }
             custom_api.patch_cluster_custom_object(
-                group="karpenter.sh",
-                version="v1",
-                plural="nodepools",
-                name=nodepool_name,
+                group="karpenter.sh", version="v1",
+                plural="nodepools", name=nodepool_name,
                 body=patch_body,
             )
 
-            # ── Read-back verification: confirm the patch actually took effect ──
+            # ── Read-back verification ────────────────────────────────────────────────
             try:
                 verified_np = custom_api.get_cluster_custom_object(
                     group="karpenter.sh", version="v1", plural="nodepools", name=nodepool_name,
                 )
-                verified_reqs = verified_np.get('spec', {}).get('template', {}).get('spec', {}).get('requirements', [])
-                _verified_types = []
+                verified_reqs = (
+                    verified_np.get('spec', {}).get('template', {})
+                    .get('spec', {}).get('requirements', [])
+                )
+                _verified_types: list[str] = []
                 _has_spot_capacity = False
                 for vr in verified_reqs:
                     if vr.get('key') == 'node.kubernetes.io/instance-type':
@@ -1163,15 +1593,26 @@ class KarpenterService:
                     )
                 logger.info(
                     f"[karpenter] VERIFIED: {instance_type} confirmed in NodePool '{nodepool_name}' "
-                    f"for cluster {cluster_id} (spot_capable={_has_spot_capacity})"
+                    f"for cluster {cluster_id} (effective_types={_effective_types}, "
+                    f"spot_capable={_has_spot_capacity})"
                 )
             except Exception as ve:
                 logger.warning(f"[karpenter] Read-back verification failed: {ve} — proceeding with caution")
 
             logger.info(
                 f"[karpenter] Added {instance_type} to NodePool '{nodepool_name}' "
-                f"for cluster {cluster_id}"
+                f"for cluster {cluster_id} (effective_types={_effective_types})"
             )
+            # W3.0d: per-injection tracking key (2h TTL).
+            # Reconciliation task scans spot:injected_type:* to find orphaned injections.
+            if self.redis:
+                _inject_key = f"spot:injected_type:{cluster_id}:{nodepool_name}:{instance_type}"
+                self.redis.setex(_inject_key, 7200, json.dumps({
+                    "cluster_id": cluster_id,
+                    "nodepool_name": nodepool_name,
+                    "instance_type": instance_type,
+                    "injected_at": datetime.utcnow().isoformat(),
+                }))
             return True
 
         except Exception as e:
@@ -1180,15 +1621,137 @@ class KarpenterService:
 
     def remove_allowed_instance_type(self, cluster_id: str, instance_type: str, nodepool_name: str = "default") -> bool:
         """
-        Remove a single instance type from the NodePool's allowed instance-type list.
-        Called by _cleanup_rebalancing_resources to proactively roll back the type
-        injected by Phase 1 when an action fails — preventing Karpenter from
-        provisioning that type for unrelated workload scaling events.
+        Restore the NodePool's instance-type list to the pre-injection baseline.
+
+        Reads the baseline snapshot stored by ``add_allowed_instance_type`` from Redis
+        (key: ``karpenter:nodepool_baseline:{cluster_id}:{nodepool_name}``) and PATCHes
+        the NodePool back to exactly that list, regardless of how many types were
+        injected since.  Also deletes the Redis baseline key so the next injection
+        starts a fresh snapshot cycle.
 
         Returns True on success, False on failure.
-        Idempotent: if the type is not present, returns True without patching.
-        Refuses to remove the last instance type (NodePool must have at least one).
         """
+        _BASELINE_KEY = f"karpenter:nodepool_baseline:{cluster_id}:{nodepool_name}"
+        try:
+            cluster = self.db.query(Cluster).filter(Cluster.id == cluster_id).first()
+            if not cluster:
+                return False
+
+            # ── Resolve baseline ──────────────────────────────────────────────────────
+            _baseline_types: list[str] | None = None
+            if self.redis:
+                _raw = self.redis.get(_BASELINE_KEY)
+                if _raw:
+                    _baseline_types = json.loads(_raw)
+
+            if _baseline_types is None:
+                # No baseline means add_allowed_instance_type was never called (or Redis
+                # lost the key).  Fall back to a single-type removal to avoid leaving
+                # an orphan type if we can.
+                logger.warning(
+                    f"[karpenter] No baseline found for NodePool '{nodepool_name}' "
+                    f"cluster {cluster_id} — falling back to single-type removal"
+                )
+                return self._remove_single_instance_type(cluster_id, instance_type, nodepool_name)
+
+            api_client = self._get_k8s_client(cluster)
+            custom_api = client.CustomObjectsApi(api_client)
+
+            try:
+                nodepool = custom_api.get_cluster_custom_object(
+                    group="karpenter.sh", version="v1",
+                    plural="nodepools", name=nodepool_name,
+                )
+            except ApiException as e:
+                if e.status == 404:
+                    # NodePool gone — clear stale baseline key and return success
+                    if self.redis:
+                        self.redis.delete(_BASELINE_KEY)
+                    return True
+                raise
+
+            if not _baseline_types:
+                # Baseline was an empty list — nothing to restore; keep NodePool untouched.
+                logger.info(
+                    f"[karpenter] Baseline is empty for NodePool '{nodepool_name}' "
+                    f"cluster {cluster_id} — nothing to restore"
+                )
+                if self.redis:
+                    self.redis.delete(_BASELINE_KEY)
+                return True
+
+            requirements = nodepool.get('spec', {}).get('template', {}).get('spec', {}).get('requirements', [])
+
+            # Replace the instance-type requirement with the baseline list
+            _req_found = False
+            for req in requirements:
+                if req.get('key') == 'node.kubernetes.io/instance-type':
+                    req['values'] = sorted(_baseline_types)
+                    _req_found = True
+                    break
+            if not _req_found:
+                requirements.append({
+                    'key': 'node.kubernetes.io/instance-type',
+                    'operator': 'In',
+                    'values': sorted(_baseline_types),
+                })
+
+            # Re-derive kubernetes.io/arch from baseline types
+            _ARM64_FAMILIES = {
+                't4g', 'c6g', 'c7g', 'c8g', 'm6g', 'm7g', 'm8g', 'r6g', 'r7g', 'r8g',
+                'c6gn', 'c6gd', 'm6gd', 'r6gd', 'a1', 'hpc7g', 'x2gd', 'im4gn', 'is4gen',
+            }
+            _derived_archs: set[str] = set()
+            for _it in _baseline_types:
+                _fam = _it.split('.')[0] if '.' in _it else _it
+                _derived_archs.add('arm64' if _fam in _ARM64_FAMILIES else 'amd64')
+            _arch_list = sorted(_derived_archs) if _derived_archs else ['amd64', 'arm64']
+            for req in requirements:
+                if req.get('key') == 'kubernetes.io/arch':
+                    req['values'] = _arch_list
+                    break
+
+            # ── Bug 4 fix: restore consolidateAfter to pre-injection baseline ──
+            _CONSOLIDATE_AFTER_KEY = (
+                f"karpenter:nodepool_consolidate_after_baseline:{cluster_id}:{nodepool_name}"
+            )
+            _restore_after = "30s"  # safe default if baseline was lost
+            if self.redis:
+                _raw_after = self.redis.get(_CONSOLIDATE_AFTER_KEY)
+                if _raw_after:
+                    _restore_after = _raw_after if isinstance(_raw_after, str) else _raw_after.decode()
+                self.redis.delete(_CONSOLIDATE_AFTER_KEY)
+
+            patch_body = {
+                "spec": {
+                    "template": {"spec": {"requirements": requirements}},
+                    "disruption": {"consolidateAfter": _restore_after},
+                }
+            }
+            custom_api.patch_cluster_custom_object(
+                group="karpenter.sh", version="v1",
+                plural="nodepools", name=nodepool_name,
+                body=patch_body,
+            )
+            logger.info(
+                f"[karpenter] Restored NodePool '{nodepool_name}' to baseline types "
+                f"{_baseline_types} for cluster {cluster_id}"
+            )
+
+            # Clear the baseline key so the next injection starts a fresh cycle
+            if self.redis:
+                self.redis.delete(_BASELINE_KEY)
+
+            return True
+
+        except Exception as e:
+            logger.error(f"[karpenter] remove_allowed_instance_type failed: {e}")
+            return False
+
+    def _remove_single_instance_type(
+        self, cluster_id: str, instance_type: str, nodepool_name: str
+    ) -> bool:
+        """Fallback: remove a single instance type from a NodePool (no baseline required)."""
         try:
             cluster = self.db.query(Cluster).filter(Cluster.id == cluster_id).first()
             if not cluster:
@@ -1204,7 +1767,7 @@ class KarpenterService:
                 )
             except ApiException as e:
                 if e.status == 404:
-                    return True  # NodePool gone — nothing to remove from
+                    return True
                 raise
 
             requirements = nodepool.get('spec', {}).get('template', {}).get('spec', {}).get('requirements', [])
@@ -1212,33 +1775,29 @@ class KarpenterService:
                 if req.get('key') == 'node.kubernetes.io/instance-type':
                     values = set(req.get('values', []))
                     if instance_type not in values:
-                        logger.info(
-                            f"[karpenter] {instance_type} not in NodePool '{nodepool_name}' — no removal needed"
-                        )
                         return True
                     if len(values) <= 1:
                         logger.warning(
-                            f"[karpenter] Cannot remove {instance_type} — it's the only type in "
-                            f"NodePool '{nodepool_name}'"
+                            f"[karpenter] Cannot remove {instance_type} — only type in '{nodepool_name}'"
                         )
                         return False
                     values.discard(instance_type)
                     req['values'] = sorted(values)
                     break
             else:
-                return True  # No instance-type requirement at all
+                return True
 
-            # Re-derive kubernetes.io/arch from remaining types
+            # Re-derive arch
             _ARM64_FAMILIES = {
                 't4g', 'c6g', 'c7g', 'c8g', 'm6g', 'm7g', 'm8g', 'r6g', 'r7g', 'r8g',
                 'c6gn', 'c6gd', 'm6gd', 'r6gd', 'a1', 'hpc7g', 'x2gd', 'im4gn', 'is4gen',
             }
-            _remaining_types = set()
+            _remaining: set[str] = set()
             for req in requirements:
                 if req.get('key') == 'node.kubernetes.io/instance-type':
-                    _remaining_types.update(req.get('values', []))
+                    _remaining.update(req.get('values', []))
             _derived_archs = set()
-            for _it in _remaining_types:
+            for _it in _remaining:
                 _fam = _it.split('.')[0] if '.' in _it else _it
                 _derived_archs.add('arm64' if _fam in _ARM64_FAMILIES else 'amd64')
             _arch_list = sorted(_derived_archs) if _derived_archs else ['amd64', 'arm64']
@@ -1247,28 +1806,33 @@ class KarpenterService:
                     req['values'] = _arch_list
                     break
 
-            patch_body = {
-                "spec": {"template": {"spec": {"requirements": requirements}}}
-            }
+            patch_body = {"spec": {"template": {"spec": {"requirements": requirements}}}}
             custom_api.patch_cluster_custom_object(
                 group="karpenter.sh", version="v1",
                 plural="nodepools", name=nodepool_name,
                 body=patch_body,
             )
             logger.info(
-                f"[karpenter] Removed {instance_type} from NodePool '{nodepool_name}' "
+                f"[karpenter] (fallback) Removed {instance_type} from NodePool '{nodepool_name}' "
                 f"for cluster {cluster_id}"
             )
             return True
 
         except Exception as e:
-            logger.error(f"[karpenter] remove_allowed_instance_type failed: {e}")
+            logger.error(f"[karpenter] _remove_single_instance_type failed: {e}")
             return False
 
-    def patch_node_pool_allowed_types(self, cluster_id: str, instance_types: list, db) -> dict:
+    def patch_node_pool_allowed_types(
+        self, cluster_id: str, instance_types: list, db,
+        consolidation_policy: Optional[str] = None,
+        consolidate_after: Optional[str] = None,
+    ) -> dict:
         """
         Update NodePool instance-type requirements with a new allowed list.
         Directly patches the NodePool via K8s API (no longer creates an AgentAction).
+
+        Bug 2 fix: now accepts consolidation_policy / consolidate_after so callers
+        can atomically set types + disruption policy in one _update_nodepool() call.
         """
         try:
             cluster = self.db.query(Cluster).filter(Cluster.id == cluster_id).first()
@@ -1282,6 +1846,8 @@ class KarpenterService:
                 instance_types=instance_types,
                 azs=[],
                 cluster=cluster,
+                consolidation_policy=consolidation_policy,
+                consolidate_after=consolidate_after,
             )
             return {
                 'status': 'success',
@@ -1289,6 +1855,66 @@ class KarpenterService:
             }
         except Exception as e:
             logger.error(f"[karpenter] patch_node_pool_allowed_types failed: {e}")
+            return {'status': 'error', 'error': str(e)}
+
+    def patch_consolidation_policy(
+        self,
+        cluster_id: str,
+        policy: str,
+        nodepool_name: str = "default",
+        consolidate_after: Optional[str] = None,
+    ) -> dict:
+        """
+        Patch the disruption fields of a NodePool.
+
+        Args:
+            cluster_id: Cluster database ID
+            policy: "WhenEmpty" or "WhenEmptyOrUnderutilized"
+            nodepool_name: NodePool name (default: "default")
+            consolidate_after: Optional consolidateAfter value, e.g. "Never" or "30s".
+                               If omitted, that field is left unchanged.
+
+        Returns:
+            {"status": "success"} or {"status": "error"/"not_found", "error": str}
+        """
+        try:
+            cluster = self.db.query(Cluster).filter(Cluster.id == cluster_id).first()
+            if not cluster:
+                return {'status': 'error', 'error': f'Cluster {cluster_id} not found'}
+
+            api_client = self._get_k8s_client(cluster)
+            custom_api = client.CustomObjectsApi(api_client)
+
+            _disruption_patch: dict = {"consolidationPolicy": policy}
+            if consolidate_after is not None:
+                _disruption_patch["consolidateAfter"] = consolidate_after
+
+            patch_body = {"spec": {"disruption": _disruption_patch}}
+            custom_api.patch_cluster_custom_object(
+                group="karpenter.sh",
+                version="v1",
+                plural="nodepools",
+                name=nodepool_name,
+                body=patch_body,
+            )
+            logger.info(
+                f"[karpenter] Patched NodePool '{nodepool_name}' disruption → "
+                f"consolidationPolicy={policy}"
+                + (f", consolidateAfter={consolidate_after}" if consolidate_after else "")
+                + f" for cluster {cluster_id}"
+            )
+            return {'status': 'success', 'consolidation_policy': policy, 'consolidate_after': consolidate_after}
+        except ApiException as e:
+            if e.status == 404:
+                logger.warning(
+                    f"[karpenter] NodePool '{nodepool_name}' not found for cluster {cluster_id} "
+                    f"— cannot patch consolidation policy"
+                )
+                return {'status': 'not_found', 'error': f'NodePool {nodepool_name} not found'}
+            logger.error(f"[karpenter] patch_consolidation_policy failed: {e}")
+            return {'status': 'error', 'error': str(e)}
+        except Exception as e:
+            logger.error(f"[karpenter] patch_consolidation_policy failed: {e}")
             return {'status': 'error', 'error': str(e)}
 
     # ── Spot trigger pod management ──────────────────────────────────────

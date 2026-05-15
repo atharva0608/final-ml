@@ -41,7 +41,7 @@ class EmergencyEventProcessor:
                 return handle_termination(instance_id, cluster_id, region, instance_type, az, node_name)
             elif event_type == 'rebalance':
                 from backend.services.rebalance_tracker import track_rebalance_event
-                return track_rebalance_event(region, instance_type, az)
+                return track_rebalance_event(region, instance_type, az, cluster_id=cluster_id)
             else:
                 logger.warning(f'[emergency_processor] Unknown event type: {event_type}')
                 return {'status': 'unknown_event_type'}

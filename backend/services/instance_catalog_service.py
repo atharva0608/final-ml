@@ -36,9 +36,10 @@ class InstanceCatalogService:
     Fetches instance specifications from AWS EC2 API and stores in database.
     """
 
-    def __init__(self, db: Session, account_id: Optional[str] = None):
+    def __init__(self, db: Session, account_id: Optional[str] = None, role_arn: Optional[str] = None):
         self.db = db
         self.account_id = account_id
+        self.role_arn = role_arn
 
         # Boto3 config with enterprise retry policy
         self.boto_config = Config(
@@ -52,21 +53,49 @@ class InstanceCatalogService:
 
     def _get_aws_client(self, service: str, region: str):
         """
-        Get AWS client using environment credentials.
+        Get AWS client, optionally using STS assume_role for cross-account access.
 
-        For instance catalog and pricing, we use the base AWS credentials directly
-        since these are read-only operations that don't require cross-account access.
+        Multi-tenant usage: pass `role_arn` at construction time to obtain temporary
+        credentials scoped to the customer's AWS account. This ensures that
+        instance type availability and pricing data reflect the customer's account,
+        not the SaaS platform account.
+
+        If `role_arn` is not provided, falls back to environment credentials
+        (AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY). This is acceptable for
+        development and single-account deployments but NOT for multi-tenant production —
+        environment credentials reflect the SaaS platform account, not the customer.
         """
         try:
-            # Use environment credentials directly (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY)
-            # This avoids the need for role assumption and works with any IAM user/role
-            client = boto3.client(
-                service,
-                region_name=region,
-                config=self.boto_config
-            )
-
-            logger.info(f"Created {service} client for region {region} using environment credentials")
+            if self.role_arn:
+                sts = boto3.client('sts', config=self.boto_config)
+                session_name = f"spot-catalog-{(self.account_id or 'anon')[:8]}"
+                assumed = sts.assume_role(
+                    RoleArn=self.role_arn,
+                    RoleSessionName=session_name,
+                )
+                creds = assumed['Credentials']
+                client = boto3.client(
+                    service,
+                    region_name=region,
+                    aws_access_key_id=creds['AccessKeyId'],
+                    aws_secret_access_key=creds['SecretAccessKey'],
+                    aws_session_token=creds['SessionToken'],
+                    config=self.boto_config,
+                )
+                logger.info(
+                    f"Created {service} client for region {region} "
+                    f"via STS assume_role account={self.account_id}"
+                )
+            else:
+                client = boto3.client(
+                    service,
+                    region_name=region,
+                    config=self.boto_config,
+                )
+                logger.info(
+                    f"Created {service} client for region {region} "
+                    f"using environment credentials (no role_arn provided)"
+                )
             return client
 
         except Exception as e:

@@ -176,8 +176,20 @@ class HeartbeatSender:
         self._k8s_initialized = False
         self._k8s_core_v1 = None
         self._k8s_apps_v1 = None
+        self.pod_metrics_collector = None
+        self.metrics_collector = None
+        self._node_metadata_last_sent = 0.0
+        _NODE_METADATA_INTERVAL = 300
 
         logger.info(f"HeartbeatSender initialized for agent: {agent_id}")
+
+    def set_metrics_collector(self, collector):
+        """Link the node metrics collector (collector.py) for node metadata push."""
+        self.metrics_collector = collector
+
+    def set_pod_metrics_collector(self, collector):
+        """Link the pod metrics collector to extract Phase 2e data"""
+        self.pod_metrics_collector = collector
 
     def _ensure_k8s_client(self):
         """Lazy-initialize K8s clients for Karpenter detection."""
@@ -446,6 +458,12 @@ class HeartbeatSender:
             'metrics': metrics,
             'karpenter_status': karpenter_live,
         }
+        
+        # Phase 2e Data Collection (Task 5.2)
+        if self.pod_metrics_collector:
+            payload['cluster_spot_summary'] = self.pod_metrics_collector.latest_cluster_spot_summary
+            payload['hpa_pdb_data'] = self.pod_metrics_collector.latest_hpa_pdb_data
+            payload['pod_metrics_per_workload'] = self.pod_metrics_collector.pod_metrics_per_workload
         # BUG-14 fix: thread-safe snapshot
         with self._health_lock:
             payload['components'] = dict(self.component_health)
@@ -480,6 +498,51 @@ class HeartbeatSender:
                     )
                     return False
 
+    def send_node_metadata_batch(self) -> None:
+        """Push static node metadata (az, capacity_type, etc.) to the backend.
+        Runs at most every 300s to avoid redundant K8s API calls."""
+        import os as _os
+        if not _os.getenv('FEATURE_NODE_METADATA_PUSH', 'true').lower() == 'true':
+            return
+        _NODE_METADATA_INTERVAL = 300
+        if time.time() - self._node_metadata_last_sent < _NODE_METADATA_INTERVAL:
+            return
+        if not self.metrics_collector:
+            return
+        try:
+            node_metrics = self.metrics_collector.collect_node_metrics()
+            nodes = []
+            for nm in node_metrics:
+                if not nm.get('node_name'):
+                    continue
+                ca = nm.get('capacity_allocatable') or {}
+                nodes.append({
+                    'node_name': nm['node_name'],
+                    'az': nm.get('az'),
+                    'capacity_type': nm.get('capacity_type'),
+                    'nodepool_name': nm.get('nodepool_name'),
+                    'instance_type': nm.get('instance_type'),
+                    'do_not_disrupt': bool(nm.get('do_not_disrupt', False)),
+                    'is_ready': bool(nm.get('is_ready', True)),
+                    'allocatable_cpu_millicores': nm.get('cpu_allocatable_millicores'),
+                    'allocatable_memory_bytes': nm.get('memory_allocatable_bytes'),
+                })
+            if not nodes:
+                return
+            url = f"{self.backend_url}/api/v1/agents/node-metadata/batch"
+            headers = {
+                'Authorization': f'Bearer {self.api_key}',
+                'Content-Type': 'application/json',
+                'ngrok-skip-browser-warning': 'true',
+            }
+            payload = {'cluster_id': self.cluster_id, 'nodes': nodes}
+            resp = requests.post(url, json=payload, headers=headers, timeout=15)
+            resp.raise_for_status()
+            self._node_metadata_last_sent = time.time()
+            logger.debug(f"Node metadata batch pushed: {len(nodes)} nodes")
+        except Exception as exc:
+            logger.warning(f"Node metadata batch push failed: {exc}")
+
     def run(self):
         """
         Run the heartbeat sender in a loop — runs forever with adaptive intervals.
@@ -498,6 +561,7 @@ class HeartbeatSender:
         while self.running:
             try:
                 self.send_heartbeat()
+                self.send_node_metadata_batch()
             except Exception as e:
                 logger.error(f"Error in heartbeat loop: {e}", exc_info=True)
 

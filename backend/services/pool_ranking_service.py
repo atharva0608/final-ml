@@ -78,6 +78,11 @@ class ScoredPool:
     capacity_status: Optional[str] = None  # "validated", "unavailable", "unvalidated"
     capacity_validated_at: Optional[str] = None  # ISO timestamp
     requesting_cluster_id: Optional[str] = None  # Cluster that requested this ranking
+    # C9/C10: Global pool context for UI risk transparency
+    risk_source: str = "local"                  # "local" | "blend" | "global"
+    global_itn_breadth: int = 0                 # distinct clusters affected in last 24 h
+    global_itn_severity: Optional[str] = None   # worst event in ledger; None if no history
+    global_confidence: float = 0.0              # global ledger confidence [0, 1]
     # Legacy aliases for backward compatibility
     @property
     def savings_pct(self):
@@ -371,156 +376,65 @@ class PoolRankingService:
         Returns top `global_limit` pools sorted by ML score.
         Called by _get_or_compute_global_rankings on a cache miss.
 
-        Tiered Spot Advisor filtering (5 passes, stops when global_limit met):
-          Pass 0: max_rank=0 (<5% interruption only — safest pools)
-          Pass 1: max_rank=1 (≤10% interruption — <5% and 5-10%)
-          Pass 2: max_rank=2 (≤15% interruption — includes 10-15% overflow)
-          Pass 3: max_rank=3 (≤20% interruption — needed for COST_FIRST profiles)
-          Pass 4: max_rank=4 (≤25% interruption — maximum ceiling, all profiles)
-        Note: Global cache must retain ALL pools up to rank 4 so per-cluster
-        COST_FIRST filters (which accept up to 25%) can find their candidates.
-        Filtering at global tier before per-cluster filter = silent pool loss.
+        Gap 3 fix: SA data is refreshed once per day — using it as a hard gate
+        discards valid pools that changed rank since the morning snapshot.  SA rank
+        is still attached to every pool (it flows into ONNX inputs and
+        compute_blended_risk()), so the ML layer can down-weight high-SA pools
+        intraday.  We no longer pre-filter by SA rank here; all candidate pools go
+        straight to _score_candidates().
+
+        Gap 4 fix: the old seen_types dedup kept only the best AZ per type, hiding
+        valid cheaper AZs from per-cluster AZ-restricted filters.  We now retain ALL
+        scored AZ variants and let the per-cluster Filter 6 handle AZ restriction.
         """
         logger.info(f"Global pipeline START for region={region} (no template filter)")
 
-        # Ensure Spot Advisor data is available for this region
+        # Ensure Spot Advisor data is available for this region.
+        # _step3_spot_advisor_filter is still called below to *attach* the SA rank
+        # to each InstancePool so it flows into ONNX features and compute_blended_risk.
+        # It is no longer used as a hard gate.
         self._ensure_spot_advisor_fresh(region)
 
         all_candidate_pools = self._build_all_candidate_pools(region)
         logger.info(f"Global pipeline: {len(all_candidate_pools)} raw candidates")
 
-        # ── Tiered Spot Advisor filter (3 passes) ─────────────────────────
-
-        # Pass 0: Strictest — only <5% interruption (rank 0)
+        # Gap 3: Annotate SA rank on every pool (max_rank=4 = pass everything through).
+        # SA data is a daily AWS-global snapshot; using it as a hard gate discards pools
+        # that changed rank since the morning refresh.  The rank travels with the pool
+        # into ONNX inputs so the model can still down-weight high-SA pools intraday.
         candidate_pools = self._step3_spot_advisor_filter(
-            all_candidate_pools, region, max_rank=0
+            all_candidate_pools, region, max_rank=4
         )
         logger.info(
-            f"Global Step 3 (pass 0, <5%%): {len(candidate_pools)} after "
-            f"Spot Advisor filter"
+            f"Global Step 3 (annotation only, all SA ranks): "
+            f"{len(candidate_pools)} candidates proceeding to scoring"
         )
 
         scored_pools = self._score_candidates(candidate_pools, region)
-        logger.info(
-            f"Global Step 3 (pass 0): {len(scored_pools)} scored pools"
-        )
-
-        # Pass 1: If not enough, expand to ≤10% interruption (ranks 0-1)
-        if len(scored_pools) < global_limit:
-            pass0_keys = {
-                f"{p.pool.instance_type}:{p.pool.az}" for p in scored_pools
-            }
-            expanded_pools = self._step3_spot_advisor_filter(
-                all_candidate_pools, region, max_rank=1
-            )
-            overflow_pools = [
-                p for p in expanded_pools
-                if f"{p.instance_type}:{p.az}" not in pass0_keys
-            ]
-            logger.info(
-                f"Global Step 3 (pass 1, ≤10%%): {len(overflow_pools)} "
-                f"additional 5-10%% pools added"
-            )
-
-            if overflow_pools:
-                overflow_scored = self._score_candidates(
-                    overflow_pools, region
-                )
-                scored_pools.extend(overflow_scored)
-
-        # Pass 2: If still not enough, expand to ≤15% interruption (rank 2)
-        if len(scored_pools) < global_limit:
-            pass01_keys = {
-                f"{p.pool.instance_type}:{p.pool.az}" for p in scored_pools
-            }
-            expanded_pools = self._step3_spot_advisor_filter(
-                all_candidate_pools, region, max_rank=2
-            )
-            # Keep only the newly-included rank-2 pools
-            overflow_pools = [
-                p for p in expanded_pools
-                if f"{p.instance_type}:{p.az}" not in pass01_keys
-            ]
-            logger.info(
-                f"Global Step 3 (pass 2, ≤15%%): {len(overflow_pools)} "
-                f"additional 10-15%% pools added"
-            )
-
-            if overflow_pools:
-                overflow_scored = self._score_candidates(
-                    overflow_pools, region
-                )
-                scored_pools.extend(overflow_scored)
-
-        # Pass 3: If still not enough, expand to ≤20% interruption (rank 3)
-        # Required for COST_FIRST profiles which accept up to 25% interruption.
-        # Without this pass, COST_FIRST never sees 15-20% pools (silent loss).
-        if len(scored_pools) < global_limit:
-            pass012_keys = {
-                f"{p.pool.instance_type}:{p.pool.az}" for p in scored_pools
-            }
-            expanded_pools = self._step3_spot_advisor_filter(
-                all_candidate_pools, region, max_rank=3
-            )
-            overflow_pools = [
-                p for p in expanded_pools
-                if f"{p.instance_type}:{p.az}" not in pass012_keys
-            ]
-            logger.info(
-                f"Global Step 3 (pass 3, ≤20%%): {len(overflow_pools)} "
-                f"additional 15-20%% pools added"
-            )
-
-            if overflow_pools:
-                overflow_scored = self._score_candidates(
-                    overflow_pools, region
-                )
-                scored_pools.extend(overflow_scored)
-
-        # Pass 4: If still not enough, expand to ≤25% interruption (rank 4)
-        # Maximum ceiling — covers all possible profile ceilings (COST_FIRST: 25%).
-        if len(scored_pools) < global_limit:
-            pass0123_keys = {
-                f"{p.pool.instance_type}:{p.pool.az}" for p in scored_pools
-            }
-            expanded_pools = self._step3_spot_advisor_filter(
-                all_candidate_pools, region, max_rank=4
-            )
-            overflow_pools = [
-                p for p in expanded_pools
-                if f"{p.instance_type}:{p.az}" not in pass0123_keys
-            ]
-            logger.info(
-                f"Global Step 3 (pass 4, ≤25%%): {len(overflow_pools)} "
-                f"additional 20-25%% pools added"
-            )
-
-            if overflow_pools:
-                overflow_scored = self._score_candidates(
-                    overflow_pools, region
-                )
-                scored_pools.extend(overflow_scored)
+        logger.info(f"Global pipeline: {len(scored_pools)} pools after ML scoring")
 
         if not scored_pools:
             return []
 
-        # Sort descending by ML score; dedup by instance type
+        # Gap 4: Sort by ML score descending; do NOT dedup by instance_type.
+        # Keeping all AZ variants means per-cluster AZ-restricted Filter 6 can still
+        # find a valid AZ when the "best" AZ for a type is outside the cluster's
+        # allowed set.  global_limit caps total pool count as before.
         scored_pools.sort(
             key=lambda p: (p.ml_score, p.predicted_savings, -p.pool.spot_price),
             reverse=True,
         )
-        seen_types: set = set()
-        diverse: List["ScoredPool"] = []
-        for pool in scored_pools:
-            if pool.pool.instance_type not in seen_types:
-                diverse.append(pool)
-                seen_types.add(pool.pool.instance_type)
 
-        result = diverse[:global_limit]
+        result = scored_pools[:global_limit]
         for i, pool in enumerate(result, start=1):
             pool.rank = i
 
-        logger.info(f"Global pipeline DONE: {len(result)} pools cached for region={region}")
+        _distinct_types = len({p.pool.instance_type for p in result})
+        logger.info(
+            f"Global pipeline DONE: {len(result)} pools "
+            f"({_distinct_types} distinct types, all AZ variants retained) "
+            f"for region={region}"
+        )
         return result
 
     def _score_candidates(
@@ -1234,24 +1148,55 @@ class PoolRankingService:
                         price_headroom = (pool.ondemand_price - pool.spot_price) / pool.ondemand_price
                         predicted_savings = max(0.0, min(0.95, price_headroom))
 
-                # ── Differentiated risk: 4-signal blend (changes.md §6.2) ────
-                # Signals: ONNX (0.40), Price pressure (0.35), Spot Advisor (0.25), + optional EMA
-                _pool_key_ema = f"{pool.instance_type}:{pool.az}"
-                _ema_risk_val, _ema_weight_val = 0.0, 0.0
+                # ── Differentiated risk: 2-signal blend + adaptive ledger (changes.md §6.2) ────
+                # C9: ledger is keyed globally (global_pool_ledger:{pool_key}, no cluster_id).
+                # get_global_pool_context() reads from that key so the risk blend is informed
+                # by interruption data from ALL customers sharing this AWS pool.
+                _pool_key_adaptive = f"{pool.instance_type}:{pool.az}"
+                _pool_ctx: dict = {}
                 try:
-                    from backend.services.global_ema_service import get_ema_risk
-                    _ema_risk_val, _ema_weight_val = get_ema_risk(self.redis, self.db, _pool_key_ema)
+                    from backend.services.adaptive_itn_service import AdaptiveItnService
+                    _pool_ctx = AdaptiveItnService.get_global_pool_context(
+                        _pool_key_adaptive, self.redis
+                    )
                 except Exception:
                     pass
+                _adaptive_risk_val = _pool_ctx.get("adaptive_risk", 0.0)
+                _adaptive_conf_val = _pool_ctx.get("adaptive_confidence", 0.0)
+                _global_breadth    = int(_pool_ctx.get("global_itn_breadth", 0))
+                _global_severity   = _pool_ctx.get("global_itn_severity")
+                # C9: risk_source classifies which signal dominates the blend
+                # "local"  — cold start; no global history, pure ONNX + price
+                # "blend"  — some global data (1 cluster), gating in
+                # "global" — multi-cluster breadth established (>= 2 clusters in 24 h)
+                if _adaptive_conf_val == 0.0:
+                    _risk_source: str = "local"
+                elif _global_breadth >= 2:
+                    _risk_source = "global"
+                else:
+                    _risk_source = "blend"
+
+                # B9: extract price_velocity_1h from engineered feature vector (index 21)
+                _price_vel = float(features[0][21]) if features.shape[1] > 21 else 0.0
 
                 risk_probability = PoolRankingService.compute_blended_risk(
                     onnx_risk=risk_probability,
-                    sa_rank=pool.spot_advisor_rank,
                     spot_price=pool.spot_price,
                     od_price=pool.ondemand_price,
-                    ema_risk=_ema_risk_val,
-                    ema_weight=_ema_weight_val,
+                    adaptive_risk=_adaptive_risk_val,
+                    adaptive_confidence=_adaptive_conf_val,
+                    price_velocity_1h=_price_vel,
                 )
+
+                # B8: cache last-known risk score for circuit-breaker fallback (2h TTL)
+                try:
+                    self.redis.setex(
+                        f"last_known_risk:{pool.instance_type}:{pool.az}",
+                        7200,
+                        str(risk_probability),
+                    )
+                except Exception:
+                    pass
 
                 # ── Hard filter: REJECT pools above risk threshold ──
                 if risk_probability > self.risk_threshold:
@@ -1259,6 +1204,14 @@ class PoolRankingService:
                     logger.debug(
                         f"REJECTED {pool.instance_type}/{pool.az}: "
                         f"risk={risk_probability:.3f} > threshold={self.risk_threshold}"
+                    )
+                    continue
+
+                # ── ITN cooldown guard: skip pools interrupted within last 6 h ──
+                _itn_cooldown_key = f"itn_cooldown:{pool.instance_type}:{pool.az}"
+                if self.redis.exists(_itn_cooldown_key):
+                    logger.debug(
+                        f"SKIPPED {pool.instance_type}/{pool.az}: ITN cooldown active"
                     )
                     continue
 
@@ -1298,15 +1251,14 @@ class PoolRankingService:
                 except Exception:
                     pass
 
-                # Apply blacklist + dryrun hard overrides to blended risk
+                # Apply dryrun hard overrides to blended risk
                 _final_risk_adjusted = PoolRankingService.compute_blended_risk(
                     onnx_risk=risk_probability,  # already blended above, but re-apply overrides
-                    sa_rank=pool.spot_advisor_rank,
                     spot_price=pool.spot_price,
                     od_price=pool.ondemand_price,
-                    ema_risk=_ema_risk_val,
-                    ema_weight=_ema_weight_val,
-                    is_blacklisted=bool(is_flagged),
+                    adaptive_risk=_adaptive_risk_val,
+                    adaptive_confidence=_adaptive_conf_val,
+                    price_velocity_1h=_price_vel,
                     dryrun_failed=(_cap_mult == 0.0),
                 )
 
@@ -1324,8 +1276,31 @@ class PoolRankingService:
                     ml_score=final_score,
                     is_flagged=bool(is_flagged),
                     rank=0,  # Will be set in Step 8
-                    timestamp=timestamp
+                    timestamp=timestamp,
+                    # C9/C10: global pool context for UI risk transparency
+                    risk_source=_risk_source,
+                    global_itn_breadth=_global_breadth,
+                    global_itn_severity=_global_severity,
+                    global_confidence=_adaptive_conf_val,
                 ))
+
+                # B11: update pool_stable_since/{pool_key} for Check 0 tenure guard.
+                # Keep the existing timestamp when risk is stable; reset it when it moves.
+                try:
+                    _STABLE_DELTA = 0.05
+                    _ps_key = f"pool_stable_since:{pool.instance_type}:{pool.az}"
+                    _lr_key = f"last_pool_risk_scored:{pool.instance_type}:{pool.az}"
+                    _lr_raw = self.redis.get(_lr_key)
+                    _prev_risk = float(_lr_raw) if _lr_raw else None
+                    if _prev_risk is None or abs(risk_probability - _prev_risk) >= _STABLE_DELTA:
+                        # Risk changed (or first seen) — reset stable-since to now
+                        self.redis.setex(_ps_key, 7200, timestamp.isoformat())
+                    else:
+                        # Stable — extend TTL without changing the timestamp
+                        self.redis.expire(_ps_key, 7200)
+                    self.redis.setex(_lr_key, 7200, str(risk_probability))
+                except Exception:
+                    pass
 
             except Exception as e:
                 logger.error(f"ML scoring failed for {pool.instance_type}/{pool.az}: {e}")
@@ -1374,55 +1349,56 @@ class PoolRankingService:
     @staticmethod
     def compute_blended_risk(
         onnx_risk: float,
-        sa_rank: int,
         spot_price: float,
         od_price: float,
-        ema_risk: float = 0.0,
-        ema_weight: float = 0.0,
-        is_blacklisted: bool = False,
+        adaptive_risk: float = 0.0,
+        adaptive_confidence: float = 0.0,
+        price_velocity_1h: float = 0.0,
         dryrun_failed: bool = False,
     ) -> float:
         """
-        3-signal blended risk with EMA smoothing (changes.md §6.2).
+        Adaptive blended risk (B5/B9 — changes.md §6.3).
 
-        Base signals (when EMA weight = 0):
-          ONNX: 0.40, Price pressure: 0.35, Spot Advisor: 0.25
+        Existing two-signal component (weights sum to 0.75, renormalized to 1.0):
+          ONNX:           0.40
+          Price pressure: 0.35 (amplified by price velocity — B9)
 
-        When EMA data is present, EMA weight is injected (max 40%) and
-        base weights are renormalized to (1 - ema_weight).
-        EMA is an interpolation modifier, not an independent 4th signal.
+        Adaptive signal (interruption-ledger ITN score) gates in via confidence:
+          adaptive_weight = adaptive_confidence * 0.25   (max 0.25 at full confidence)
+
+        Cold start (confidence = 0):  adaptive_weight = 0 → pure ONNX + price pressure.
+        Full confidence (1.0):        adaptive has 25% say, existing 75%.
+
+        Formula (B5):
+          existing_normalized = (0.40 * onnx + 0.35 * price_pressure) / 0.75
+          final_risk = (1 - adaptive_weight) * existing_normalized
+                     +      adaptive_weight  * adaptive_risk
+
+        Price pressure velocity modifier (B9):
+          velocity_factor = 1 + max(0, price_velocity_1h * 0.5)
+          price_pressure  = min(1.0, base_pressure * velocity_factor)
 
         Hard overrides:
-          - blacklisted (ITN in last 24h) → max(0.75, risk)
-          - dryrun failed               → max(0.65, risk)
+          - dryrun failed → max(0.65, risk)
+          (blacklist floor removed in B7 — ITN cooldown handles short-term exclusion)
         """
-        # Price pressure signal
+        # Price pressure signal (B9: amplified by rising velocity)
         headroom = (od_price - spot_price) / od_price if od_price > 0 else 0.0
-        price_pressure = max(0.0, 1.0 - headroom / 0.40)
+        base_pressure = max(0.0, 1.0 - headroom / 0.40)
+        velocity_factor = 1.0 + max(0.0, price_velocity_1h * 0.5)
+        price_pressure = min(1.0, base_pressure * velocity_factor)
 
-        # Spot Advisor signal
-        sa_risk = min(sa_rank / 5.0, 0.8)
+        # Existing two-signal blend, renormalized so the pair sums to 1.0
+        existing_normalized = (0.40 * onnx_risk + 0.35 * price_pressure) / 0.75
 
-        # Base weights
-        base_onnx = 0.40
-        base_price = 0.35
-        base_sa = 0.25
-        base_sum = base_onnx + base_price + base_sa
+        # Adaptive signal weight: confidence-gated, up to 0.25
+        adaptive_weight = min(1.0, max(0.0, adaptive_confidence)) * 0.25
 
-        weighted_sum = base_onnx * onnx_risk + base_price * price_pressure + base_sa * sa_risk
-        base_risk = weighted_sum / base_sum
-
-        # Blend with EMA if available
-        if ema_weight > 0:
-            final_risk = (1.0 - ema_weight) * base_risk + ema_weight * ema_risk
-        else:
-            final_risk = base_risk
+        final_risk = (1.0 - adaptive_weight) * existing_normalized + adaptive_weight * adaptive_risk
 
         final_risk = min(1.0, max(0.0, final_risk))
 
         # Hard overrides
-        if is_blacklisted:
-            final_risk = max(0.75, final_risk)
         if dryrun_failed:
             final_risk = max(0.65, final_risk)
 
@@ -1542,7 +1518,11 @@ class PoolRankingService:
                     # Cache validation result for starvation retry (1 hour TTL)
                     try:
                         _vk = f"spot:validated:{region}:{pool.pool.instance_type}:{pool.pool.az}"
-                        self.redis.setex(_vk, 3600, now.isoformat())
+                        # Gap 3/DryRun: 30-min TTL (was 1h) — reduces capacity illusion
+                        # window.  Spot capacity can open/close in minutes; a 1-hour
+                        # cached "has capacity" can offer a pool that lost capacity
+                        # 5 min after validation.  30 min is a safer balance.
+                        self.redis.setex(_vk, 1800, now.isoformat())
                     except Exception:
                         pass
                     logger.debug(f"Offering PASS: {pool.pool.instance_type}:{pool.pool.az}")
@@ -1655,8 +1635,19 @@ class PoolRankingService:
             # Simple heuristic: Higher headroom = better savings
             headroom = (pool.ondemand_price - pool.spot_price) / pool.ondemand_price if pool.ondemand_price > 0 else 0.5
             predicted_savings = headroom
-            # Low risk estimate based on spot advisor rank (lower rank = safer)
-            risk_probability = pool.spot_advisor_rank / 5.0 if pool.spot_advisor_rank <= 5 else 0.5
+
+            # B8: use last-known ONNX risk from Redis cache (2h TTL) instead of flat 0.20.
+            # Falls back to spot-advisor-rank heuristic only when there is no prior data.
+            risk_probability = 0.20  # true last resort
+            try:
+                _lkr_raw = self.redis.get(f"last_known_risk:{pool.instance_type}:{pool.az}")
+                if _lkr_raw:
+                    risk_probability = float(_lkr_raw)
+                elif pool.spot_advisor_rank <= 5:
+                    risk_probability = pool.spot_advisor_rank / 5.0
+            except Exception:
+                if pool.spot_advisor_rank <= 5:
+                    risk_probability = pool.spot_advisor_rank / 5.0
 
             final_score = compute_expected_value(predicted_savings, risk_probability)
 
@@ -2496,6 +2487,54 @@ class PoolRankingService:
             p['spot_price_raw'] = spot_price
             results.append(p)
 
+        # C9/C10: Enrich all eligible pools with global-ledger context for UI transparency.
+        # Use a Redis pipeline so all GET + SCARD calls happen in one round-trip.
+        try:
+            _pk_list = [f"{r.get('instance_type')}:{r.get('az')}" for r in results]
+            if _pk_list:
+                _pipe = self.redis.pipeline(transaction=False)
+                for _pk in _pk_list:
+                    _pipe.get(f"global_pool_ledger:{_pk}")    # full ledger JSON
+                    _pipe.scard(f"pool_breadth_24h:{_pk}")   # 24 h breadth count
+                _pipe_results = _pipe.execute()
+                for i, p in enumerate(results):
+                    _raw = _pipe_results[i * 2]
+                    _breadth = int(_pipe_results[i * 2 + 1] or 0)
+                    if _raw:
+                        try:
+                            _ledger = _json.loads(_raw)
+                            _gc = float(_ledger.get("confidence", 0.0))
+                            _sev = (
+                                "actual_termination" if int(_ledger.get("actual_termination_count", 0)) > 0
+                                else "itn_warning"   if int(_ledger.get("itn_warning_count", 0)) > 0
+                                else "rebalance_notice" if int(_ledger.get("rebalance_notice_count", 0)) > 0
+                                else None
+                            )
+                            p['global_itn_breadth']  = _breadth
+                            p['global_itn_severity'] = _sev
+                            p['global_confidence']   = round(_gc, 4)
+                            p['risk_source'] = (
+                                "global" if _breadth >= 2
+                                else "blend" if _gc > 0
+                                else "local"
+                            )
+                        except Exception:
+                            p.setdefault('global_itn_breadth', 0)
+                            p.setdefault('global_itn_severity', None)
+                            p.setdefault('global_confidence', 0.0)
+                            p.setdefault('risk_source', 'local')
+                    else:
+                        p['global_itn_breadth']  = _breadth
+                        p['global_itn_severity'] = None
+                        p['global_confidence']   = 0.0
+                        p['risk_source']         = 'local'
+        except Exception:
+            for p in results:
+                p.setdefault('global_itn_breadth', 0)
+                p.setdefault('global_itn_severity', None)
+                p.setdefault('global_confidence', 0.0)
+                p.setdefault('risk_source', 'local')
+
         # Sort by expected_value DESC (best first)
         results.sort(key=lambda x: x['expected_value'], reverse=True)
 
@@ -2679,32 +2718,39 @@ def record_interruption_event(
     az: str,
     instance_type: str,
     redis_client=None,
+    cluster_id: str = "",
+    event_type: str = "itn_warning",
+    initiated_by: str = "aws",
 ):
     """
     Task 2.7 — Record a spot interruption event for a pool.
 
-    Updates interruption_history:{region}:{az}:{instance_type} with an
-    exponential moving average. Called by termination_monitor when a spot
-    interruption is detected.
+    C4/C5: Delegates to AdaptiveItnService.record_global_interruption() which
+    applies the source filter (only "aws" events touch the global ledger).
 
-    History TTL: 7 days.
+    Defaults: event_type="itn_warning", initiated_by="aws"
+    Pass initiated_by="rebalancer" or "karpenter_consolidation" to suppress
+    the ledger update for non-AWS drain events.
     """
     if redis_client is None:
         from backend.core.redis_client import get_redis_client
         redis_client = get_redis_client()
 
-    history_key = f"interruption_history:{region}:{az}:{instance_type}"
+    pool_key = f"{instance_type}:{az}"
     try:
-        raw = redis_client.get(history_key)
-        history = json.loads(raw) if raw else {"rate": 0.0, "count": 0}
-        history["count"] += 1
-        # EMA: each interruption event pushes rate toward 25 (max tier)
-        history["rate"] = history["rate"] * 0.9 + 25.0 * 0.1
-        redis_client.setex(history_key, 86400 * 7, json.dumps(history))
-        logger.info(
-            f"[pool_ranking] Recorded interruption event {region}/{az}/{instance_type} "
-            f"count={history['count']} rate={history['rate']:.1f}"
+        from backend.services.adaptive_itn_service import AdaptiveItnService
+        AdaptiveItnService.record_global_interruption(
+            pool_key=pool_key,
+            cluster_id=cluster_id,
+            event_type=event_type,
+            initiated_by=initiated_by,
+            redis_client=redis_client,
         )
+        if initiated_by == "aws":
+            logger.info(
+                f"[pool_ranking] Recorded {event_type} for global ledger "
+                f"{region}/{az}/{instance_type}"
+            )
     except Exception as e:
         logger.warning(f"[pool_ranking] record_interruption_event failed: {e}")
 

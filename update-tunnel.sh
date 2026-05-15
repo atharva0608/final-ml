@@ -22,7 +22,7 @@ DOCKER_DIR="$SCRIPT_DIR/docker"
 NAMESPACE="spot-optimizer"
 CONFIGMAP="spot-agent-config"
 REDIS_CONTAINER="spot-optimizer-redis"
-AGENT_IMAGE="atharva608/spot-optimizer-agent:1.1.6"
+AGENT_IMAGE="atharva608/spot-optimizer-agent:1.1.8"
 HELM_VALUES="$SCRIPT_DIR/charts/spot-optimizer-agent/values.yaml"
 
 RED='\033[0;31m'

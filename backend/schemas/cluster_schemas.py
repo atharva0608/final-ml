@@ -33,6 +33,9 @@ class ClusterListItem(BaseModel):
     auto_rebalance_enabled: bool = Field(False, description="Auto on-demand→spot rebalancing enabled")
     rightsizing_enabled: bool = Field(False, description="Right-sizing enabled")
 
+    # Health score letter grade (A/B/C/D) from health_monitor — null if not yet computed
+    health_score: Optional[str] = Field(None, description="Cluster health letter grade A/B/C/D")
+
     @field_serializer('last_heartbeat')
     def serialize_heartbeat(self, dt: Optional[datetime], _info):
         """Serialize datetime with UTC timezone indicator"""

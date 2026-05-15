@@ -1705,8 +1705,12 @@ class AgentInjectorService:
             config.api_key = {"authorization": f"Bearer {k8s_token}"}
             config.ssl_ca_cert = ca_cert_path
             config.verify_ssl = True
+            # 10s timeout — prevents hanging when EKS cluster is already deleted
+            config.retries = 0
+            config.socket_options = None
             
             api_client = ApiClient(configuration=config)
+            api_client.rest_client.pool_manager.connection_pool_kw['timeout'] = 10
             core_v1 = k8s_client.CoreV1Api(api_client)
             rbac_v1 = k8s_client.RbacAuthorizationV1Api(api_client)
 

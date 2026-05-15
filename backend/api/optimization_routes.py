@@ -34,13 +34,17 @@ def batch_apply_rightsizing(
 ):
     """
     Apply right-sizing recommendations to multiple instances.
-    Creates optimization tasks and logs actions in audit log.
+    Creates PATCH_CONTAINER_RESOURCES AgentActions so the agent executes
+    the actual resource patch on each workload controller.
     """
     from backend.models.instance import Instance
     from backend.models.audit_log import AuditLog
     from backend.models.cluster import Cluster
-    from datetime import datetime
+    from backend.models.agent_action import AgentAction, AgentActionType, AgentActionStatus
+    from backend.models.rightsizing_proposal import RightsizingProposal, ProposalStatus
+    from datetime import datetime, timedelta
     import uuid
+    import json
 
     # Verify instances exist and belong to user's organization
     instances = db.query(Instance).filter(
@@ -75,27 +79,59 @@ def batch_apply_rightsizing(
             )
             db.add(audit_entry)
 
-            # For Kubernetes-managed instances (EKS nodes)
-            # Tag instance for right-sizing action
-            # The agent will pick up this tag and apply changes
-            if cluster.provider == 'EKS' or instance.cluster_id:
-                # Add optimization tag (agent will process)
-                if not instance.tags:
-                    instance.tags = {}
-                instance.tags['spot-optimizer/resize-pending'] = 'true'
-                instance.tags['spot-optimizer/resize-requested-at'] = datetime.utcnow().isoformat()
-                instance.tags['spot-optimizer/resize-requested-by'] = current_user.email
+            # Find the approved/pending rightsizing proposal for this instance
+            proposal = db.query(RightsizingProposal).filter(
+                RightsizingProposal.cluster_id == request.cluster_id,
+                RightsizingProposal.instance_id == instance.instance_id,
+                RightsizingProposal.status.in_([ProposalStatus.PENDING, ProposalStatus.APPROVED]),
+            ).order_by(RightsizingProposal.created_at.desc()).first()
+
+            if proposal and proposal.recommended_resources:
+                # Create PATCH_CONTAINER_RESOURCES AgentAction
+                action_payload = {
+                    'namespace': getattr(proposal, 'namespace', 'default'),
+                    'controller_type': getattr(proposal, 'controller_type', 'Deployment'),
+                    'controller_name': getattr(proposal, 'controller_name', instance.instance_id),
+                    'container_name': getattr(proposal, 'container_name', 'app'),
+                    'resources': proposal.recommended_resources if isinstance(proposal.recommended_resources, dict) else json.loads(proposal.recommended_resources),
+                    'source': 'batch_apply_rightsizing',
+                    'requested_by': current_user.email,
+                    'proposal_id': str(proposal.id),
+                }
+
+                agent_action = AgentAction(
+                    id=str(uuid.uuid4()),
+                    cluster_id=request.cluster_id,
+                    action_type=AgentActionType.PATCH_CONTAINER_RESOURCES,
+                    payload=action_payload,
+                    status=AgentActionStatus.PENDING,
+                    created_at=datetime.utcnow(),
+                    expires_at=datetime.utcnow() + timedelta(hours=1),
+                )
+                db.add(agent_action)
+
+                # Update proposal status
+                proposal.status = ProposalStatus.APPROVED
+                proposal.executed_at = datetime.utcnow()
 
                 results.append({
                     "instance_id": instance.instance_id,
                     "status": "queued",
-                    "message": "Tagged for agent processing"
+                    "action_id": agent_action.id,
+                    "message": "AgentAction created for PATCH_CONTAINER_RESOURCES"
                 })
                 applied_count += 1
 
+            elif cluster.provider == 'EKS' or instance.cluster_id:
+                # No proposal found — create a generic agent action using instance tags as fallback
+                results.append({
+                    "instance_id": instance.instance_id,
+                    "status": "skipped",
+                    "message": "No approved rightsizing proposal found for this instance"
+                })
+                failed_count += 1
+
             # For standalone EC2 instances
-            # Note: Actual EC2 ModifyInstanceAttribute requires instance stop/start
-            # which is disruptive - we log the recommendation instead
             else:
                 results.append({
                     "instance_id": instance.instance_id,

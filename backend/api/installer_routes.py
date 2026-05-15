@@ -6,10 +6,15 @@ script dynamically with pre-filled configuration values.
 """
 
 import os
+from datetime import datetime, timedelta
 from pathlib import Path
-from fastapi import APIRouter, Query, Request, HTTPException
+from fastapi import APIRouter, Depends, Query, Request, HTTPException
 from fastapi.responses import PlainTextResponse
 from sqlalchemy.orm import Session
+
+from backend.core.config import settings
+from backend.models.base import get_db
+from backend.models.cluster import Cluster as ClusterModel
 
 router = APIRouter(prefix="/installer", tags=["installer"])
 
@@ -24,7 +29,8 @@ TEMPLATE_PATH = Path(__file__).parent.parent / "templates" / "install.sh"
 async def get_linux_installer(
     request: Request,
     cluster_id: str = Query(..., description="The cluster ID to configure"),
-    api_key: str = Query(..., description="The API key for agent authentication")
+    api_key: str = Query(..., description="The API key for agent authentication"),
+    db: Session = Depends(get_db),
 ):
     """
     Generate a Linux installation script with pre-filled configuration.
@@ -35,18 +41,33 @@ async def get_linux_installer(
     
     The script is dynamically generated with the correct backend URL and credentials.
     """
-    
+    # Verify the cluster exists
+    cluster = db.query(ClusterModel).filter(ClusterModel.id == cluster_id).first()
+    if not cluster:
+        raise HTTPException(status_code=404, detail=f"Cluster '{cluster_id}' not found")
+
+    # Warn if agent is already actively connected (seen in last 5 minutes)
+    _agent_active = (
+        cluster.agent_installed == "Y"
+        and cluster.last_heartbeat is not None
+        and (datetime.utcnow() - cluster.last_heartbeat) < timedelta(minutes=5)
+    )
+
     # Read the template
     try:
         template_content = TEMPLATE_PATH.read_text()
     except FileNotFoundError:
         raise HTTPException(status_code=500, detail="Install script template not found")
-    
-    # Get the backend URL from the request
-    # This automatically works with ngrok, localhost, or production
-    scheme = request.headers.get("x-forwarded-proto", request.url.scheme)
-    host = request.headers.get("x-forwarded-host", request.headers.get("host", "localhost:8000"))
-    backend_url = f"{scheme}://{host}"
+
+    # ── Resolve backend URL ────────────────────────────────────────────────────
+    # In production: use BACKEND_PUBLIC_URL env var (must be set — agents can't reach internal URLs).
+    # In development: derive from request headers (works with ngrok / cloudflare tunnel).
+    if settings.BACKEND_PUBLIC_URL:
+        backend_url = settings.BACKEND_PUBLIC_URL.rstrip("/")
+    else:
+        scheme = request.headers.get("x-forwarded-proto", request.url.scheme)
+        host = request.headers.get("x-forwarded-host", request.headers.get("host", "localhost:8000"))
+        backend_url = f"{scheme}://{host}"
     
     # Convert to WebSocket URL for agent connection
     ws_url = backend_url.replace("https://", "wss://").replace("http://", "ws://")
@@ -77,13 +98,22 @@ async def get_linux_installer(
         # So I need to keep the SHELL SCRIPT wrapper, but inject the YAML content.
     )
 
+    _already_installed_banner = ""
+    if _agent_active:
+        _already_installed_banner = f"""
+# ⚠️  WARNING: Agent for cluster '{cluster_id}' appears to already be installed and active
+# (last heartbeat: {cluster.last_heartbeat.isoformat() if cluster.last_heartbeat else 'unknown'}).
+# Re-running this script will rolling-restart the agent DaemonSet but will NOT break the cluster.
+# Proceed only if you are upgrading the agent or fixing a broken installation.
+"""
+
     dynamic_header = f'''#!/bin/bash
 set -e
 
 # ============================================
 # Spot Optimizer Agent - Dynamic Installer
 # Generated for Cluster: {cluster_id}
-# ============================================
+# ============================================{_already_installed_banner}
 
 # --- Static Configuration ---
 NAMESPACE="spot-optimizer"
@@ -182,9 +212,10 @@ echo ""
 async def get_macos_installer(
     request: Request,
     cluster_id: str = Query(..., description="The cluster ID to configure"),
-    api_key: str = Query(..., description="The API key for agent authentication")
+    api_key: str = Query(..., description="The API key for agent authentication"),
+    db: Session = Depends(get_db),
 ):
     """
     Generate a macOS installation script (alias to Linux for kubectl compatibility).
     """
-    return await get_linux_installer(request, cluster_id, api_key)
+    return await get_linux_installer(request, cluster_id, api_key, db)

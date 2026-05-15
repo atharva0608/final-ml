@@ -31,6 +31,45 @@ class PricingFreshnessException(Exception):
     pass
 
 
+# ── Family-based OD price estimator ──────────────────────────────────────────
+# Used by the DescribeInstanceTypeOfferings backfill (Gap 1 / new-type path) when
+# a type has no cached OD price yet (e.g. freshly launched instance types).
+# Prices are $/hr for .large in us-east-1 reference; multiplied by size factor.
+# refresh_ondemand will overwrite these with real prices on its next hourly run.
+_FAMILY_BASE_OD_EST: dict = {
+    't2': 0.023, 't3': 0.0832, 't3a': 0.0752, 't4g': 0.0672,
+    'm5': 0.096, 'm5a': 0.086, 'm6i': 0.096, 'm6a': 0.086, 'm6g': 0.077,
+    'm7i': 0.1008, 'm7g': 0.0816, 'm8g': 0.0850,
+    'c5': 0.085, 'c5a': 0.077, 'c6i': 0.085, 'c6a': 0.077, 'c6g': 0.068,
+    'c7i': 0.089, 'c7g': 0.0725, 'c7a': 0.085, 'c8g': 0.0700,
+    'r5': 0.126, 'r5a': 0.113, 'r6i': 0.126, 'r6a': 0.113, 'r6g': 0.101,
+    'r7i': 0.1323, 'r7g': 0.1071, 'r8g': 0.1150,
+    'i3': 0.156, 'i4i': 0.182, 'i4g': 0.165,
+    'inf1': 0.228, 'inf2': 0.760, 'trn1': 1.340,
+}
+_SIZE_MULT_OD_EST: dict = {
+    'nano': 0.25, 'micro': 0.5, 'small': 1.0, 'medium': 2.0, 'large': 4.0,
+    'xlarge': 8.0, '2xlarge': 16.0, '3xlarge': 24.0, '4xlarge': 32.0,
+    '6xlarge': 48.0, '8xlarge': 64.0, '12xlarge': 96.0, '16xlarge': 128.0,
+    '24xlarge': 192.0, '32xlarge': 256.0, '48xlarge': 384.0, 'metal': 128.0,
+}
+
+
+def _estimate_od_price_for_new_type(instance_type: str) -> float:
+    """Estimate on-demand $/hr for a type with no cached OD price."""
+    parts = instance_type.split('.')
+    if len(parts) != 2:
+        return 0.0
+    family, size = parts
+    base = _FAMILY_BASE_OD_EST.get(family, 0.0)
+    if base <= 0.0:
+        return 0.0
+    mult = _SIZE_MULT_OD_EST.get(size, 0.0)
+    if mult <= 0.0:
+        return 0.0
+    return round(base * (mult / 4.0), 6)
+
+
 class AWSPricingService:
     """
     AWS Pricing Service with enterprise guardrails.
@@ -405,13 +444,16 @@ class AWSPricingService:
                 config=self.boto_config
             )
 
-            # Task 1.2: Use paginator — no InstanceTypes filter, no MaxResults cap.
-            # Returns ALL current spot prices for the region (400+ types × 3 AZs).
+            # Gap 2 fix: extend window to 6 h (was 2 h).
+            # Stable pools with no price change in the last 2 h were silently dropped;
+            # a 6-hour window captures the most recent price for all active pool types.
+            # The paginator has no InstanceTypes filter and no MaxResults cap — it runs
+            # to completion automatically (full coverage guaranteed).
             from datetime import timezone
             paginator = ec2_client.get_paginator('describe_spot_price_history')
             page_iter = paginator.paginate(
                 ProductDescriptions=['Linux/UNIX'],
-                StartTime=datetime.now(timezone.utc) - timedelta(hours=2),
+                StartTime=datetime.now(timezone.utc) - timedelta(hours=6),
             )
 
             prices_fetched = 0
@@ -422,7 +464,7 @@ class AWSPricingService:
 
             # AWS returns spot price history in descending order (newest first).
             # Track keys already written so we never overwrite a newer price with
-            # an older one from the same 2-hour window.
+            # an older one from the 6-hour window.
             written_keys: set = set()
 
             for page in page_iter:
@@ -460,6 +502,68 @@ class AWSPricingService:
                         logger.warning(f"Failed to insert spot price to database: {db_error}")
 
                     prices_fetched += 1
+
+            # ── Gap 1 fix: DescribeInstanceTypeOfferings back-fill ──────────────
+            # describe_spot_price_history only covers types with recent transactions
+            # in the 2-hour window.  DescribeInstanceTypeOfferings returns every type
+            # AWS offers for spot in each AZ — the authoritative universe.  For every
+            # type+AZ combo that appears in offerings but had no price history we write
+            # an *estimated* spot_price key (OD price × 0.35) so that cache_builder
+            # picks it up and includes it in rankings.  Keys are marked is_estimated=true.
+            try:
+                offerings_paginator = ec2_client.get_paginator('describe_instance_type_offerings')
+                offering_pairs: set = set()
+                for _off_page in offerings_paginator.paginate(LocationType='availability-zone'):
+                    for _off in _off_page.get('InstanceTypeOfferings', []):
+                        if _off['Location'].startswith(region):
+                            offering_pairs.add((_off['InstanceType'], _off['Location']))
+
+                estimated_count = 0
+                for _itype, _az in offering_pairs:
+                    _cache_key = f"spot_price:{region}:{_az}:{_itype}"
+                    if _cache_key in written_keys:
+                        continue  # Real price already written — don't overwrite
+                    # Look up OD price from Redis (both key formats)
+                    _od_raw = (
+                        self.redis.get(f"ondemand_price:{region}:{_itype}")
+                        or self.redis.get(f"od_price:{region}:{_itype}")
+                    )
+                    _od_price = float(_od_raw) if _od_raw else 0.0
+                    if _od_price <= 0.0:
+                        # New instance type not yet in refresh_ondemand cache.
+                        # Estimate from family/size so this type enters the
+                        # scoring universe immediately rather than waiting for
+                        # the next daily OD refresh cycle.
+                        _od_price = _estimate_od_price_for_new_type(_itype)
+                        if _od_price <= 0.0:
+                            continue  # Completely unknown family — genuinely skip
+                    _est_spot = round(_od_price * 0.35, 6)
+                    _est_value = json.dumps({
+                        "price": str(_est_spot),
+                        "timestamp": timestamp.isoformat(),
+                        "is_estimated": True,
+                    })
+                    self.redis.setex(_cache_key, self.SPOT_PRICING_TTL_SECONDS, _est_value)
+                    estimated_count += 1
+
+                # Telemetry: record how large the full offerings universe is
+                self.redis.setex(
+                    f"instance_type_offerings:{region}:count",
+                    90_000,  # 25 hours
+                    str(len(offering_pairs)),
+                )
+                logger.info(
+                    f"[Gap1] OfferingsBackfill {region}: "
+                    f"total_offerings={len(offering_pairs)}, "
+                    f"history_keys={len(written_keys)}, "
+                    f"estimated_added={estimated_count}"
+                )
+            except Exception as _offerings_err:
+                logger.warning(
+                    f"[Gap1] DescribeInstanceTypeOfferings backfill failed for {region}: "
+                    f"{_offerings_err}"
+                )
+            # ────────────────────────────────────────────────────────────────────
 
             # Commit all records at once
             try:

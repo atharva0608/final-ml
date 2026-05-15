@@ -267,6 +267,21 @@ class DecisionEngineService:
     # ────────────────────────────────────────────────────────────────────────
 
     def _scored_to_dict(self, p: ScoredPool) -> Dict:
+        # Problem 21 — derive capacity_type explicitly so InstanceSelector._matches_capacity_type()
+        # can use the fast-path (explicit field) rather than always falling through to the
+        # price-delta heuristic.  capacity_filter_warnings metric should trend toward zero.
+        raw_cap = getattr(p.pool, "capacity_type", None) or ""
+        cap_type_explicit = raw_cap.lower().replace("ondemand", "on-demand") or None
+        if cap_type_explicit not in ("spot", "on-demand"):
+            cap_type_explicit = None
+        if not cap_type_explicit:
+            sp, od = p.pool.spot_price, p.pool.ondemand_price
+            if sp is not None and (od is None or (od and sp < od)):
+                cap_type_explicit = "spot"
+            elif od is not None and sp is None:
+                cap_type_explicit = "on-demand"
+            logger.debug("[DE] capacity_filter_warnings: heuristic path taken for %s",
+                         p.pool.instance_type)
         return {
             "instance_type": p.pool.instance_type,
             "az": p.pool.az,
@@ -274,6 +289,7 @@ class DecisionEngineService:
             "memory_gb": p.pool.memory_gb,
             "spot_price": p.pool.spot_price,
             "ondemand_price": p.pool.ondemand_price,
+            "capacity_type": cap_type_explicit,
             "predicted_savings": p.predicted_savings,
             "risk_probability": p.risk_probability,
             "ml_score": p.ml_score,
@@ -307,6 +323,35 @@ class DecisionEngineService:
             if not bl:
                 filtered.append(p)
         return filtered
+
+    def score_node_efficiency(
+        self,
+        cpu_utilization_pct: float,
+        mem_utilization_pct: float,
+        fragmentation_ratio: float = 0.0,
+        workload_class: Optional[str] = None,
+    ) -> float:
+        """
+        Compute a combined efficiency score (0–1) for a node.
+        Low score  → good drain candidate (underutilized / fragmented).
+        High score → node should be retained (well-utilized or critical).
+
+        workload_class="stateful" raises effective weights on fragmentation
+        cost because stateful workloads carry higher disruption risk.
+        """
+        cpu_score    = min(1.0, max(0.0, cpu_utilization_pct / 100.0))
+        mem_score    = min(1.0, max(0.0, mem_utilization_pct / 100.0))
+        frag_penalty = min(1.0, max(0.0, fragmentation_ratio))
+
+        if workload_class == "stateful":
+            w_cpu, w_mem, w_frag = 0.30, 0.30, 0.40
+        elif workload_class == "stateless":
+            w_cpu, w_mem, w_frag = 0.40, 0.40, 0.20
+        else:
+            w_cpu, w_mem, w_frag = 0.35, 0.35, 0.30
+
+        score = (w_cpu * cpu_score + w_mem * mem_score) - (w_frag * frag_penalty)
+        return round(max(0.0, min(1.0, score)), 3)
 
     def _apply_diversification(self, pools: List[Dict], cluster_id: str) -> List[Dict]:
         """Remove pools already in use by the cluster."""

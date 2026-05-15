@@ -1,5 +1,6 @@
 import React from 'react';
 import AdminOverview from './AdminOverview';
+import AwsPoolIntelligence from './AwsPoolIntelligence';
 
 /**
  * AdminDashboard
@@ -18,8 +19,11 @@ const AdminDashboard = () => {
         </div>
       </div>
 
-      {/* Content - Overview Only */}
+      {/* Content - Overview */}
       <AdminOverview />
+
+      {/* AWS Pool Intelligence */}
+      <AwsPoolIntelligence />
     </div>
   );
 };

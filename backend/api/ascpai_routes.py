@@ -9,6 +9,7 @@ Endpoints:
 """
 
 import json as _json
+import math
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from typing import List, Optional
@@ -63,6 +64,11 @@ class PoolRankingResponse(BaseModel):
     timestamp: str
     blacklisted: bool = False  # Temporarily blacklisted due to launch failures / terminations
     price_shock: bool = False  # Detected rapid spot price spike (>30% in 1h)
+    # C10: Global pool risk visibility
+    risk_source: str = "local"                  # "local" | "blend" | "global"
+    global_itn_breadth: int = 0                 # distinct clusters affected in last 24 h
+    global_itn_severity: Optional[str] = None   # worst event type in ledger; None if no history
+    global_confidence: float = 0.0              # how much data backs the score [0, 1]
 
 
 class BlacklistedPoolResponse(BaseModel):
@@ -384,6 +390,11 @@ async def get_pool_rankings(
                 timestamp=scored_pool.timestamp.isoformat(),
                 blacklisted=is_blacklisted,
                 price_shock=has_price_shock,
+                # C10: global pool risk visibility
+                risk_source=getattr(scored_pool, 'risk_source', 'local'),
+                global_itn_breadth=getattr(scored_pool, 'global_itn_breadth', 0),
+                global_itn_severity=getattr(scored_pool, 'global_itn_severity', None),
+                global_confidence=getattr(scored_pool, 'global_confidence', 0.0),
             ))
 
         return {
@@ -1486,6 +1497,15 @@ async def get_node_recommendations(
         Instance.instance_id != '',
         or_(Instance.status.in_(['READY', 'CALIBRATING']), Instance.status.is_(None)),
     ).all()
+
+    # Prefer agent-reported instances (node_name set, account_id=NULL — ground truth from K8s)
+    # over EC2 discovery records (no node_name, account_id set — may duplicate real nodes).
+    # When the in-cluster agent is active its records are authoritative; only fall back to
+    # all discovery records when no agent instances exist at all.
+    _agent_instances = [i for i in _all_instances if i.node_name]
+    if _agent_instances:
+        _all_instances = _agent_instances
+
     _seen: dict = {}
     for _inst in _all_instances:
         # Normalise key: use short hostname so 'ip-192-168-3-201' and
@@ -1795,13 +1815,15 @@ async def get_node_recommendations(
     #   - All-OD cluster (new install, no spot yet) → 1 anchor + N-1 spot candidates
     #   - Mixed cluster with multiple OD nodes → still 1 anchor
     #   - Single OD among all-spot → same as before
+    # NOTE: Only anchor if Karpenter is actually installed. Without Karpenter,
+    # there is no system pod that requires OD protection.
     if not _anchor_node_name:
         _od_nodes = sorted(
             [n for n in _node_list if 'spot' not in n['lifecycle']],
             key=lambda n: n['node_name'],
         )
         _karp_installed = getattr(cluster, 'karpenter_mode', None) is not None
-        if _od_nodes and (_karp_installed or len(_od_nodes) == 1):
+        if _od_nodes and _karp_installed:
             _anchor_node_name = _od_nodes[0]['node_name']
 
     for node in _node_list:
@@ -3775,3 +3797,607 @@ def get_pool_ema_status(
         "ema_weight": round(ema_weight, 4),
         "sample_clusters": stats.get("sample_clusters", 0),
     }
+
+
+# ── Optimized Configuration Endpoints ────────────────────────────────────────
+
+
+class _NodeAssignment(BaseModel):
+    """A single node migration assignment: move this node to a new pool."""
+    node_id: str
+    target_lifecycle: str = "spot"        # "spot" or "on-demand"
+    target_instance_type: str = ""
+    target_az: str = ""
+
+
+class ApplyRecommendedConfigRequest(BaseModel):
+    od_node_count: int
+    spot_node_count: int
+    buffer_node_count: int
+    node_assignments: Optional[List[_NodeAssignment]] = None
+
+
+def _load_pool_rankings(redis, region: str):
+    """Load pool data from Redis (market_view_cache → global_pool_rankings fallback)."""
+    import json as _j
+    from backend.core.redis_client import key_market_view_cache
+    raw = redis.get(key_market_view_cache(region))
+    if not raw:
+        raw = redis.get(f"global_pool_rankings:{region}")
+    if not raw:
+        return []
+    payload = _j.loads(raw)
+    if isinstance(payload, list):
+        return payload
+    return payload.get("data", [])
+
+
+@router.get("/clusters/{cluster_id}/recommended-config")
+def get_recommended_config(
+    cluster_id: str,
+    od_node_count: Optional[int] = Query(None),
+    spot_node_count: Optional[int] = Query(None),
+    buffer_node_count: Optional[int] = Query(None),
+    db: Session = Depends(get_db),
+):
+    """
+    Compute the optimal cluster configuration using BFD-TSC placement optimizer.
+
+    Returns:
+    - current_state: current node/cost breakdown
+    - recommended_state: BFD-TSC optimal placement with savings
+    - pod_distribution: stateful vs spot-friendly pod counts
+    - adjustable_params: slider min/max/recommended for od/spot/buffer counts
+    - warnings: placement constraint warnings
+    """
+    import json as _j
+    from backend.models.cluster import Cluster
+    from backend.models.instance import Instance
+    from backend.services.cluster_service import ClusterService
+    from backend.services.dynamic_instance_helpers import bulk_get_hourly_prices
+    from backend.modules.placement_optimizer import (
+        PlacementOptimizer, build_pools_from_rankings, pods_from_cluster_detail,
+    )
+
+    redis = get_redis_client()
+
+    cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
+    if not cluster:
+        raise HTTPException(status_code=404, detail="Cluster not found")
+
+    region = getattr(cluster, "region", None) or "ap-south-1"
+
+    # ── Load pool rankings ────────────────────────────────────────────────────
+    rankings_raw = _load_pool_rankings(redis, region)
+    available_azs = list({r.get("az", "") for r in rankings_raw if r.get("az")}) or [f"{region}a", f"{region}b"]
+    pools = build_pools_from_rankings(rankings_raw, available_azs)
+
+    # ── Get node/pod detail ───────────────────────────────────────────────────
+    svc = ClusterService(db)
+    try:
+        nodes_data = svc.get_cluster_nodes_detailed(cluster_id, "system")
+    except Exception as _e:
+        raise HTTPException(status_code=503, detail=f"Could not load cluster nodes: {_e}")
+
+    nodes_detailed = nodes_data.get("nodes", [])
+    pod_list = pods_from_cluster_detail(nodes_detailed)
+
+    # ── Current cost ─────────────────────────────────────────────────────────
+    _instances = db.query(Instance).filter(
+        Instance.cluster_id == cluster_id,
+        Instance.state == "running",
+    ).all()
+    _all_types = list({i.instance_type for i in _instances if i.instance_type})
+    HOURLY = bulk_get_hourly_prices(db, redis, _all_types, region)
+    current_monthly_cost = sum(
+        HOURLY.get(i.instance_type, 0.0) * 730 for i in _instances
+    )
+
+    # ── Current node breakdown ────────────────────────────────────────────────
+    def _lc_str(inst):
+        v = inst.lifecycle
+        return (v.value if hasattr(v, 'value') else str(v or 'on-demand')).lower().replace('_', '-')
+    _od_count   = sum(1 for i in _instances if 'demand' in _lc_str(i))
+    _spot_count = sum(1 for i in _instances if _lc_str(i) == 'spot')
+    current_state = {
+        "od_nodes": _od_count,
+        "spot_nodes": _spot_count,
+        "total_nodes": len(_instances),
+        "monthly_cost": round(current_monthly_cost, 2),
+    }
+
+    # ── Slider params ─────────────────────────────────────────────────────────
+    optimizer = PlacementOptimizer(available_pools=pools, available_azs=available_azs)
+    adjustable_params = optimizer.compute_adjustable_params(
+        pod_list, _od_count, _spot_count, 0
+    )
+
+    # ── Resolve node counts (query params override adjustable_params default) ─
+    _od = od_node_count if od_node_count is not None else adjustable_params["od_node_count"]["recommended"]
+    _spot = spot_node_count if spot_node_count is not None else adjustable_params["spot_node_count"]["recommended"]
+    _buf = buffer_node_count if buffer_node_count is not None else adjustable_params["buffer_node_count"]["recommended"]
+
+    # ── Run BFD-TSC ───────────────────────────────────────────────────────────
+    result = optimizer.compute_optimal_placement(
+        pods=pod_list,
+        od_node_count=_od,
+        spot_node_count=_spot,
+        buffer_node_count=_buf,
+        current_monthly_cost=current_monthly_cost,
+    )
+
+    stateful_count = sum(1 for p in pod_list if p.is_stateful_by_nature)
+    daemonset_count = sum(1 for p in pod_list if p.is_daemonset)
+    control_plane_count = sum(1 for p in pod_list if p.is_control_plane)
+    misplaced_count = nodes_data.get("misplaced_pods", 0)
+
+    return {
+        "cluster_id": cluster_id,
+        "current_state": current_state,
+        "recommended_state": result.to_dict(),
+        "pod_distribution": {
+            "total": len(pod_list),
+            "stateful_by_nature": stateful_count,
+            "spot_friendly": len(pod_list) - stateful_count,
+            "daemonsets_skipped": daemonset_count,
+            "control_plane_spread": control_plane_count,
+            "misplaced": misplaced_count,
+        },
+        "scheduling_rules": {
+            "stateful_pods": {
+                "placement": "on-demand ONLY",
+                "enforcement": "nodeSelector: karpenter.sh/capacity-type=on-demand",
+            },
+            "control_plane_pods": {
+                "placement": "on-demand, SPREAD across nodes",
+                "enforcement": "podAntiAffinity: requiredDuringScheduling",
+            },
+            "stateless_pods": {
+                "placement": "spot preferred, on-demand fallback",
+                "enforcement": "affinity: preferredDuringScheduling spot (weight 100)",
+            },
+            "daemonsets": {
+                "placement": "every node (automatic)",
+                "enforcement": "Kubernetes DaemonSet controller — no optimizer action",
+            },
+        },
+        "adjustable_params": adjustable_params,
+        "warnings": result.warnings,
+    }
+
+
+@router.post("/clusters/{cluster_id}/apply-recommended-config")
+def apply_recommended_config(
+    cluster_id: str,
+    body: ApplyRecommendedConfigRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    Apply a recommended configuration by creating staggered RebalancingAction records.
+
+    Each OD→Spot migration is staggered by 30 s to avoid thundering-herd behaviour.
+    The auto_rebalancer beat task skips actions whose scheduled_start_at is in the
+    future, so the stagger is honoured without any additional worker changes.
+
+    Returns action IDs and an estimated completion timeline.
+    """
+    from backend.models.cluster import Cluster
+    from backend.models.instance import Instance
+
+    cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
+    if not cluster:
+        raise HTTPException(status_code=404, detail="Cluster not found")
+
+    region = getattr(cluster, "region", None) or "ap-south-1"
+    now = datetime.utcnow()
+    STAGGER_DELAY_SECONDS = 30
+
+    # Determine which nodes to migrate: use explicit assignments or auto-detect OD nodes
+    migrations = []
+    if body.node_assignments:
+        for assignment in body.node_assignments:
+            if assignment.target_lifecycle == "spot":
+                migrations.append(assignment)
+    else:
+        # Auto-detect: pick all on-demand nodes up to the excess (current_od - requested_od)
+        od_instances = db.query(Instance).filter(
+            Instance.cluster_id == cluster_id,
+            Instance.state == "running",
+            Instance.lifecycle.in_(["on-demand", None]),
+        ).all()
+        # Sort by cheapest first to migrate cheapest OD nodes to spot
+        od_instances.sort(key=lambda i: i.instance_type or "")
+        current_od = len(od_instances)
+        excess_od = max(0, current_od - body.od_node_count)
+        for inst in od_instances[:excess_od]:
+            source_az = inst.az or f"{region}a"
+            migrations.append(_NodeAssignment(
+                node_id=inst.instance_id or inst.node_name or "",
+                target_lifecycle="spot",
+                target_instance_type=inst.instance_type or "",
+                target_az=source_az,
+            ))
+
+    if not migrations:
+        return {
+            "action_ids": [],
+            "message": "No OD→Spot migrations required for the requested configuration.",
+            "estimated_timeline_seconds": 0,
+        }
+
+    # Cap concurrent migrations to 3 (safe default)
+    _max_parallel = min(len(migrations), 3)
+
+    action_ids = []
+    for idx, migration in enumerate(migrations):
+        # Stagger: group by max_parallel slots
+        stagger_group = idx // _max_parallel
+        scheduled_at = now + timedelta(seconds=stagger_group * STAGGER_DELAY_SECONDS)
+
+        # Look up the actual instance for source_pool
+        _inst = None
+        if migration.node_id:
+            _inst = db.query(Instance).filter(
+                Instance.cluster_id == cluster_id,
+                Instance.instance_id == migration.node_id,
+            ).first()
+            if _inst is None:
+                _inst = db.query(Instance).filter(
+                    Instance.cluster_id == cluster_id,
+                    Instance.node_name == migration.node_id,
+                ).first()
+
+        source_az = (
+            (_inst.az if _inst else None) or migration.target_az or f"{region}a"
+        )
+        source_type = (
+            (_inst.instance_type if _inst else None) or migration.target_instance_type or "m5.large"
+        )
+        source_pool = f"{source_type}:{source_az}"
+
+        # Target pool: same type in same AZ (spot version); caller may override via target_instance_type
+        target_type = migration.target_instance_type or source_type
+        target_az = migration.target_az or source_az
+        target_pool = f"{target_type}:{target_az}"
+
+        action = RebalancingAction(
+            cluster_id=cluster_id,
+            trigger="manual_apply",
+            source_pool=source_pool,
+            target_pool=target_pool,
+            source_instance_id=migration.node_id or None,
+            status="in_progress",
+            started_at=now,
+            action_metadata={
+                "initiated_by": "apply_recommended_config",
+                "od_node_count": body.od_node_count,
+                "spot_node_count": body.spot_node_count,
+                "buffer_node_count": body.buffer_node_count,
+                "scheduled_start_at": scheduled_at.isoformat(),
+                "stagger_group": stagger_group,
+            },
+        )
+        db.add(action)
+        db.flush()
+        action_ids.append(action.id)
+
+    db.commit()
+
+    estimated_groups = max(1, math.ceil(len(migrations) / _max_parallel))
+    estimated_timeline = estimated_groups * STAGGER_DELAY_SECONDS + 600  # +10 min per migration
+
+    return {
+        "action_ids": action_ids,
+        "message": f"Queued {len(migrations)} migration(s) with {_max_parallel} concurrent max.",
+        "estimated_timeline_seconds": estimated_timeline,
+    }
+
+
+@router.get("/clusters/{cluster_id}/recommended-config/yaml")
+def get_recommended_config_yaml(
+    cluster_id: str,
+    db: Session = Depends(get_db),
+):
+    """
+    Generate Karpenter NodePool YAML for the cluster.
+
+    Behaviour depends on cluster optimization settings:
+    - Both auto_rebalance AND auto_rightsizing OFF (or not installed):
+        Returns a single permissive on-demand NodePool that lets Karpenter
+        handle scheduling and consolidation normally — no spot, no tight
+        resource limits, WhenEmpty consolidation only.  This prevents the
+        "17/17 pods: Node pod capacity exhausted" issue caused by small
+        t3.medium instances being the only type in a restrictive NodePool.
+    - Either feature ON:
+        Returns BFD-TSC optimised two-NodePool layout (stateful-od +
+        stateless-spot) with realistic headroom limits.
+    """
+    import json as _j
+    import math as _math
+    from fastapi.responses import Response
+    from backend.models.cluster import Cluster, ClusterOptimizationSettings
+    from backend.models.instance import Instance
+    from backend.services.cluster_service import ClusterService
+    from backend.services.dynamic_instance_helpers import bulk_get_hourly_prices
+    from backend.modules.placement_optimizer import (
+        PlacementOptimizer, build_pools_from_rankings, pods_from_cluster_detail,
+    )
+
+    redis = get_redis_client()
+
+    cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
+    if not cluster:
+        raise HTTPException(status_code=404, detail="Cluster not found")
+
+    region = getattr(cluster, "region", None) or "ap-south-1"
+    cluster_name = getattr(cluster, "name", cluster_id)
+
+    # ── Check feature flags ────────────────────────────────────────────────────
+    _opt = db.query(ClusterOptimizationSettings).filter_by(cluster_id=cluster_id).first()
+    _rebalance_on   = bool(_opt and getattr(_opt, "auto_rebalance_enabled", False))
+    _rightsizing_on = bool(_opt and getattr(_opt, "auto_rightsizing_enabled", False))
+    _optimize_active = _rebalance_on or _rightsizing_on
+
+    # ── AZ list (used in all modes) ────────────────────────────────────────────
+    rankings_raw = _load_pool_rankings(redis, region)
+    available_azs = sorted(
+        {r.get("az", "") for r in rankings_raw if r.get("az")}
+    ) or [f"{region}a", f"{region}b", f"{region}c"]
+    az_list_yaml = "\n".join(f'        - "{az}"' for az in available_azs)
+
+    # General-purpose instance types: xlarge+ chosen so that AWS CNI can
+    # assign ≥58 pods per node (avoids the 17/17 ENI exhaustion on t3.medium).
+    # Karpenter will pick the best-fit type from this list at launch time.
+    _GP_INSTANCES = [
+        "m5.large",  "m5.xlarge",  "m5.2xlarge",  "m5.4xlarge",
+        "m5a.large", "m5a.xlarge", "m5a.2xlarge", "m5a.4xlarge",
+        "m6i.large", "m6i.xlarge", "m6i.2xlarge", "m6i.4xlarge",
+        "m6a.large", "m6a.xlarge", "m6a.2xlarge",
+        "c5.large",  "c5.xlarge",  "c5.2xlarge",  "c5.4xlarge",
+        "c6i.large", "c6i.xlarge", "c6i.2xlarge",
+        "r5.large",  "r5.xlarge",  "r5.2xlarge",
+        "r6i.large", "r6i.xlarge",
+    ]
+    _gp_yaml = "\n".join(f'        - "{t}"' for t in _GP_INSTANCES)
+
+    # ════════════════════════════════════════════════════════════════════════════
+    # NORMAL MODE  –  both features OFF
+    # Single on-demand NodePool; Karpenter manages consolidation independently.
+    # WhenEmpty consolidation only — avoids disrupting running pods.
+    # No tight limits — the cluster can scale out freely when pods need capacity.
+    # ════════════════════════════════════════════════════════════════════════════
+    if not _optimize_active:
+        yaml_doc = f"""\
+# Generated by Spot Optimizer — Normal Karpenter Mode
+# Both auto-rebalancing and auto-rightsizing are DISABLED.
+# Karpenter will provision on-demand nodes from a broad instance family list,
+# consolidate only when nodes are fully empty, and scale freely.
+#
+# Cluster: {cluster_name} ({cluster_id})
+# Region:  {region}
+---
+apiVersion: karpenter.sh/v1beta1
+kind: NodePool
+metadata:
+  name: default
+  namespace: karpenter
+spec:
+  template:
+    spec:
+      nodeClassRef:
+        apiVersion: karpenter.k8s.aws/v1beta1
+        kind: EC2NodeClass
+        name: default
+      requirements:
+        - key: karpenter.sh/capacity-type
+          operator: In
+          values: ["on-demand"]
+        - key: kubernetes.io/arch
+          operator: In
+          values: ["amd64"]
+        - key: topology.kubernetes.io/zone
+          operator: In
+          values:
+{az_list_yaml}
+        # Broad instance-type list: xlarge+ avoids the 17-pod ENI limit
+        # present on t3.medium/t3.small and similar micro/small types.
+        - key: node.kubernetes.io/instance-type
+          operator: In
+          values:
+{_gp_yaml}
+  # Generous headroom: allows the cluster to grow up to 200 vCPU / 800 GiB.
+  # Increase if you have larger workloads.
+  limits:
+    cpu: 200
+    memory: 800Gi
+  disruption:
+    # WhenEmpty: only reclaim nodes that have no workload pods — never
+    # evict running pods just to bin-pack. This is the safest setting when
+    # the spot optimizer is not active.
+    consolidationPolicy: WhenEmpty
+    consolidateAfter: 30s
+"""
+        return Response(content=yaml_doc, media_type="application/x-yaml")
+
+    # ════════════════════════════════════════════════════════════════════════════
+    # OPTIMIZED MODE  –  at least one feature ON  (BFD-TSC two-NodePool layout)
+    # ════════════════════════════════════════════════════════════════════════════
+    pools = build_pools_from_rankings(rankings_raw, available_azs)
+
+    svc = ClusterService(db)
+    try:
+        nodes_data = svc.get_cluster_nodes_detailed(cluster_id, "system")
+    except Exception as _e:
+        raise HTTPException(status_code=503, detail=f"Could not load cluster nodes: {_e}")
+
+    nodes_detailed = nodes_data.get("nodes", [])
+    pod_list = pods_from_cluster_detail(nodes_detailed)
+
+    _instances = db.query(Instance).filter(
+        Instance.cluster_id == cluster_id,
+        Instance.state == "running",
+    ).all()
+    _all_types = list({i.instance_type for i in _instances if i.instance_type})
+    HOURLY = bulk_get_hourly_prices(db, redis, _all_types, region)
+    current_monthly_cost = sum(HOURLY.get(i.instance_type, 0.0) * 730 for i in _instances)
+
+    def _lc_str2(inst):
+        v = inst.lifecycle
+        return (v.value if hasattr(v, 'value') else str(v or 'on-demand')).lower().replace('_', '-')
+    _od_count   = sum(1 for i in _instances if 'demand' in _lc_str2(i))
+    _spot_count = sum(1 for i in _instances if _lc_str2(i) == 'spot')
+
+    optimizer = PlacementOptimizer(available_pools=pools, available_azs=available_azs)
+    params = optimizer.compute_adjustable_params(pod_list, _od_count, _spot_count, 0)
+    _od   = params["od_node_count"]["recommended"]
+    _spot = params["spot_node_count"]["recommended"]
+    _buf  = params["buffer_node_count"]["recommended"]
+
+    result = optimizer.compute_optimal_placement(
+        pods=pod_list,
+        od_node_count=_od,
+        spot_node_count=_spot,
+        buffer_node_count=_buf,
+        current_monthly_cost=current_monthly_cost,
+    )
+
+    # ── Instance types: seed from BFD-TSC result, expand with size variants
+    # so Karpenter has flex when a specific type is unavailable, and can pick
+    # a larger node when pod capacity on a smaller instance would be exhausted.
+    def _expand_instance_types(base_types: list, fallbacks: list) -> list:
+        """Return base types + their 2xlarge/4xlarge siblings + fallbacks."""
+        expanded = set(base_types)
+        for t in list(base_types):
+            if "." in t:
+                family, _size = t.split(".", 1)
+                expanded.update({f"{family}.xlarge", f"{family}.2xlarge", f"{family}.4xlarge"})
+        expanded.update(fallbacks)
+        return sorted(expanded)
+
+    od_base    = list({n.pool.instance_type for n in result.od_nodes + result.buffer_nodes}) or ["m5.xlarge"]
+    spot_base  = list({n.pool.instance_type for n in result.spot_nodes}) or ["m5.xlarge", "m5a.xlarge", "c5.xlarge"]
+    _od_fallbacks   = ["m5.xlarge", "m5.2xlarge", "m6i.xlarge", "m6i.2xlarge"]
+    _spot_fallbacks = ["m5.xlarge", "m5a.xlarge", "c5.xlarge", "m6i.xlarge", "m6a.xlarge"]
+
+    od_types   = _expand_instance_types(od_base, _od_fallbacks)
+    spot_types = _expand_instance_types(spot_base, _spot_fallbacks)
+
+    od_types_yaml   = "\n".join(f'        - "{t}"' for t in od_types)
+    spot_types_yaml = "\n".join(f'        - "{t}"' for t in spot_types)
+
+    # ── Limits: headroom = 3× recommended counts so Karpenter can scale out
+    # during rollouts or burst without hitting a hard wall.
+    _total_nodes   = len(_instances) or 1
+    _od_cpu_limit  = max(_od * 3, _total_nodes + 4) * 4   # vCPU
+    _od_mem_limit  = max(_od * 3, _total_nodes + 4) * 16  # GiB
+    _sp_cpu_limit  = max((_spot + _buf) * 3, _total_nodes + 4) * 4
+    _sp_mem_limit  = max((_spot + _buf) * 3, _total_nodes + 4) * 16
+
+    yaml_doc = f"""\
+# Generated by Spot Optimizer — Optimized Configuration
+# Cluster: {cluster_name} ({cluster_id})
+# Region:  {region}
+# Mode:    {'rebalance+rightsizing' if (_rebalance_on and _rightsizing_on) else 'rebalance' if _rebalance_on else 'rightsizing'}
+#
+# Architecture:
+#   stateful-od:    On-demand only.  Stateful workloads (DBs, PVC) + control plane.
+#                   Use nodeSelector: karpenter.sh/capacity-type=on-demand
+#   stateless-spot: Spot preferred.  Stateless apps (API, frontend, workers).
+#                   Use affinity: preferredDuringScheduling spot.
+#   Weight 5 > 10 means Karpenter prefers spot for new pods (lower = preferred).
+---
+apiVersion: karpenter.sh/v1beta1
+kind: NodePool
+metadata:
+  name: stateful-od
+  namespace: karpenter
+  labels:
+    spot-optimizer/role: stateful-od
+spec:
+  # Weight 5: lower priority — stateful pods arrive here only when they
+  # explicitly set nodeSelector: karpenter.sh/capacity-type=on-demand.
+  weight: 5
+  template:
+    metadata:
+      labels:
+        spot-optimizer/lifecycle: on-demand
+        spot-optimizer/role: stateful-od
+    spec:
+      nodeClassRef:
+        apiVersion: karpenter.k8s.aws/v1beta1
+        kind: EC2NodeClass
+        name: default
+      requirements:
+        - key: karpenter.sh/capacity-type
+          operator: In
+          values: ["on-demand"]
+        - key: kubernetes.io/arch
+          operator: In
+          values: ["amd64"]
+        - key: topology.kubernetes.io/zone
+          operator: In
+          values:
+{az_list_yaml}
+        - key: node.kubernetes.io/instance-type
+          operator: In
+          values:
+{od_types_yaml}
+  limits:
+    cpu: {_od_cpu_limit}
+    memory: {_od_mem_limit}Gi
+  disruption:
+    consolidationPolicy: WhenEmpty
+    consolidateAfter: 30s
+---
+apiVersion: karpenter.sh/v1beta1
+kind: NodePool
+metadata:
+  name: stateless-spot
+  namespace: karpenter
+  labels:
+    spot-optimizer/role: stateless-spot
+spec:
+  # Weight 10: higher priority — pods without explicit nodeSelector land on
+  # spot (preferred). Stateless workloads default here for cost savings.
+  weight: 10
+  template:
+    metadata:
+      labels:
+        spot-optimizer/lifecycle: spot
+        spot-optimizer/role: stateless-spot
+    spec:
+      nodeClassRef:
+        apiVersion: karpenter.k8s.aws/v1beta1
+        kind: EC2NodeClass
+        name: default
+      requirements:
+        - key: karpenter.sh/capacity-type
+          operator: In
+          values: ["spot"]
+        - key: kubernetes.io/arch
+          operator: In
+          values: ["amd64"]
+        - key: topology.kubernetes.io/zone
+          operator: In
+          values:
+{az_list_yaml}
+        - key: node.kubernetes.io/instance-type
+          operator: In
+          values:
+{spot_types_yaml}
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              spot-optimizer/lifecycle: spot
+  limits:
+    cpu: {_sp_cpu_limit}
+    memory: {_sp_mem_limit}Gi
+  disruption:
+    consolidationPolicy: WhenUnderutilized
+    consolidateAfter: 120s
+"""
+
+    return Response(content=yaml_doc, media_type="application/x-yaml")

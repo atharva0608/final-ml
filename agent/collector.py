@@ -206,11 +206,14 @@ class MetricsCollector:
                 _has_anti_affinity = False
                 _has_affinity = False
                 _has_topo_spread = bool(pod.spec.topology_spread_constraints)
+                _has_required_node_affinity = False
                 if pod.spec.affinity:
                     if pod.spec.affinity.pod_anti_affinity and pod.spec.affinity.pod_anti_affinity.required_during_scheduling_ignored_during_execution:
                         _has_anti_affinity = True
                     if pod.spec.affinity.pod_affinity and pod.spec.affinity.pod_affinity.required_during_scheduling_ignored_during_execution:
                         _has_affinity = True
+                    if pod.spec.affinity.node_affinity and pod.spec.affinity.node_affinity.required_during_scheduling_ignored_during_execution:
+                        _has_required_node_affinity = True
 
                 pod_metric = {
                     'cluster_id': self.cluster_id,
@@ -235,6 +238,7 @@ class MetricsCollector:
                             'has_pod_anti_affinity': _has_anti_affinity,
                             'has_pod_affinity': _has_affinity,
                             'has_topology_spread': _has_topo_spread,
+                            'has_required_node_affinity': _has_required_node_affinity,
                         },
                     },
                     'timestamp': datetime.utcnow().isoformat()
@@ -322,6 +326,8 @@ class MetricsCollector:
                         is_warming_up = True
                         logger.info(f"Node {node_name} is warming up (Age: {int(age_seconds)}s). Marking as CALIBRATING.")
 
+                _node_labels = node.metadata.labels or {}
+                _node_annotations = node.metadata.annotations or {}
                 node_metric = {
                     'cluster_id': self.cluster_id,
                     'node_name': node_name,
@@ -330,10 +336,16 @@ class MetricsCollector:
                     **capacity_allocatable,
                     'ready': ready,
                     'unschedulable': node.spec.unschedulable or False,
-                    'labels': node.metadata.labels or {},
+                    'labels': _node_labels,
                     'timestamp': datetime.utcnow().isoformat(),
                     'status': 'CALIBRATING' if is_warming_up else ('READY' if ready else 'NOT_READY'),
                     'metric_type': 'node',
+                    'az': _node_labels.get('topology.kubernetes.io/zone'),
+                    'capacity_type': (_node_labels.get('eks.amazonaws.com/capacityType') or _node_labels.get('karpenter.sh/capacity-type')),
+                    'nodepool_name': (_node_labels.get('karpenter.sh/nodepool') or _node_labels.get('eks.amazonaws.com/nodegroup')),
+                    'instance_type': _node_labels.get('node.kubernetes.io/instance-type'),
+                    'do_not_disrupt': 'karpenter.sh/do-not-disrupt' in _node_annotations,
+                    'is_ready': ready,
                 }
 
                 # Extract EC2 instance ID from spec.providerID

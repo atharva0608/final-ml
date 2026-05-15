@@ -25,6 +25,13 @@ class AgentActionType(enum.Enum):
     FORCE_DELETE_NODE = "FORCE_DELETE_NODE"  # Force-delete K8s Node object for ghost/hardware-failed nodes
     # Issue #12 / Task-1.x: Remove stuck finalizers from Terminating pods after force-delete
     REMOVE_POD_FINALIZERS = "REMOVE_POD_FINALIZERS"
+    # K2: KEDA install / uninstall via Helm inside the cluster
+    INSTALL_KEDA = "INSTALL_KEDA"
+    UNINSTALL_KEDA = "UNINSTALL_KEDA"
+    # §15: Annotate a workload controller pod template (tier-override)
+    ANNOTATE_WORKLOAD = "ANNOTATE_WORKLOAD"
+    # W3.1: Apply nodeAffinity patch to a Deployment/StatefulSet pod template
+    PATCH_AFFINITY = "PATCH_AFFINITY"
 
 
 class AgentActionStatus(enum.Enum):
@@ -81,6 +88,11 @@ class AgentAction(Base):
     # while normal actions among the same priority keep strict FIFO order.
     from sqlalchemy import Integer as _Int
     priority = Column(_Int, nullable=False, default=0, index=True)
+
+    # Post-eviction validation retry counter (§8 Phase 6).
+    # Incremented each time the pod lands on the wrong capacity type or goes Pending.
+    # Hard-stops at MAX_RETRY_COUNT (see placement_controller_service.py).
+    retry_count = Column(_Int, nullable=False, server_default="0")
 
     # Relationships
     cluster = relationship("Cluster", back_populates="agent_actions")

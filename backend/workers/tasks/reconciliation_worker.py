@@ -389,3 +389,224 @@ def cleanup_terminated_instances():
         db.rollback()
     finally:
         db.close()
+
+
+@app.task(name='workers.cleanup_old_migration_events')
+def cleanup_old_migration_events():
+    """
+    Nightly cleanup — §10 Migration Event Retention.
+    Deletes migration_event rows older than 30 days.
+    The StatefulMigrationStatusPanel only needs the last 50 migrations;
+    rows beyond 30 days accumulate indefinitely without this task.
+    """
+    db = next(get_db())
+    cutoff = datetime.utcnow() - timedelta(days=30)
+
+    try:
+        from backend.models.migration_event import MigrationEvent
+        stale_count = db.query(MigrationEvent).filter(
+            MigrationEvent.created_at < cutoff,
+        ).count()
+
+        if stale_count == 0:
+            logger.info("[cleanup] No stale migration_event rows to delete")
+            return
+
+        db.query(MigrationEvent).filter(
+            MigrationEvent.created_at < cutoff,
+        ).delete(synchronize_session=False)
+        db.commit()
+        logger.info(f"[cleanup] Deleted {stale_count} migration_event row(s) older than 30 days")
+
+    except Exception as e:
+        logger.error(f"[cleanup] cleanup_old_migration_events failed: {e}")
+        db.rollback()
+    finally:
+        db.close()
+
+
+@app.task(name='workers.karpenter.reconcile_nodepool_classes')
+def reconcile_nodepool_classes_task():
+    """
+    Task 2.1: Reconcile NodePool classes for all active clusters.
+    Runs every 5-10 minutes via Beat. Internally rate-limits to 30m per class.
+    """
+    db = next(get_db())
+    redis = get_redis_client()
+    
+    if not redis:
+        logger.warning("[reconcile_nodepool_classes] Redis not available — skipping")
+        return
+        
+    try:
+        from backend.models.cluster import Cluster
+        from backend.services.nodepool_reconciler_service import NodePoolReconcilerService
+        
+        clusters = db.query(Cluster).filter(Cluster.status == 'active').all()
+        reconciler = NodePoolReconcilerService(redis)
+        
+        for cluster in clusters:
+            try:
+                reconciler.reconcile_all_classes(str(cluster.id), db, {})
+            except Exception as e:
+                logger.error(f"[reconcile_nodepool_classes] Failed for cluster {cluster.name}: {e}")
+                
+    except Exception as e:
+        logger.error(f"[reconcile_nodepool_classes] Master error: {e}")
+    finally:
+        db.close()
+
+
+@app.task(name='workers.karpenter.reconcile_nodepool_types')
+def reconcile_nodepool_types():
+    """
+    W3.0e — Karpenter NodePool type list reconciliation.
+
+    Runs every 6 hours via Celery beat. For each active cluster:
+    1. Scan all per-injection tracking keys (spot:injected_type:*).
+    2. For each expired injection (key no longer exists with TTL), check if
+       the type is still in the NodePool but not in the baseline.
+    3. If no active rebalancing action references the type, remove it.
+    4. If the baseline key is missing entirely, re-snapshot the NodePool.
+
+    This closes the accumulation bug (H2 / HOLE-2 in plan.md §5) where
+    a Redis flush between add/remove leaves stale types in the NodePool.
+    """
+    import json as _json
+    from backend.services.karpenter_service import KarpenterService
+    from backend.models.rebalancing_action import RebalancingAction
+
+    redis = get_redis_client()
+    if not redis:
+        logger.warning("[reconcile_nodepool] Redis not available — skipping")
+        return
+
+    db = next(get_db())
+    try:
+        clusters = db.query(Cluster).filter(
+            Cluster.karpenter_mode.isnot(None),
+        ).all()
+
+        for cluster in clusters:
+            cluster_id = str(cluster.id)
+            try:
+                ksvc = KarpenterService(db=db, redis=redis)
+                api_client = ksvc._get_k8s_client(cluster)
+                from kubernetes import client as _k8s
+                custom_api = _k8s.CustomObjectsApi(api_client)
+
+                # List all NodePools for this cluster
+                try:
+                    nps = custom_api.list_cluster_custom_object(
+                        group="karpenter.sh", version="v1", plural="nodepools",
+                    )
+                except Exception as e:
+                    logger.debug(f"[reconcile_nodepool] cluster {cluster.name}: list NodePools failed: {e}")
+                    continue
+
+                for np_item in nps.get("items", []):
+                    np_name = np_item.get("metadata", {}).get("name", "default")
+                    baseline_key = f"karpenter:nodepool_baseline:{cluster_id}:{np_name}"
+
+                    # Read baseline
+                    baseline_raw = redis.get(baseline_key)
+                    if not baseline_raw:
+                        # Baseline missing — re-snapshot current NodePool state as new baseline
+                        reqs = (np_item.get("spec", {}).get("template", {})
+                                .get("spec", {}).get("requirements", []))
+                        current_types = []
+                        for req in reqs:
+                            if req.get("key") == "node.kubernetes.io/instance-type":
+                                current_types = sorted(req.get("values", []))
+                        if current_types:
+                            redis.setex(baseline_key, 86400, _json.dumps(current_types))
+                            logger.info(
+                                f"[reconcile_nodepool] Re-snapshotted baseline for "
+                                f"{cluster.name}/{np_name}: {current_types}"
+                            )
+                        continue
+
+                    baseline_types = set(_json.loads(baseline_raw))
+
+                    # Read current NodePool types
+                    reqs = (np_item.get("spec", {}).get("template", {})
+                            .get("spec", {}).get("requirements", []))
+                    current_types: list = []
+                    for req in reqs:
+                        if req.get("key") == "node.kubernetes.io/instance-type":
+                            current_types = req.get("values", [])
+                    current_types_set = set(current_types)
+
+                    # Find types NOT in baseline (potential orphans)
+                    injected = current_types_set - baseline_types
+                    if not injected:
+                        continue
+
+                    # Check which injected types still have active tracking keys
+                    active_injected = set()
+                    for itype in injected:
+                        track_key = f"spot:injected_type:{cluster_id}:{np_name}:{itype}"
+                        if redis.exists(track_key):
+                            active_injected.add(itype)
+
+                    # Orphans: injected but tracking key expired AND no active rebalancing action
+                    orphans = injected - active_injected
+                    if not orphans:
+                        continue
+
+                    # Verify no active rebalancing action references these types
+                    active_actions = db.query(RebalancingAction).filter(
+                        RebalancingAction.cluster_id == cluster.id,
+                        RebalancingAction.status.in_(["pending", "running", "in_progress"]),
+                    ).all()
+                    action_types = set()
+                    for act in active_actions:
+                        meta = act.metadata or {}
+                        it = meta.get("target_instance_type") or meta.get("instance_type")
+                        if it:
+                            action_types.add(it)
+
+                    safe_to_remove = orphans - action_types
+                    if not safe_to_remove:
+                        continue
+
+                    # Restore NodePool to baseline (remove stale types)
+                    clean_types = sorted(current_types_set - safe_to_remove)
+                    clean_patch = {
+                        "spec": {
+                            "template": {
+                                "spec": {
+                                    "requirements": [
+                                        req for req in reqs
+                                        if req.get("key") != "node.kubernetes.io/instance-type"
+                                    ] + [
+                                        {
+                                            "key": "node.kubernetes.io/instance-type",
+                                            "operator": "In",
+                                            "values": clean_types,
+                                        }
+                                    ]
+                                }
+                            }
+                        }
+                    }
+                    custom_api.patch_cluster_custom_object(
+                        group="karpenter.sh", version="v1",
+                        plural="nodepools", name=np_name,
+                        body=clean_patch,
+                    )
+                    logger.info(
+                        f"[reconcile_nodepool] Removed orphaned instance types "
+                        f"{safe_to_remove} from {cluster.name}/{np_name}"
+                    )
+
+            except Exception as cluster_err:
+                logger.error(
+                    f"[reconcile_nodepool] Error processing cluster {cluster.name}: {cluster_err}"
+                )
+                continue
+
+    except Exception as e:
+        logger.error(f"[reconcile_nodepool] reconcile_nodepool_types failed: {e}")
+    finally:
+        db.close()

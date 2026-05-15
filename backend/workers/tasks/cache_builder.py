@@ -465,7 +465,7 @@ def build_global_pool_cache(region: str, db=None):
                 # N9 fix: Unknown instance type — skip entirely to prevent undersized replacement.
                 # A (0,0) fallback would bypass vCPU/memory floor filters downstream,
                 # allowing a 72-vCPU node to be replaced by a 2-vCPU instance.
-                logger.warning(
+                logger.debug(
                     "[cache_builder] Unknown instance type %s — spec lookup returned (0,0). "
                     "Skipping to prevent undersized replacement.", itype
                 )

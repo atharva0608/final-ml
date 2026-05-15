@@ -421,6 +421,59 @@ async def receive_metrics_batch(
                     f"({instance_type}, {lifecycle}, {az}) — auto-registered from node metrics"
                 )
 
+        # Upsert NodeMetadata from node metrics so /optimize/nodes/bin-packing has data
+        if node_metrics:
+            try:
+                from backend.models.node_metadata import NodeMetadata as _NM
+                from sqlalchemy.dialects.postgresql import insert as _pg_insert
+                _nm_rows = []
+                for _n in node_metrics:
+                    _nn = _n.get("node_name")
+                    if not _nn:
+                        continue
+                    _lbs = _n.get("labels", {})
+                    _cap_type = (
+                        _lbs.get("eks.amazonaws.com/capacityType")
+                        or _lbs.get("karpenter.sh/capacity-type")
+                        or _lbs.get("node.kubernetes.io/lifecycle")
+                        or None
+                    )
+                    _nm_rows.append({
+                        "id": str(__import__("uuid").uuid4()),
+                        "cluster_id": cluster_id,
+                        "node_name": _nn,
+                        "az": _lbs.get("topology.kubernetes.io/zone") or _lbs.get("failure-domain.beta.kubernetes.io/zone"),
+                        "capacity_type": _cap_type,
+                        "nodepool_name": _lbs.get("karpenter.sh/nodepool") or _lbs.get("eks.amazonaws.com/nodegroup"),
+                        "instance_type": _lbs.get("node.kubernetes.io/instance-type") or _lbs.get("beta.kubernetes.io/instance-type"),
+                        "do_not_disrupt": _lbs.get("karpenter.sh/do-not-disrupt") == "true",
+                        "is_ready": True,
+                        "allocatable_cpu_millicores": _n.get("allocatable_cpu_millicores") or _n.get("cpu_capacity_millicores"),
+                        "allocatable_memory_bytes": _n.get("allocatable_memory_bytes") or _n.get("memory_capacity_bytes"),
+                        "updated_at": datetime.utcnow(),
+                    })
+                # Deduplicate by node_name — same node can appear multiple times per batch
+                _nm_dedup = {r["node_name"]: r for r in _nm_rows}
+                _nm_rows = list(_nm_dedup.values())
+                if _nm_rows:
+                    _nm_stmt = _pg_insert(_NM).values(_nm_rows).on_conflict_do_update(
+                        index_elements=["cluster_id", "node_name"],
+                        set_={
+                            "az": _pg_insert(_NM).excluded.az,
+                            "capacity_type": _pg_insert(_NM).excluded.capacity_type,
+                            "nodepool_name": _pg_insert(_NM).excluded.nodepool_name,
+                            "instance_type": _pg_insert(_NM).excluded.instance_type,
+                            "do_not_disrupt": _pg_insert(_NM).excluded.do_not_disrupt,
+                            "is_ready": _pg_insert(_NM).excluded.is_ready,
+                            "allocatable_cpu_millicores": _pg_insert(_NM).excluded.allocatable_cpu_millicores,
+                            "allocatable_memory_bytes": _pg_insert(_NM).excluded.allocatable_memory_bytes,
+                            "updated_at": _pg_insert(_NM).excluded.updated_at,
+                        },
+                    )
+                    db.execute(_nm_stmt)
+            except Exception as _nm_err:
+                logger.warning(f"[metrics] NodeMetadata upsert failed (non-fatal): {_nm_err}")
+
         # Insert pod metrics into database
         for pod in pod_metrics:
             try:
@@ -429,6 +482,14 @@ async def receive_metrics_batch(
                 mem_req = pod.get("memory_request_bytes")
                 mem_use = pod.get("memory_usage_bytes", 0)
                 
+                _pod_start_time = None
+                _raw_start = pod.get("start_time")
+                if _raw_start:
+                    try:
+                        _pod_start_time = datetime.fromisoformat(str(_raw_start).replace("Z", "+00:00"))
+                    except (ValueError, TypeError):
+                        pass
+
                 pod_metric = PodMetric(
                     cluster_id=cluster_id,
                     namespace=pod.get("namespace", "default"),
@@ -446,6 +507,8 @@ async def receive_metrics_batch(
                     memory_utilization_pct=(mem_use / mem_req * 100) if mem_req else None,
                     container_count=pod.get("container_count", 1),
                     pod_metadata=pod.get("labels", {}),  # Map agent's labels to metadata for PVC detection
+                    phase=pod.get("phase"),
+                    start_time=_pod_start_time,
                     timestamp=datetime.fromisoformat(timestamp) if timestamp else datetime.utcnow()
                 )
                 db.add(pod_metric)

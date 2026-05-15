@@ -66,7 +66,7 @@ class TestIntegrationHardening(unittest.IsolatedAsyncioTestCase):
         cluster_id = "test-cluster-4"
         control_plane = ControlPlaneLoop()
         
-        with patch('backend.services.execution_controller.ExecutionController.verify_plan_hash') as mock_verify:
+        with patch('backend.pipeline.stage5_execution.controller.ExecutionController.verify_plan_hash') as mock_verify:
             mock_verify.side_effect = StalePlanError("Plan hash mismatch")
             
             with self.assertRaises(StalePlanError):

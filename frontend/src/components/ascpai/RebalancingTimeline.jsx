@@ -33,8 +33,10 @@ const T = {
 const REBALANCE_STEPS = [
     { key: 'step_1_spot_provisioning',     label: 'NodePool Updated',     desc: 'Karpenter NodePool patched with target instance types', verifiedKey: 'step_1_verified' },
     { key: 'step_4_new_node_joined',       label: 'New Node Joined',      desc: 'Replacement spot node joined the cluster and is ready', verifiedKey: 'step_4_verified' },
+    { key: 'step_8_endpoints_verified',    label: 'Endpoints Verified',   desc: 'New pod IPs confirmed in EndpointSlice (pre-cordon gate)', verifiedKey: 'step_8_verified', placeholder: true, placeholderTooltip: 'Enhanced endpoint verification — coming soon' },
     { key: 'step_2_cordon',               label: 'Node Cordoned',         desc: 'No new pods scheduled on the source node', verifiedKey: 'step_2_verified' },
     { key: 'step_3_draining_pods',        label: 'Pods Drained',          desc: 'Existing pods gracefully evicted to other nodes', verifiedKey: 'step_3_verified' },
+    { key: 'step_7_pods_rescheduled',      label: 'Pods Rescheduled',     desc: 'Evicted pods confirmed vacated from drained node', verifiedKey: 'step_7_verified' },
     { key: 'step_5_old_node_terminated',  label: 'Old Node Terminated',   desc: 'Source EC2 instance terminated', verifiedKey: 'step_5_verified' },
     { key: 'step_6_optimization_complete',label: 'Complete',              desc: 'Node migration finished', verifiedKey: null },
 ];
@@ -42,11 +44,13 @@ const REBALANCE_STEPS = [
 const STEP_CURRENT_MAP = {
     provisioning_spot_pool: 0,
     waiting_for_spot_node: 1,
-    cordoning_node: 2,
-    draining_pods: 3,
-    old_node_terminating: 4,
-    old_node_terminating_timeout: 4,
-    optimization_complete: 5,
+    endpoint_convergence: 2,
+    cordoning_node: 3,
+    draining_pods: 4,
+    verifying_pod_readiness: 5,
+    old_node_terminating: 6,
+    old_node_terminating_timeout: 6,
+    optimization_complete: 7,
 };
 
 const formatCountdown = (seconds) => {
@@ -375,14 +379,15 @@ const RebalancingTimeline = ({ clusterId, actions: externalActions }) => {
                             {/* Step Timeline */}
                             <div style={{ display: 'flex', alignItems: 'flex-start', gap: 0, overflowX: 'auto', paddingBottom: 8 }}>
                                 {REBALANCE_STEPS.map((step, si) => {
-                                    const done = Boolean(action[step.key]);
-                                    const active = !done && si === currentStepIdx;
+                                    const isPlaceholder = Boolean(step.placeholder);
+                                    const done = !isPlaceholder && Boolean(action[step.key]);
+                                    const active = !isPlaceholder && !done && si === currentStepIdx;
                                     const pending = !done && !active;
                                     const verified = step.verifiedKey ? action[step.verifiedKey] : true;
                                     const doneUnverified = done && verified === false;
 
-                                    const dotColor = done ? (doneUnverified ? T.amber : T.green) : active ? T.amber : T.greyBorder;
-                                    const labelColor = done ? (doneUnverified ? T.amber : T.green) : active ? T.amber : T.textFaint;
+                                    const dotColor = isPlaceholder ? '#e5e7eb' : done ? (doneUnverified ? T.amber : T.green) : active ? T.amber : T.greyBorder;
+                                    const labelColor = isPlaceholder ? '#d1d5db' : done ? (doneUnverified ? T.amber : T.green) : active ? T.amber : T.textFaint;
 
                                     return (
                                         <div key={step.key} style={{ flex: 1, minWidth: 80, display: 'flex', flexDirection: 'column', alignItems: 'center', position: 'relative' }}>
@@ -396,18 +401,23 @@ const RebalancingTimeline = ({ clusterId, actions: externalActions }) => {
                                             {/* Dot */}
                                             <div style={{
                                                 width: 18, height: 18, borderRadius: '50%',
-                                                background: done ? (doneUnverified ? T.amber : T.green) : active ? T.amber : T.surface,
-                                                border: `2px solid ${dotColor}`,
+                                                background: isPlaceholder ? T.surface : done ? (doneUnverified ? T.amber : T.green) : active ? T.amber : T.surface,
+                                                border: isPlaceholder ? '2px dashed #e5e7eb' : `2px solid ${dotColor}`,
                                                 display: 'flex', alignItems: 'center', justifyContent: 'center',
                                                 zIndex: 1, position: 'relative',
+                                                opacity: isPlaceholder ? 0.5 : 1,
                                                 animation: active ? 'pulse 1.5s infinite' : 'none',
                                             }}>
                                                 {done && !doneUnverified && <span style={{ color: '#fff', fontSize: 10, fontWeight: 900 }}>✓</span>}
                                                 {doneUnverified && <span style={{ color: '#fff', fontSize: 10, fontWeight: 900 }}>!</span>}
                                             </div>
                                             {/* Label */}
-                                            <div style={{ fontSize: 10, fontWeight: 600, color: labelColor, textAlign: 'center', marginTop: 6, lineHeight: 1.3, maxWidth: 80 }}>
+                                            <div style={{ fontSize: 10, fontWeight: 600, color: labelColor, textAlign: 'center', marginTop: 6, lineHeight: 1.3, maxWidth: 80 }}
+                                                title={isPlaceholder ? step.placeholderTooltip : step.desc}>
                                                 {step.label}
+                                                {isPlaceholder && (
+                                                    <div style={{ fontSize: 7, fontWeight: 500, color: '#d1d5db', marginTop: 1 }}>Coming soon</div>
+                                                )}
                                             </div>
                                             {/* Verification badge */}
                                             {done && step.verifiedKey && (
@@ -435,6 +445,12 @@ const RebalancingTimeline = ({ clusterId, actions: externalActions }) => {
                             {action.current_step === 'waiting_for_spot_node' && (
                                 <div style={{ marginTop: 12, padding: '8px 12px', background: T.amberLight, borderRadius: 6, fontSize: 12, color: T.amber, fontWeight: 500 }}>
                                     ⏳ Waiting for {action.provisioner_type === 'karpenter' ? 'Karpenter' : 'agent'} to provision a new spot node ({Math.round((action.spot_wait_elapsed_s || 0) / 60)} min elapsed, max 30 min)
+                                </div>
+                            )}
+                            {/* Pod rescheduling check */}
+                            {action.current_step === 'verifying_pod_readiness' && (
+                                <div style={{ marginTop: 12, padding: '8px 12px', background: T.cyanLight, borderRadius: 6, fontSize: 12, color: T.cyan, fontWeight: 500 }}>
+                                    🔍 Verifying evicted pods have rescheduled off the drained node ({action.action_metadata?.post_drain_elapsed_s || 0}s elapsed)
                                 </div>
                             )}
                             {/* Failed migration: show error + pool change trail */}

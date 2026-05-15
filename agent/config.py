@@ -51,6 +51,10 @@ class Config:
         # ISSUE-11 FIX: Explicit cluster name for Karpenter NodePool auto-create.
         # When set, actuator.py uses this directly instead of ConfigMap/node-label inference.
         self.cluster_name = os.getenv('CLUSTER_NAME', '').strip()
+        self.feature_node_metadata_push = os.getenv('FEATURE_NODE_METADATA_PUSH', 'true').lower() == 'true'
+        self.feature_hpa_config_push = os.getenv('FEATURE_HPA_CONFIG_PUSH', 'true').lower() == 'true'
+        self.feature_heartbeat_extended_fields = os.getenv('FEATURE_HEARTBEAT_EXTENDED_FIELDS', 'true').lower() == 'true'
+        self.feature_consolidation_analysis = os.getenv('FEATURE_CONSOLIDATION_ANALYSIS', 'true').lower() == 'true'
 
         # Derived configuration
         self.agent_id = f"{self.cluster_id}-agent"

@@ -86,38 +86,49 @@ const ClusterBadge = () => {
 };
 
 const routeMap = {
-  "dashboard": "/dashboard",
-  "dashboard-overview": "/dashboard?tab=overview",
-  "dashboard-cost": "/dashboard?tab=cost",
-  "dashboard-infra": "/dashboard?tab=infra",
-  "dashboard-gov": "/dashboard?tab=governance",
-  "ascpai": "/ascp-ai",
-  "ascpai-dashboard": "/ascp-ai?tab=dashboard",
-  "ascpai-decision-engine-v3": "/ascp-ai?tab=decision-engine-v3",
-  "ascpai-rankings": "/ascp-ai?tab=rankings",
-  "ascpai-heatmap": "/ascp-ai?tab=heatmap",
-  "ascpai-rebalancing": "/ascp-ai?tab=rebalancing",
-  "rightsizing": "/right-sizing",
-  "rs-karpenter": "/right-sizing?tab=karpenter",
-  "rs-config": "/right-sizing?tab=config",
-  "rs-history": "/right-sizing?tab=history",
-  "rs-savings": "/right-sizing?tab=savings",
-  "resource-hygiene": "/hygiene",
-  "hibernation": "/hibernation",
-  "hib-schedules": "/hibernation?tab=schedules",
-  "hib-strategies": "/hibernation?tab=strategies",
-  "hib-history": "/hibernation?tab=history",
-  "clusters": "/clusters",
-  "node-templates": "/node-templates",
-  "approvals": "/approvals",
-  "tag-governance": "/tagging-policies",
-  "tag-policies": "/tagging-policies?tab=policies",
-  "tag-templates": "/tagging-policies?tab=templates",
-  "tag-scoring": "/tagging-policies?tab=scoring",
-  "tag-automation": "/tagging-policies?tab=automation",
-  "tag-monitor": "/tagging-policies?tab=monitor",
-  "teams": "/teams",
-  "audit": "/audit",
+  // Overview
+  "dashboard": "/overview",
+  "dashboard-overview": "/overview",
+
+  // Optimize -> Nodes
+  "opt-nodes": "/optimize/nodes/selection",
+  "opt-node-selector": "/optimize/nodes/selection",
+  "opt-node-bin-packing": "/optimize/nodes/bin-packing",
+
+  // Optimize -> Workloads
+  "opt-workloads": "/optimize/workloads/profiling",
+  "opt-workload-profiling": "/optimize/workloads/profiling",
+  "opt-workload-placement": "/optimize/workloads/placement",
+  "opt-workload-scaling": "/optimize/workloads/scaling",
+  "opt-workload-migration": "/optimize/workloads/migration",
+
+  // Execution
+  "execution": "/execution/active-actions",
+  "exec-active-actions": "/execution/active-actions",
+  "exec-timeline": "/execution/timeline",
+
+  // Cost
+  "cost": "/cost/overview",
+  "cost-overview": "/cost/overview",
+  "cost-savings": "/cost/savings",
+  "cost-ri": "/cost/ri",
+  "cost-hygiene": "/cost/hygiene",
+  "cost-storage": "/cost/storage-transfer",
+
+  // Infrastructure
+  "infrastructure": "/infrastructure/clusters",
+  "infra-clusters": "/infrastructure/clusters",
+  "infra-hibernation": "/infrastructure/hibernation",
+  "infra-integrations": "/infrastructure/integrations",
+
+  // Governance
+  "governance": "/governance/policies",
+  "gov-policies": "/governance/policies",
+  "gov-approvals": "/governance/approvals",
+  "gov-tags": "/governance/tag-rules",
+  "gov-teams": "/governance/teams",
+
+  // Settings
   "settings": "/settings"
 };
 
@@ -127,74 +138,71 @@ const NAV_STRUCTURE = [
     items: [
       {
         id: "dashboard",
-        label: "Dashboard",
+        label: "Overview",
         icon: "⌂",
         badge: null,
-        description: "KPIs, cost trends, fleet overview",
+        description: "Global summary"
+      }
+    ]
+  },
+  {
+    section: "OPTIMIZE",
+    items: [
+      {
+        id: "opt-nodes",
+        label: "Nodes",
+        icon: "⬡",
+        description: "Node Selection, Bin Packing",
         sub: [
-          { id: "dashboard-overview", label: "Overview" },
-          { id: "dashboard-cost", label: "Cost Intelligence" },
-          { id: "dashboard-infra", label: "Infrastructure" },
-          { id: "dashboard-gov", label: "Governance" }
+          { id: "opt-node-selector", label: "Selection" },
+          { id: "opt-node-bin-packing", label: "Bin Packing" }
+        ]
+      },
+      {
+        id: "opt-workloads",
+        label: "Workloads",
+        icon: "⊞",
+        description: "Workload Profiling, Placement, Scaling, Migration",
+        sub: [
+          { id: "opt-workload-profiling", label: "Profiling" },
+          { id: "opt-workload-placement", label: "Placement" },
+          { id: "opt-workload-scaling", label: "Scaling" },
+          { id: "opt-workload-migration", label: "Migration" }
         ]
       }
     ]
   },
   {
-    section: "COST INTELLIGENCE",
+    section: "EXECUTION",
     items: [
       {
-        id: "ascpai",
-        label: "Balancekube.ai",
-        icon: "◈",
-        badge: "ML",
-        badgeColor: "#6366f1",
-        description: "ML pool rankings & interruption heatmap",
+        id: "execution",
+        label: "Execution",
+        icon: "◉",
+        badge: "LIVE",
+        badgeColor: "#10b981",
+        description: "Active Actions, Timeline",
         sub: [
-          { id: "ascpai-dashboard", label: "Dashboard" },
-          { id: "ascpai-decision-engine-v3", label: "Decision Engine v3" },
-          { id: "ascpai-rankings", label: "Pool Rankings" },
-          { id: "ascpai-heatmap", label: "Interruption Heatmap" },
-          { id: "ascpai-rebalancing", label: "Rebalancing" }
+          { id: "exec-active-actions", label: "Active Actions" },
+          { id: "exec-timeline", label: "Timeline" }
         ]
-      },
+      }
+    ]
+  },
+  {
+    section: "COST",
+    items: [
       {
-        id: "rightsizing",
-        label: "Right-Sizing",
-        icon: "⇄",
-        badge: null,
-        description: "Manual & Karpenter auto-optimization",
-        sub: [
-          { id: "rs-karpenter", label: "Karpenter" },
-          { id: "rs-config", label: "Configuration" },
-          { id: "rs-history", label: "Optimization History" },
-          { id: "rs-savings", label: "Savings Tracker" }
-        ]
-      },
-      {
-        id: "node-templates",
-        label: "Node Templates",
-        icon: "◻",
-        badge: null,
-        description: "Cluster constraints & architecture templates"
-      },
-      {
-        id: "resource-hygiene",
-        label: "Resource Hygiene",
-        icon: "⊘",
-        badge: null,
-        description: "Zombie detection & cleanup across 9 AWS resource types"
-      },
-      {
-        id: "hibernation",
-        label: "Hibernation",
+        id: "cost",
+        label: "Cost",
         icon: "◑",
-        badge: null,
-        description: "Scheduled cluster sleep/wake strategies",
+        description: "Overview, Savings, Reserved Instances, Resource Hygiene, Storage & Transfer",
         sub: [
-          { id: "hib-schedules", label: "Schedules" },
-          { id: "hib-strategies", label: "Strategies" },
-          { id: "hib-history", label: "Execution History" }
+          { id: "cost-overview", label: "Overview" },
+          { id: "cost-savings", label: "Savings" },
+          { id: "cost-ri", label: "Reserved Instances" },
+          { id: "cost-hygiene", label: "Resource Hygiene" },
+          { id: "cost-storage", label: "Storage & Transfer" }
         ]
       }
     ]
@@ -203,11 +211,15 @@ const NAV_STRUCTURE = [
     section: "INFRASTRUCTURE",
     items: [
       {
-        id: "clusters",
-        label: "Clusters",
-        icon: "⬡",
-        badge: null,
-        description: "EKS clusters, nodes, policies"
+        id: "infrastructure",
+        label: "Infrastructure",
+        icon: "☁",
+        description: "Clusters, Hibernation, Integrations",
+        sub: [
+          { id: "infra-clusters", label: "Clusters" },
+          { id: "infra-hibernation", label: "Hibernation" },
+          { id: "infra-integrations", label: "Integrations" }
+        ]
       }
     ]
   },
@@ -215,75 +227,49 @@ const NAV_STRUCTURE = [
     section: "GOVERNANCE",
     items: [
       {
-        id: "approvals",
-        label: "Approvals",
-        icon: "✓",
-        badge: null,
-        badgeColor: "#f59e0b",
-        description: "JIT access requests & grants"
-      },
-      {
-        id: "tag-governance",
-        label: "Tag Governance",
-        icon: "◇",
-        badge: null,
-        description: "Tag policies, templates & automation",
+        id: "governance",
+        label: "Governance",
+        icon: "⚑",
+        description: "Policies, Approvals, Tag Rules, Teams",
         sub: [
-          { id: "tag-policies", label: "Governance Policies" },
-          { id: "tag-templates", label: "Tag Templates" },
-          { id: "tag-scoring", label: "Scoring Engine" },
-          { id: "tag-automation", label: "Automation Rules" },
-          { id: "tag-monitor", label: "Compliance Monitor" }
+          { id: "gov-policies", label: "Policies" },
+          { id: "gov-approvals", label: "Approvals" },
+          { id: "gov-tags", label: "Tag Rules" },
+          { id: "gov-teams", label: "Teams" }
         ]
-      },
-    ]
-  },
-  {
-    section: "ORGANIZATION",
-    items: [
-      {
-        id: "teams",
-        label: "Teams & Members",
-        icon: "⊹",
-        badge: null,
-        description: "Members, roles & permissions"
       }
     ]
   },
   {
-    section: "SYSTEM",
+    section: "SETTINGS",
     items: [
-      {
-        id: "audit",
-        label: "Audit Logs",
-        icon: "≡",
-        badge: null,
-        description: "Tamper-evident activity trail"
-      },
       {
         id: "settings",
         label: "Settings",
-        icon: "◎",
-        badge: null,
-        description: "AWS integrations, billing, profile"
+        icon: "⚙",
+        description: "Global configuration"
       }
     ]
   }
 ];
 
 const SEARCH_INDEX = [
-  { id: "ascpai", terms: ["ml", "machine learning", "pool", "rankings", "onnx", "spot advisor", "interruption", "heatmap", "rebalancing", "blacklist", "capacity", "balancekube.ai", "balancekube"] },
-  { id: "rightsizing", terms: ["karpenter", "right sizing", "rightsizing", "downsize", "recommendations", "cpu", "memory", "utilization", "overprovisioned", "savings"] },
-  { id: "resource-hygiene", terms: ["zombie", "cleanup", "ebs", "ec2", "elastic ip", "s3", "snapshot", "stopped", "orphaned", "waste", "idle", "unused", "delete", "scan"] },
+  { id: "optimization", terms: ["ml", "machine learning", "pool", "rankings", "onnx", "spot advisor", "interruption", "heatmap", "rebalancing", "blacklist", "capacity", "balancekube.ai", "balancekube", "decision engine", "recommendations"] },
+  { id: "opt-rightsizing", terms: ["karpenter", "right sizing", "rightsizing", "downsize", "recommendations", "cpu", "memory", "utilization", "overprovisioned", "savings"] },
+  { id: "workload-risk", terms: ["zombie", "cleanup", "ebs", "ec2", "elastic ip", "s3", "snapshot", "stopped", "orphaned", "waste", "idle", "unused", "delete", "scan", "hygiene"] },
   { id: "hibernation", terms: ["sleep", "wake", "schedule", "namespace sleep", "nuclear", "snapshot restore", "cost schedule", "off hours", "weekends", "nights"] },
-  { id: "clusters", terms: ["cluster", "eks", "node", "nodegroup", "heartbeat", "agent", "spot ratio"] },
-  { id: "node-templates", terms: ["template", "instance family", "architecture", "arm64", "amd64", "blacklist"] },
-  { id: "approvals", terms: ["approval", "jit", "access", "request", "grant", "permission", "revoke"] },
-  { id: "tag-governance", terms: ["tag", "tagging", "policy", "compliance", "bulk tag", "enforcement", "template", "automation", "scoring"] },
-  { id: "teams", terms: ["team", "member", "role", "invite", "organization", "permission", "rbac"] },
-  { id: "audit", terms: ["audit", "log", "history", "event", "checksum", "activity", "diff"] },
+  { id: "infra-clusters", terms: ["cluster", "eks", "node", "nodegroup", "heartbeat", "agent", "spot ratio"] },
+  { id: "infra-node-templates", terms: ["template", "instance family", "architecture", "arm64", "amd64", "blacklist"] },
+  { id: "gov-approvals", terms: ["approval", "jit", "access", "request", "grant", "permission", "revoke"] },
+  { id: "gov-tags", terms: ["tag", "tagging", "policy", "compliance", "bulk tag", "enforcement", "template", "automation", "scoring"] },
+  { id: "gov-teams", terms: ["team", "member", "role", "invite", "organization", "permission", "rbac"] },
+  { id: "settings-audit", terms: ["audit", "log", "history", "event", "checksum", "activity", "diff"] },
   { id: "settings", terms: ["settings", "aws", "account", "integration", "billing", "profile", "password", "notification"] },
-  { id: "dashboard", terms: ["dashboard", "kpi", "overview", "widget", "cost", "savings", "fleet", "home"] }
+  { id: "dashboard", terms: ["dashboard", "kpi", "overview", "widget", "cost", "savings", "fleet", "home"] },
+  { id: "opt-placement", terms: ["placement", "placement advisor", "policy", "spot friendly", "workload placement"] },
+  { id: "workloads", terms: ["workload", "inventory", "classification", "tier", "spot eligible", "stateful", "stateless"] },
+  { id: "cost-savings", terms: ["cost", "savings", "ri", "reserved instance", "s3", "rds", "transfer", "billing", "spend"] },
+  { id: "live-ops", terms: ["live", "operations", "active", "actions", "scaling", "events", "timeline", "node events", "activity feed", "agent actions"] }
 ];
 
 function searchNav(query) {
@@ -344,7 +330,7 @@ const MainLayout = () => {
   }
 
   // Pre-expand sections
-  const [expanded, setExpanded] = useState(new Set(["ascpai", "rightsizing", "hibernation"]));
+  const [expanded, setExpanded] = useState(new Set(["optimization", "infra-clusters"]));
   const [search, setSearch] = useState("");
 
   const searchResults = searchNav(search);
@@ -361,7 +347,7 @@ const MainLayout = () => {
   const isVisible = (id) => !search.trim() || searchResults.includes(id);
 
   const adminNavigation = [
-    { name: 'Command Center', path: '/admin', icon: FiActivity },
+    { name: 'Platform Overview', path: '/admin', icon: FiActivity },
     { name: 'Organizations', path: '/admin/organizations', icon: FiBriefcase },
     { name: 'Clients', path: '/admin/clients', icon: FiUsers },
     { name: 'System Health', path: '/admin/health', icon: FiServer },
@@ -587,6 +573,10 @@ const MainLayout = () => {
                     <div key={item.id}>
                       <button
                         onClick={() => {
+                          if (item.comingSoon) {
+                            if (hasSub) toggleExpand(item.id);
+                            return;
+                          }
                           if (hasSub) {
                             toggleExpand(item.id);
                             navigate(routeMap[item.id] || "/dashboard");
@@ -648,10 +638,10 @@ const MainLayout = () => {
                               {item.label}
                             </span>
 
-                            {item.id === "clusters" && <ClusterBadge />}
-                            {item.id === "approvals" && <PendingApprovalsBadge />}
+                            {item.id === "infra-clusters" && <ClusterBadge />}
+                            {item.id === "gov-approvals" && <PendingApprovalsBadge />}
 
-                            {item.badge && item.id !== "clusters" && (
+                            {item.badge && item.id !== "infra-clusters" && (
                               <span style={{
                                 background: item.badgeColor || "#374151",
                                 color: "#fff", fontSize: 9, fontWeight: 700,
@@ -694,17 +684,19 @@ const MainLayout = () => {
                             return (
                               <button
                                 key={sub.id}
-                                onClick={() => navigate(routeMap[sub.id] || "/dashboard")}
+                                onClick={() => { if (!sub.comingSoon) navigate(routeMap[sub.id] || "/dashboard"); }}
                                 style={{
                                   width: "100%", display: "flex", alignItems: "center",
                                   gap: 6, padding: "6px 8px",
                                   background: isSubActive ? "rgba(59,130,246,0.1)" : "transparent",
                                   border: "none", borderRadius: 6,
-                                  cursor: "pointer", textAlign: "left", outline: "none",
-                                  marginBottom: 1, transition: "background 0.12s"
+                                  cursor: sub.comingSoon ? "default" : "pointer",
+                                  textAlign: "left", outline: "none",
+                                  marginBottom: 1, transition: "background 0.12s",
+                                  opacity: sub.comingSoon ? 0.45 : 1
                                 }}
                                 onMouseEnter={e => {
-                                  if (!isSubActive) e.currentTarget.style.background = "rgba(255,255,255,0.03)";
+                                  if (!isSubActive && !sub.comingSoon) e.currentTarget.style.background = "rgba(255,255,255,0.03)";
                                 }}
                                 onMouseLeave={e => {
                                   if (!isSubActive) e.currentTarget.style.background = "transparent";
@@ -716,10 +708,20 @@ const MainLayout = () => {
                                 }} />
                                 <span style={{
                                   color: isSubActive ? "#93c5fd" : "#6b7280",
-                                  fontSize: 12, fontWeight: isSubActive ? 500 : 400
+                                  fontSize: 12, fontWeight: isSubActive ? 500 : 400,
+                                  flex: 1
                                 }}>
                                   {sub.label}
                                 </span>
+                                {sub.badge && (
+                                  <span style={{
+                                    background: sub.badgeColor || "#374151", color: "#fff",
+                                    fontSize: 9, fontWeight: 700, padding: "1px 5px",
+                                    borderRadius: 10, letterSpacing: "0.04em", marginLeft: 4
+                                  }}>
+                                    {sub.badge}
+                                  </span>
+                                )}
                               </button>
                             );
                           })}

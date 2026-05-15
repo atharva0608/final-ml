@@ -50,6 +50,45 @@ logger = logging.getLogger(__name__)
 # Module-level semaphore to limit concurrent region calls
 _region_semaphore = threading.Semaphore(MAX_CONCURRENT_REGION_CALLS)
 
+# ── Family-based OD price estimator ──────────────────────────────────────────
+# Used by the DescribeInstanceTypeOfferings backfill (Gap 1 / new-type path) when
+# a type has no cached OD price yet (e.g. freshly launched instance types).
+# Prices are $/hr for .large in us-east-1 reference; multiplied by size factor.
+# These are intentionally conservative — refresh_ondemand will overwrite with real
+# prices on its next hourly run.
+_FAMILY_BASE_OD: dict = {
+    't2': 0.023, 't3': 0.0832, 't3a': 0.0752, 't4g': 0.0672,
+    'm5': 0.096, 'm5a': 0.086, 'm6i': 0.096, 'm6a': 0.086, 'm6g': 0.077,
+    'm7i': 0.1008, 'm7g': 0.0816, 'm8g': 0.0850,
+    'c5': 0.085, 'c5a': 0.077, 'c6i': 0.085, 'c6a': 0.077, 'c6g': 0.068,
+    'c7i': 0.089, 'c7g': 0.0725, 'c7a': 0.085, 'c8g': 0.0700,
+    'r5': 0.126, 'r5a': 0.113, 'r6i': 0.126, 'r6a': 0.113, 'r6g': 0.101,
+    'r7i': 0.1323, 'r7g': 0.1071, 'r8g': 0.1150,
+    'i3': 0.156, 'i4i': 0.182, 'i4g': 0.165,
+    'inf1': 0.228, 'inf2': 0.760, 'trn1': 1.340,
+}
+_SIZE_MULT_OD: dict = {
+    'nano': 0.25, 'micro': 0.5, 'small': 1.0, 'medium': 2.0, 'large': 4.0,
+    'xlarge': 8.0, '2xlarge': 16.0, '3xlarge': 24.0, '4xlarge': 32.0,
+    '6xlarge': 48.0, '8xlarge': 64.0, '12xlarge': 96.0, '16xlarge': 128.0,
+    '24xlarge': 192.0, '32xlarge': 256.0, '48xlarge': 384.0, 'metal': 128.0,
+}
+
+
+def _estimate_od_price(instance_type: str) -> float:
+    """Estimate on-demand $/hr for a type with no cached OD price."""
+    parts = instance_type.split('.')
+    if len(parts) != 2:
+        return 0.0
+    family, size = parts
+    base = _FAMILY_BASE_OD.get(family, 0.0)
+    if base <= 0.0:
+        return 0.0
+    mult = _SIZE_MULT_OD.get(size, 0.0)
+    if mult <= 0.0:
+        return 0.0
+    return round(base * (mult / 4.0), 6)
+
 
 def _mark_region_degraded(region: str):
     """Mark a region as degraded in Redis for 30 minutes."""
@@ -188,7 +227,13 @@ def collect_region_spot_prices(
             # Create EC2 client for this region
             ec2_client = boto3.client('ec2', region_name=region)
 
-            # Query current Spot prices with pagination
+            # Gap 2 fix: use a 6-hour window instead of 1 hour.
+            # Stable, low-demand pools (e.g. t3a.xlarge in ap-south-1b) can go
+            # 6-24 h without a price change — they would appear as zero results in
+            # a 1-hour window even though they are perfectly valid pools.
+            # 6 h captures the most recent price for virtually all pool types.
+            # MaxResults=1000 is the *page size* (not a total cap); the NextToken
+            # loop below runs to completion so all pages are collected.
             spot_prices = []
             next_token = None
             consecutive_failures = 0
@@ -196,7 +241,7 @@ def collect_region_spot_prices(
             while True:
                 try:
                     kwargs = {
-                        'StartTime': datetime.utcnow() - timedelta(hours=1),
+                        'StartTime': datetime.utcnow() - timedelta(hours=6),
                         'ProductDescriptions': [PRODUCT_DESCRIPTION],
                         'MaxResults': 1000,
                     }
@@ -219,6 +264,7 @@ def collect_region_spot_prices(
                     break
 
             # Group by instance type + AZ, keep only latest price
+            # (AWS returns history newest-first so the first occurrence per key is the current price)
             latest_prices = {}
             for price_entry in spot_prices:
                 instance_type = price_entry['InstanceType']
@@ -230,6 +276,7 @@ def collect_region_spot_prices(
                     latest_prices[key] = price_entry
 
             # Store in database and cache
+            written_cache_keys: set = set()
             for key, price_entry in latest_prices.items():
                 instance_type = price_entry['InstanceType']
                 az = price_entry['AvailabilityZone']
@@ -257,9 +304,73 @@ def collect_region_spot_prices(
 
                 # Cache with 10-minute TTL (prices update every 5 min, so 10 min is safe)
                 redis_client.setex(cache_key, 600, cache_value)
+                written_cache_keys.add(cache_key)
                 stats["cache_keys_set"] += 1
 
             db.commit()
+
+            # ── Gap 1 fix: DescribeInstanceTypeOfferings back-fill ──────────────
+            # describe_spot_price_history only covers types with recent transactions.
+            # DescribeInstanceTypeOfferings returns every type AWS offers for spot in
+            # each AZ.  For types+AZs in offerings but missing from price history we
+            # write an estimated spot_price key (OD price × 0.35) marked is_estimated.
+            try:
+                _off_paginator = ec2_client.get_paginator('describe_instance_type_offerings')
+                _offering_pairs: set = set()
+                for _off_pg in _off_paginator.paginate(LocationType='availability-zone'):
+                    for _off in _off_pg.get('InstanceTypeOfferings', []):
+                        if _off['Location'].startswith(region):
+                            _offering_pairs.add((_off['InstanceType'], _off['Location']))
+
+                _estimated_count = 0
+                _now_iso = datetime.utcnow().isoformat()
+                for _itype, _az in _offering_pairs:
+                    _ck = f"spot_price:{region}:{_az}:{_itype}"
+                    if _ck in written_cache_keys:
+                        continue  # Real price already written — don't overwrite
+                    _od_raw = (
+                        redis_client.get(f"ondemand_price:{region}:{_itype}")
+                        or redis_client.get(f"od_price:{region}:{_itype}")
+                    )
+                    _od_price = float(_od_raw) if _od_raw else 0.0
+                    if _od_price <= 0.0:
+                        # New instance type not yet in refresh_ondemand cache.
+                        # Estimate from family/size so this type enters the
+                        # scoring universe immediately rather than waiting for
+                        # the next daily OD refresh cycle.
+                        _od_price = _estimate_od_price(_itype)
+                        if _od_price <= 0.0:
+                            continue  # Completely unknown family — genuinely skip
+                    _est_spot = round(_od_price * 0.35, 6)
+                    redis_client.setex(
+                        _ck,
+                        600,
+                        json.dumps({
+                            "price": str(_est_spot),
+                            "timestamp": _now_iso,
+                            "is_estimated": True,
+                        }),
+                    )
+                    _estimated_count += 1
+
+                redis_client.setex(
+                    f"instance_type_offerings:{region}:count",
+                    90_000,  # 25 hours
+                    str(len(_offering_pairs)),
+                )
+                logger.info(
+                    f"[Gap1][SVC-PRICE-01] OfferingsBackfill {region}: "
+                    f"total_offerings={len(_offering_pairs)}, "
+                    f"history_keys={len(written_cache_keys)}, "
+                    f"estimated_added={_estimated_count}"
+                )
+            except Exception as _offerings_err:
+                logger.warning(
+                    f"[Gap1][SVC-PRICE-01] DescribeInstanceTypeOfferings backfill "
+                    f"failed for {region}: {_offerings_err}"
+                )
+            # ────────────────────────────────────────────────────────────────────
+
             _update_spot_price_timestamp(region)
 
             logger.info(

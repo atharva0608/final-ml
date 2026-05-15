@@ -151,6 +151,10 @@ def create_tables():
         from backend.models.credential_cache import CredentialCache
     except Exception:
         pass
+    try:
+        from backend.models.migration_event import MigrationEvent
+    except Exception:
+        pass
 
     # Create all tables (idempotent — only creates tables that don't exist yet)
     Base.metadata.create_all(bind=engine)

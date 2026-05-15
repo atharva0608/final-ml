@@ -130,33 +130,63 @@ class ActionActuator:
             return False
 
     def evict_pod(self, namespace: str, pod_name: str,
-                  grace_period: int = 30) -> Dict[str, Any]:
+                  grace_period: int = 30,
+                  pre_eviction_delay: int = 0,
+                  emergency: bool = False) -> Dict[str, Any]:
         """
         Evict a pod from its node.
 
         Args:
             namespace: Pod namespace
             pod_name: Pod name
-            grace_period: Grace period in seconds
+            grace_period: Grace period in seconds (0 = read from pod spec)
+            pre_eviction_delay: Seconds to sleep before issuing eviction (Problem 1:
+                kube-proxy propagation race mitigation — gives endpoint controller
+                a head start on removing the pod from EndpointSlice)
+            emergency: If True, cap grace period at 60s (Problem 3: spot interruption
+                hard budget)
 
         Returns:
             Result dictionary with success status and message
         """
         logger.info(f"Evicting pod {namespace}/{pod_name}")
 
+        # Problem 3: Read actual grace period from pod spec if not explicitly provided
+        actual_grace = grace_period
+        try:
+            pod_obj = self.core_v1.read_namespaced_pod(pod_name, namespace)
+            pod_spec_grace = pod_obj.spec.termination_grace_period_seconds
+            if pod_spec_grace is not None:
+                actual_grace = pod_spec_grace
+        except Exception as e:
+            logger.warning(f"Could not read pod spec grace period for {namespace}/{pod_name}: {e}")
+
+        if emergency:
+            # Problem 3: Spot interruption — 120s hard budget total, cap single pod at 60s
+            actual_grace = min(actual_grace, 60)
+
+        # Problem 1: Pre-eviction delay — give endpoint controller a head start
+        # on removing the pod from EndpointSlice before SIGTERM is sent
+        if pre_eviction_delay > 0:
+            logger.info(
+                f"Pre-eviction delay: sleeping {pre_eviction_delay}s before evicting "
+                f"{namespace}/{pod_name} (kube-proxy propagation mitigation)"
+            )
+            time.sleep(pre_eviction_delay)
+
         retries = 5
         retry_delay = 10  # base delay (seconds)
 
         for attempt in range(1, retries + 2):
             try:
-                # Create eviction object
+                # Create eviction object (uses actual_grace from pod spec / emergency cap)
                 eviction = client.V1Eviction(
                     metadata=client.V1ObjectMeta(
                         name=pod_name,
                         namespace=namespace
                     ),
                     delete_options=client.V1DeleteOptions(
-                        grace_period_seconds=grace_period
+                        grace_period_seconds=actual_grace
                     )
                 )
 
@@ -363,14 +393,19 @@ class ActionActuator:
         }
 
     def drain_node(self, node_name: str, force: bool = False,
-                   grace_period: int = 30) -> Dict[str, Any]:
+                   grace_period: int = 30,
+                   pre_eviction_delay: int = 2,
+                   emergency: bool = False) -> Dict[str, Any]:
         """
         Drain a node by evicting all pods.
 
         Args:
             node_name: Name of the node
             force: Force drain even if there are pods not managed by ReplicationController
-            grace_period: Grace period for pod eviction
+            grace_period: Default grace period for pod eviction (overridden by pod spec)
+            pre_eviction_delay: Seconds to sleep before each eviction (Problem 1:
+                kube-proxy propagation race mitigation)
+            emergency: If True, cap grace periods at 60s (Problem 3: spot interruption)
 
         Returns:
             Result dictionary with success status and message
@@ -414,21 +449,62 @@ class ActionActuator:
                     failed_evictions.append(msg)
                     continue
 
-                # Check PDBs — if force is set, skip eviction and delete directly (bypasses PDB)
+                # Check PDBs — if force is set, try graceful delete first (SIGTERM),
+                # then fall back to immediate delete (SIGKILL) if still alive.
                 if self.check_pdb_violation(pod.metadata.namespace, pod.metadata.name):
                     if force:
-                        # Force-delete the pod (0 grace period) — K8s will reschedule it on another node
-                        # This is equivalent to kubectl drain --disable-eviction --force
+                        # Step 1: Try graceful delete with pod's actual grace period (SIGTERM)
+                        _pod_grace = (pod.spec.termination_grace_period_seconds or 30)
                         try:
                             self.core_v1.delete_namespaced_pod(
                                 name=pod.metadata.name,
                                 namespace=pod.metadata.namespace,
-                                body=client.V1DeleteOptions(grace_period_seconds=0)
+                                body=client.V1DeleteOptions(grace_period_seconds=_pod_grace)
                             )
-                            logger.warning(
-                                f"Force-deleted PDB-protected pod {pod.metadata.namespace}/{pod.metadata.name} "
-                                f"(force drain mode) — will reschedule on another node"
+                            logger.info(
+                                f"Sent SIGTERM to PDB-protected pod {pod.metadata.namespace}/{pod.metadata.name} "
+                                f"(grace_period={_pod_grace}s, force drain mode)"
                             )
+                            # Wait for graceful termination
+                            import time as _time
+                            _waited = 0
+                            _poll_interval = 2
+                            while _waited < _pod_grace:
+                                _time.sleep(_poll_interval)
+                                _waited += _poll_interval
+                                try:
+                                    self.core_v1.read_namespaced_pod(
+                                        name=pod.metadata.name,
+                                        namespace=pod.metadata.namespace
+                                    )
+                                except ApiException as _read_err:
+                                    if _read_err.status == 404:
+                                        # Pod is gone — SIGTERM succeeded
+                                        logger.info(
+                                            f"PDB-protected pod {pod.metadata.namespace}/{pod.metadata.name} "
+                                            f"terminated gracefully after {_waited}s"
+                                        )
+                                        break
+                                except Exception:
+                                    pass
+                            else:
+                                # Step 2: Pod still alive after grace period — force SIGKILL
+                                try:
+                                    self.core_v1.delete_namespaced_pod(
+                                        name=pod.metadata.name,
+                                        namespace=pod.metadata.namespace,
+                                        body=client.V1DeleteOptions(grace_period_seconds=0)
+                                    )
+                                    logger.warning(
+                                        f"Force-killed PDB-protected pod {pod.metadata.namespace}/{pod.metadata.name} "
+                                        f"after {_pod_grace}s SIGTERM timeout (SIGKILL)"
+                                    )
+                                except Exception as _kill_err:
+                                    msg = f"Pod {pod.metadata.namespace}/{pod.metadata.name} SIGKILL failed: {_kill_err}"
+                                    logger.error(msg)
+                                    failed_evictions.append(msg)
+                                    continue
+
                             eviction_results.append({'success': True, 'force_deleted': True})
                         except Exception as _del_err:
                             msg = f"Pod {pod.metadata.namespace}/{pod.metadata.name} PDB-protected and force-delete failed: {_del_err}"
@@ -444,7 +520,9 @@ class ActionActuator:
                 result = self.evict_pod(
                     pod.metadata.namespace,
                     pod.metadata.name,
-                    grace_period
+                    grace_period,
+                    pre_eviction_delay=pre_eviction_delay,
+                    emergency=emergency,
                 )
                 eviction_results.append(result)
 
@@ -898,11 +976,14 @@ class ActionActuator:
                 # controller on the single stable OD node that won't be drained.
                 "--set", "affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms[0].matchExpressions[0].key=karpenter.sh/nodepool",
                 "--set", "affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms[0].matchExpressions[0].operator=DoesNotExist",
+                # Prefer co-locating both replicas on the same node (single anchor).
+                # If only one non-Karpenter node exists, both pods land there.
+                # If multiple non-Karpenter (OD) nodes exist, the scheduler may
+                # spread them — but it strongly prefers the same node first.
+                "--set", "affinity.podAffinity.preferredDuringSchedulingIgnoredDuringExecution[0].weight=100",
+                "--set", "affinity.podAffinity.preferredDuringSchedulingIgnoredDuringExecution[0].podAffinityTerm.topologyKey=kubernetes.io/hostname",
+                "--set", "affinity.podAffinity.preferredDuringSchedulingIgnoredDuringExecution[0].podAffinityTerm.labelSelector.matchLabels.app\\.kubernetes\\.io/name=karpenter",
                 "--set", "replicas=2",
-                "--set", "topologySpreadConstraints[0].maxSkew=1",
-                "--set", "topologySpreadConstraints[0].topologyKey=kubernetes.io/hostname",
-                "--set", "topologySpreadConstraints[0].whenUnsatisfiable=ScheduleAnyway",
-                "--set", "topologySpreadConstraints[0].labelSelector.matchLabels.app\\.kubernetes\\.io/name=karpenter",
                 "--wait", "--timeout", "5m",
             ]
             # IRSA: annotate the Karpenter controller ServiceAccount so it can call AWS APIs
@@ -1146,6 +1227,36 @@ class ActionActuator:
             }
 
         try:
+            # ── BACKUP ORIGINAL RESOURCES before patching ──────────────────
+            original_resources = None
+            try:
+                if ctrl_type == "deployment":
+                    _current = self.apps_v1.read_namespaced_deployment(name=ctrl_name, namespace=namespace)
+                elif ctrl_type == "statefulset":
+                    _current = self.apps_v1.read_namespaced_stateful_set(name=ctrl_name, namespace=namespace)
+                elif ctrl_type == "daemonset":
+                    _current = self.apps_v1.read_namespaced_daemon_set(name=ctrl_name, namespace=namespace)
+                else:
+                    _current = None
+
+                if _current:
+                    for _c in (_current.spec.template.spec.containers or []):
+                        if _c.name == container_name and _c.resources:
+                            original_resources = {
+                                "requests": {
+                                    "cpu": _c.resources.requests.get("cpu") if _c.resources.requests else None,
+                                    "memory": _c.resources.requests.get("memory") if _c.resources.requests else None,
+                                },
+                                "limits": {
+                                    "cpu": _c.resources.limits.get("cpu") if _c.resources.limits else None,
+                                    "memory": _c.resources.limits.get("memory") if _c.resources.limits else None,
+                                },
+                            }
+                            break
+            except Exception as _backup_err:
+                logger.warning(f"Could not backup original resources for {ctrl_type}/{namespace}/{ctrl_name}: {_backup_err}")
+            # ── END BACKUP ─────────────────────────────────────────────────
+
             # Build the strategic merge patch — only update the named container
             patch_body = {
                 "spec": {
@@ -1188,6 +1299,7 @@ class ActionActuator:
                 "message":          f"Container resources updated on {patched_resource}",
                 "patched_resource": patched_resource,
                 "resources":        resources,
+                "original_resources": original_resources,
             }
 
         except ApiException as e:
@@ -1588,6 +1700,217 @@ class ActionActuator:
 
         return {"success": False, "error": "No valid instance_id or node_name to terminate"}
 
+    # ── K2: KEDA install / uninstall helpers ───────────────────────────────────
+
+    def _install_keda(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Install KEDA via Helm.
+
+        Payload fields:
+            version           (str, default "2.13.0"): KEDA chart version
+            namespace         (str, default "keda"): target namespace
+            values_overrides  (dict): extra Helm --set values
+        """
+        version   = payload.get("version", "2.13.0")
+        namespace = payload.get("namespace", "keda")
+        overrides = payload.get("values_overrides") or {}
+
+        logger.info(f"[KEDA] Installing KEDA {version} into namespace {namespace}")
+
+        helm_args = [
+            "helm", "upgrade", "--install", "keda",
+            "kedacore/keda",
+            "--repo", "https://kedacore.github.io/charts",
+            "--version", version,
+            "--namespace", namespace,
+            "--create-namespace",
+            "--wait",
+            "--timeout", "5m",
+        ]
+        for k, v in overrides.items():
+            helm_args += ["--set", f"{k}={v}"]
+
+        try:
+            # Add Helm repo first (idempotent)
+            subprocess.run(
+                ["helm", "repo", "add", "kedacore", "https://kedacore.github.io/charts"],
+                capture_output=True, text=True, timeout=30
+            )
+            subprocess.run(
+                ["helm", "repo", "update"],
+                capture_output=True, text=True, timeout=60
+            )
+            result = subprocess.run(
+                helm_args, capture_output=True, text=True, timeout=360
+            )
+            if result.returncode != 0:
+                err = result.stderr or result.stdout
+                logger.error(f"[KEDA] helm install failed: {err[:500]}")
+                return {"success": False, "message": f"KEDA helm install failed: {err[:300]}"}
+
+            logger.info(f"[KEDA] Successfully installed KEDA {version}")
+            return {
+                "success": True,
+                "message": f"KEDA {version} installed successfully in namespace {namespace}",
+            }
+        except subprocess.TimeoutExpired:
+            return {"success": False, "message": "KEDA helm install timed out after 6 minutes"}
+        except FileNotFoundError:
+            return {"success": False, "message": "helm binary not found — agent image may need update"}
+        except Exception as exc:
+            logger.error(f"[KEDA] _install_keda unexpected error: {exc}", exc_info=True)
+            return {"success": False, "message": str(exc)}
+
+    def _uninstall_keda(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Uninstall KEDA via Helm.
+
+        Payload fields:
+            namespace  (str, default "keda"): KEDA namespace
+        """
+        namespace    = payload.get("namespace", "keda")
+        release_name = payload.get("release_name", "keda")
+
+        logger.info(f"[KEDA] Uninstalling KEDA release {release_name} from {namespace}")
+        try:
+            result = subprocess.run(
+                [
+                    "helm", "uninstall", release_name,
+                    "--namespace", namespace,
+                    "--wait", "--timeout", "3m",
+                ],
+                capture_output=True, text=True, timeout=240
+            )
+            if result.returncode != 0:
+                err = result.stderr or result.stdout
+                if "not found" in err.lower() or "release: not found" in err.lower():
+                    logger.info("[KEDA] Release not found — already uninstalled")
+                    return {"success": True, "message": "KEDA was not installed (release not found)", "skipped": True}
+                logger.error(f"[KEDA] helm uninstall failed: {err[:500]}")
+                return {"success": False, "message": f"KEDA helm uninstall failed: {err[:300]}"}
+
+            # Delete namespace best-effort
+            try:
+                self.core_v1.delete_namespace(namespace)
+            except Exception:
+                pass
+
+            return {"success": True, "message": f"KEDA uninstalled from namespace {namespace}"}
+        except subprocess.TimeoutExpired:
+            return {"success": False, "message": "KEDA helm uninstall timed out after 4 minutes"}
+        except FileNotFoundError:
+            return {"success": False, "message": "helm binary not found"}
+        except Exception as exc:
+            logger.error(f"[KEDA] _uninstall_keda unexpected error: {exc}", exc_info=True)
+            return {"success": False, "message": str(exc)}
+
+    def _annotate_workload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Annotate a Deployment or StatefulSet's pod template.
+
+        Used for tier-override: writes spot-optimizer/tier annotation to
+        spec.template.metadata.annotations on the controller.
+
+        Payload fields:
+            namespace        (str): controller namespace
+            controller_name  (str): Deployment/StatefulSet name
+            controller_kind  (str, default "Deployment"): kind
+            annotation_key   (str): annotation key
+            annotation_value (str): annotation value
+            remove           (bool, default False): remove annotation instead of adding
+        """
+        namespace       = payload.get("namespace", "default")
+        ctrl_name       = payload.get("controller_name", "")
+        ctrl_kind       = payload.get("controller_kind", "Deployment").lower()
+        annotation_key  = payload.get("annotation_key", "")
+        annotation_value = payload.get("annotation_value", "")
+        remove          = payload.get("remove", False)
+
+        if not ctrl_name or not annotation_key:
+            return {"success": False, "message": "controller_name and annotation_key are required"}
+
+        if remove:
+            patch_value = None
+        else:
+            patch_value = annotation_value
+
+        patch_body = {
+            "spec": {
+                "template": {
+                    "metadata": {
+                        "annotations": {annotation_key: patch_value}
+                    }
+                }
+            }
+        }
+
+        try:
+            apps_v1 = self.apps_v1
+            if ctrl_kind == "deployment":
+                apps_v1.patch_namespaced_deployment(ctrl_name, namespace, patch_body)
+            elif ctrl_kind == "statefulset":
+                apps_v1.patch_namespaced_stateful_set(ctrl_name, namespace, patch_body)
+            else:
+                return {"success": False, "message": f"Unsupported controller kind: {ctrl_kind}"}
+
+            action = "Removed" if remove else "Applied"
+            logger.info(
+                f"[actuator] {action} annotation {annotation_key}={annotation_value} "
+                f"on {ctrl_kind}/{namespace}/{ctrl_name}"
+            )
+            return {
+                "success":          True,
+                "controller_kind":  ctrl_kind,
+                "namespace":        namespace,
+                "controller_name":  ctrl_name,
+                "annotation_key":   annotation_key,
+                "annotation_value": annotation_value,
+                "removed":          remove,
+            }
+        except Exception as exc:
+            logger.error(f"[actuator] _annotate_workload failed: {exc}")
+            return {"success": False, "message": str(exc)}
+
+    def _patch_affinity(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Patch nodeAffinity on a Deployment/StatefulSet pod template.
+
+        Used by W3.1 (migrate_to_anchored) to route TIER_1 workloads to
+        anchored on-demand nodes.
+
+        Payload fields:
+            namespace         (str)
+            controller_name   (str)
+            controller_kind   (str, default "Deployment")
+            affinity          (dict): full K8s affinity object for spec.template.spec.affinity
+        """
+        namespace    = payload.get("namespace", "default")
+        ctrl_name    = payload.get("controller_name", "")
+        ctrl_kind    = payload.get("controller_kind", "Deployment").lower()
+        affinity     = payload.get("affinity", {})
+
+        if not ctrl_name:
+            return {"success": False, "message": "controller_name is required"}
+
+        patch_body = {"spec": {"template": {"spec": {"affinity": affinity}}}}
+
+        try:
+            apps_v1 = self.apps_v1
+            if ctrl_kind == "deployment":
+                apps_v1.patch_namespaced_deployment(ctrl_name, namespace, patch_body)
+            elif ctrl_kind == "statefulset":
+                apps_v1.patch_namespaced_stateful_set(ctrl_name, namespace, patch_body)
+            else:
+                return {"success": False, "message": f"Unsupported controller kind: {ctrl_kind}"}
+
+            logger.info(
+                f"[actuator] Patched affinity on {ctrl_kind}/{namespace}/{ctrl_name}"
+            )
+            return {"success": True, "namespace": namespace, "controller_name": ctrl_name}
+        except Exception as exc:
+            logger.error(f"[actuator] _patch_affinity failed: {exc}")
+            return {"success": False, "message": str(exc)}
+
     def uninstall_karpenter(self, release_name: str = "karpenter",
                              namespace: str = "karpenter") -> Dict[str, Any]:
         """
@@ -1747,6 +2070,23 @@ class ActionActuator:
 
         elif action_type == 'TERMINATE_NODE':
             return self._terminate_node(payload)
+
+        elif action_type == 'INSTALL_KEDA':
+            # K2: Install KEDA via Helm inside the cluster
+            return self._install_keda(payload)
+
+        elif action_type == 'UNINSTALL_KEDA':
+            # K2: Uninstall KEDA via Helm
+            return self._uninstall_keda(payload)
+
+        elif action_type == 'ANNOTATE_WORKLOAD':
+            # §15: Apply annotation to a Deployment/StatefulSet pod template
+            # Used for tier-override: spot-optimizer/tier = "N"
+            return self._annotate_workload(payload)
+
+        elif action_type == 'PATCH_AFFINITY':
+            # W3.1: Apply nodeAffinity patch to a workload controller pod template
+            return self._patch_affinity(payload)
 
         else:
             return {'success': False, 'message': f'Unknown action type: {action_type}'}

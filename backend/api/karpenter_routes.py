@@ -383,6 +383,22 @@ def update_karpenter_config(
         if not cluster:
             raise HTTPException(status_code=404, detail=f"Cluster {cluster_id} not found")
 
+        # ── KARPENTER PREREQUISITE CHECK ────────────────────────────────────
+        # Execution toggles (auto_rebalancing, auto_rightsizing) require Karpenter
+        # to be installed (karpenter_mode != None).  Without Karpenter the cluster
+        # is view-only: WIE, placement advisor, and telemetry still run, but no
+        # mutations (evictions, cordon, drain, terminate) are dispatched.
+        if (auto_rebalancing is True or auto_rightsizing is True) and cluster.karpenter_mode is None:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Karpenter is not installed on this cluster. "
+                    "Install Karpenter first to enable execution mode. "
+                    "Until then the cluster runs in view-only mode "
+                    "(WIE + placement recommendations, no mutations)."
+                ),
+            )
+
         # 1. Sync karpenter_mode (auto / dry_run)
         if auto_rebalancing is not None or "mode" in updates:
             new_mode = ("auto" if auto_rebalancing else "dry_run") if auto_rebalancing is not None else updates["mode"]
@@ -407,17 +423,27 @@ def update_karpenter_config(
             # ── KARPENTER CONSOLIDATION CONFLICT PREVENTION ────────────────
             # When ML auto-rebalancing is ON, disable Karpenter's native consolidation
             # (WhenEmptyOrUnderutilized → WhenEmpty) to prevent conflicting provisioning.
-            if auto_rebalancing and cluster.karpenter_mode is not None:
+            # When turned OFF, restore WhenEmptyOrUnderutilized so Karpenter self-manages.
+            if cluster.karpenter_mode is not None:
+                # Both ON and OFF → WhenEmpty + consolidateAfter=Never
+                # WhenEmpty: Karpenter only removes fully-empty nodes (safe scale-down).
+                # Never:     No automatic node replacement — ML rebalancer drives all changes.
+                # WhenEmptyOrUnderutilized is NOT used because it causes Karpenter to
+                # replace underutilized nodes on its own, which conflicts with our system.
+                _target_policy = "WhenEmpty"
+                _target_after  = "Never"
                 try:
                     from backend.services.karpenter_service import KarpenterService
                     _ksvc = KarpenterService(db, None)
-                    _ksvc.patch_node_pool_allowed_types(
+                    _ksvc.patch_consolidation_policy(
                         cluster_id=cluster_id,
-                        consolidation_policy="WhenEmpty",
+                        policy=_target_policy,
+                        consolidate_after=_target_after,
                     )
                     logger.info(
-                        f"Patched NodePool to disable Karpenter consolidation for {cluster_id} "
-                        f"(ML rebalancing ON — consolidationPolicy → WhenEmpty)"
+                        f"Patched NodePool disruption → consolidationPolicy={_target_policy}, "
+                        f"consolidateAfter={_target_after} for {cluster_id} "
+                        f"(ML rebalancing {'ON' if auto_rebalancing else 'OFF'})"
                     )
                 except Exception as _consol_err:
                     logger.warning(f"Failed to patch consolidation policy: {_consol_err}")
@@ -1589,14 +1615,24 @@ def install_karpenter(
 
     from backend.models.agent_action import AgentAction, AgentActionType, AgentActionStatus
 
-    # Check for an in-flight install action
+    # Check for an in-flight install action — auto-expire stale ones
     in_flight = db.query(AgentAction).filter(
         AgentAction.cluster_id == cluster_id,
         AgentAction.action_type == AgentActionType.INSTALL_KARPENTER,
         AgentAction.status.in_([AgentActionStatus.PENDING, AgentActionStatus.PICKED_UP])
     ).first()
     if in_flight:
-        raise HTTPException(status_code=409, detail="Karpenter installation already in progress")
+        if in_flight.expires_at and datetime.utcnow() > in_flight.expires_at:
+            logger.warning(
+                f"Auto-expiring stuck INSTALL_KARPENTER action {in_flight.id} "
+                f"(created {in_flight.created_at}, expired {in_flight.expires_at})"
+            )
+            in_flight.status = AgentActionStatus.EXPIRED
+            in_flight.error_message = "Auto-expired: action was stuck past its expiry time"
+            in_flight.completed_at = datetime.utcnow()
+            db.commit()
+        else:
+            raise HTTPException(status_code=409, detail="Karpenter installation already in progress")
 
     # Pre-flight: patch the agent ClusterRole with secrets/RBAC/Karpenter permissions
     # so helm can store release state in the karpenter namespace without a full agent reinstall.
@@ -1720,6 +1756,7 @@ def install_karpenter(
         cluster_id=cluster_id,
         action_type=AgentActionType.INSTALL_KARPENTER,
         status=AgentActionStatus.PENDING,
+        expires_at=datetime.utcnow() + timedelta(minutes=15),
         payload={
             "cluster_name": cluster.name,
             "region": cluster.region or "ap-south-1",
@@ -1765,18 +1802,30 @@ def uninstall_karpenter(
 
     from backend.models.agent_action import AgentAction, AgentActionType, AgentActionStatus
 
+    # Check for an in-flight uninstall action — auto-expire stale ones
     in_flight = db.query(AgentAction).filter(
         AgentAction.cluster_id == cluster_id,
         AgentAction.action_type == AgentActionType.UNINSTALL_KARPENTER,
         AgentAction.status.in_([AgentActionStatus.PENDING, AgentActionStatus.PICKED_UP])
     ).first()
     if in_flight:
-        raise HTTPException(status_code=409, detail="Karpenter uninstallation already in progress")
+        if in_flight.expires_at and datetime.utcnow() > in_flight.expires_at:
+            logger.warning(
+                f"Auto-expiring stuck UNINSTALL_KARPENTER action {in_flight.id} "
+                f"(created {in_flight.created_at}, expired {in_flight.expires_at})"
+            )
+            in_flight.status = AgentActionStatus.EXPIRED
+            in_flight.error_message = "Auto-expired: action was stuck past its expiry time"
+            in_flight.completed_at = datetime.utcnow()
+            db.commit()
+        else:
+            raise HTTPException(status_code=409, detail="Karpenter uninstallation already in progress")
 
     action = AgentAction(
         cluster_id=cluster_id,
         action_type=AgentActionType.UNINSTALL_KARPENTER,
         status=AgentActionStatus.PENDING,
+        expires_at=datetime.utcnow() + timedelta(minutes=15),
         payload={
             "release_name": "karpenter",
             "namespace": "karpenter",
@@ -2582,3 +2631,298 @@ def revert_native_spot(
     result["cluster_id"] = cluster_id
     result["nodegroup_name"] = ng_name
     return result
+
+
+# ─── Karpenter Event Ingest & Listing ────────────────────────────────────────
+
+class KarpenterEventPayload(BaseModel):
+    cluster_id: str
+    event_reason: str
+    event_source: Optional[str] = None
+    involved_object_kind: Optional[str] = None
+    involved_object_name: Optional[str] = None
+    message: Optional[str] = None
+    event_time: Optional[str] = None
+    event_payload: Optional[Dict[str, Any]] = None
+
+
+_DISRUPTIVE_REASONS = frozenset({
+    'Consolidated', 'DisruptionLaunched', 'NodeClaimDeleted', 'TerminatingNodeClaim',
+})
+_REBALANCER_PAUSE_SECONDS = 120
+
+
+@router.post(
+    "/clusters/{cluster_id}/events",
+    summary="Receive a Karpenter event from the agent sidecar",
+    status_code=201,
+    dependencies=[Depends(RequireAccess("READ"))],
+)
+def receive_karpenter_event(
+    cluster_id: str,
+    body: KarpenterEventPayload,
+    db: Session = Depends(get_db),
+) -> Dict[str, Any]:
+    from backend.models.karpenter_event import KarpenterEvent
+
+    cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
+    if not cluster:
+        raise HTTPException(status_code=404, detail=f"Cluster {cluster_id} not found")
+
+    event_time_dt = None
+    if body.event_time:
+        try:
+            event_time_dt = datetime.fromisoformat(body.event_time.replace('Z', '+00:00'))
+        except (ValueError, TypeError):
+            pass
+
+    ev = KarpenterEvent(
+        cluster_id=cluster_id,
+        event_reason=body.event_reason,
+        event_source=body.event_source,
+        involved_object_kind=body.involved_object_kind,
+        involved_object_name=body.involved_object_name,
+        message=body.message,
+        event_payload=body.event_payload,
+        event_time=event_time_dt,
+        received_at=datetime.utcnow(),
+        rebalancer_paused=False,
+    )
+    db.add(ev)
+    db.flush()
+
+    paused = False
+    if body.event_reason in _DISRUPTIVE_REASONS:
+        try:
+            from backend.core.redis_client import get_redis_client
+            _redis = get_redis_client()
+            if _redis:
+                pause_key = f"spot:karpenter_pause:{cluster_id}"
+                if not _redis.exists(pause_key):
+                    _redis.setex(pause_key, _REBALANCER_PAUSE_SECONDS, body.event_reason)
+                    ev.rebalancer_paused = True
+                    paused = True
+        except Exception as _pause_err:
+            logger.warning(f"[karpenter_events] Failed to set rebalancer pause key: {_pause_err}")
+
+    db.commit()
+    return {
+        "id": ev.id,
+        "cluster_id": cluster_id,
+        "event_reason": body.event_reason,
+        "rebalancer_paused": paused,
+        "pause_seconds": _REBALANCER_PAUSE_SECONDS if paused else 0,
+    }
+
+
+@router.post(
+    "/clusters/{cluster_id}/install",
+    summary="Install Karpenter via Helm (queues INSTALL_KARPENTER AgentAction)",
+    dependencies=[Depends(RequireAccess("WRITE"))],
+)
+def install_karpenter(
+    cluster_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """
+    Queues an INSTALL_KARPENTER AgentAction. The in-cluster agent will execute the
+    Helm install. Guards against re-installation when Karpenter is already running
+    and against duplicate in-progress actions.
+
+    Returns:
+      - already_installed=True if Karpenter is already detected.
+      - install_in_progress=True if an install action is already pending.
+      - action_id + message on successful queue.
+    """
+    from backend.services.karpenter_service import KarpenterService
+    from backend.core.redis_client import get_redis_client
+
+    try:
+        redis = get_redis_client()
+    except Exception:
+        redis = None
+
+    try:
+        svc = KarpenterService(db=db, redis=redis)
+        result = svc.install_karpenter(cluster_id=cluster_id, db=db)
+        if not result.get("success"):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=result.get("error", "Karpenter install failed"),
+            )
+        return result
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error(f"[karpenter] POST /clusters/{cluster_id}/install failed: {exc}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Karpenter install failed: {exc}",
+        )
+
+
+@router.get(
+    "/clusters/{cluster_id}/install-status",
+    summary="Get Karpenter installation status (3-tier detection + action status)",
+    dependencies=[Depends(RequireAccess("READ"))],
+)
+def get_karpenter_install_status(
+    cluster_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """
+    Returns combined Karpenter install status:
+      - detected: whether Karpenter pods are running (3-tier: agent heartbeat → K8s API → DB)
+      - karpenter_mode: current mode (dry_run / auto / none)
+      - install_in_progress: spot:karpenter_installing flag is set
+      - action_status: latest INSTALL_KARPENTER / UNINSTALL_KARPENTER action status
+      - action_id: latest action ID (for polling)
+      - pods_running, controller_healthy, source, error
+    """
+    from backend.services.karpenter_service import KarpenterService
+    from backend.core.redis_client import get_redis_client
+
+    try:
+        redis = get_redis_client()
+    except Exception:
+        redis = None
+
+    try:
+        svc = KarpenterService(db=db, redis=redis)
+        return svc.get_karpenter_install_status(cluster_id=cluster_id, db=db)
+    except Exception as exc:
+        logger.error(f"[karpenter] GET /clusters/{cluster_id}/install-status failed: {exc}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get Karpenter install status: {exc}",
+        )
+
+
+@router.get(
+    "/clusters/{cluster_id}/events",
+    summary="List recent Karpenter events for a cluster",
+    dependencies=[Depends(RequireAccess("READ"))],
+)
+def list_karpenter_events(
+    cluster_id: str,
+    limit: int = Query(50, ge=1, le=500),
+    reason: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+) -> Dict[str, Any]:
+    from backend.models.karpenter_event import KarpenterEvent
+    from sqlalchemy import desc
+
+    cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
+    if not cluster:
+        raise HTTPException(status_code=404, detail=f"Cluster {cluster_id} not found")
+
+    q = db.query(KarpenterEvent).filter(KarpenterEvent.cluster_id == cluster_id)
+    if reason:
+        q = q.filter(KarpenterEvent.event_reason == reason)
+    events = q.order_by(desc(KarpenterEvent.received_at)).limit(limit).all()
+
+    return {
+        "cluster_id": cluster_id,
+        "total": len(events),
+        "events": [
+            {
+                "id": e.id,
+                "event_reason": e.event_reason,
+                "event_source": e.event_source,
+                "involved_object_kind": e.involved_object_kind,
+                "involved_object_name": e.involved_object_name,
+                "message": e.message,
+                "event_time": e.event_time.isoformat() if e.event_time else None,
+                "received_at": e.received_at.isoformat() if e.received_at else None,
+                "rebalancer_paused": e.rebalancer_paused,
+            }
+            for e in events
+        ],
+    }
+
+
+# ---------------------------------------------------------------------------
+# GET /karpenter/{cluster_id}/takeover/preflight
+# Classify all legacy_mng nodes: safe vs blocked (Issue 3)
+# ---------------------------------------------------------------------------
+
+@router.get("/{cluster_id}/takeover/preflight", summary="Pre-flight takeover blocker classification")
+def takeover_preflight(
+    cluster_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Returns a node-by-node classification of takeover readiness.
+
+    For each legacy_mng node still running, reports:
+    - safe: True/False
+    - skip_reason: None or a string like "kube_system_critical_pods:2",
+      "singleton_statefulset_no_pdb:<workload_id>", "max_takeover_retries_exceeded:3"
+
+    Response also includes the cluster's current onboarding_phase, count of
+    remaining MNG nodes, and whether takeover is currently active.
+    """
+    from backend.models.instance import Instance
+    from backend.workers.tasks.auto_rebalancer import _takeover_should_skip_node
+    from backend.core.redis_client import get_redis_client
+
+    cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
+    if not cluster:
+        raise HTTPException(status_code=404, detail=f"Cluster {cluster_id} not found")
+
+    redis = get_redis_client()
+
+    mng_nodes = (
+        db.query(Instance)
+        .filter(
+            Instance.cluster_id == cluster_id,
+            Instance.node_owner_type == "legacy_mng",
+            Instance.state == "running",
+        )
+        .all()
+    )
+
+    node_classifications = []
+    safe_count = 0
+    blocked_count = 0
+    for node in mng_nodes:
+        skip_reason = _takeover_should_skip_node(node, cluster_id, redis, db)
+        is_safe = skip_reason is None
+        if is_safe:
+            safe_count += 1
+        else:
+            blocked_count += 1
+        node_classifications.append({
+            "node_name": node.node_name,
+            "instance_id": node.instance_id,
+            "instance_type": node.instance_type,
+            "az": node.az,
+            "safe": is_safe,
+            "skip_reason": skip_reason,
+        })
+
+    takeover_active = bool(redis and redis.exists(f"spot:takeover_active:{cluster_id}"))
+    takeover_completed_raw = redis.get(f"spot:takeover_completed_at:{cluster_id}") if redis else None
+    takeover_completed_at = None
+    if takeover_completed_raw:
+        try:
+            import time as _time
+            takeover_completed_at = datetime.utcfromtimestamp(
+                float(takeover_completed_raw)
+            ).isoformat()
+        except Exception:
+            pass
+
+    return {
+        "cluster_id": cluster_id,
+        "onboarding_phase": getattr(cluster, "onboarding_phase", "unknown"),
+        "takeover_active": takeover_active,
+        "takeover_completed_at": takeover_completed_at,
+        "mng_nodes_remaining": len(mng_nodes),
+        "safe_to_proceed": safe_count,
+        "blocked": blocked_count,
+        "nodes": node_classifications,
+    }

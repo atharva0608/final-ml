@@ -9,7 +9,8 @@ from backend.core.config import REBALANCE_THRESHOLD, REBALANCE_BLACKLIST_TIER_HO
 logger = logging.getLogger(__name__)
 
 
-def track_rebalance_event(region: str, instance_type: str, az: str) -> dict:
+def track_rebalance_event(region: str, instance_type: str, az: str,
+                          cluster_id: str = "") -> dict:
     """
     Track a rebalance event for a pool. If events exceed REBALANCE_THRESHOLD
     in the last hour, blacklist the pool with tiered TTL.
@@ -49,7 +50,33 @@ def track_rebalance_event(region: str, instance_type: str, az: str) -> dict:
             f'[rebalance_tracker] Pool {pool_key} blacklisted for {ttl_hours}h '
             f'(breach #{breaches}, count={count})'
         )
+        # C4/C5: Record rebalance notice in the global adaptive ledger.
+        try:
+            from backend.services.adaptive_itn_service import AdaptiveItnService
+            AdaptiveItnService.record_global_interruption(
+                pool_key=pool_key,
+                cluster_id=cluster_id,
+                event_type="rebalance_notice",
+                initiated_by="aws",
+                redis_client=redis,
+            )
+        except Exception as _ail_err:
+            logger.warning(f'[rebalance_tracker] Adaptive ledger update failed: {_ail_err}')
         return {'status': 'blacklisted', 'pool_key': pool_key, 'hours': ttl_hours}
+
+    # C4/C5: Record every rebalance notice (not just threshold breaches) so the
+    # ledger accumulates low-severity signal even before blacklisting kicks in.
+    try:
+        from backend.services.adaptive_itn_service import AdaptiveItnService
+        AdaptiveItnService.record_global_interruption(
+            pool_key=pool_key,
+            cluster_id=cluster_id,
+            event_type="rebalance_notice",
+            initiated_by="aws",
+            redis_client=redis,
+        )
+    except Exception as _ail_err:
+        logger.warning(f'[rebalance_tracker] Adaptive ledger update failed: {_ail_err}')
 
     return {'status': 'tracked', 'count': count}
 

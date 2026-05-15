@@ -1,12 +1,13 @@
-FROM python:3.11-slim AS builder
+# Always target linux/amd64 — EKS nodes are x86_64.
+# On Apple Silicon, docker buildx uses QEMU emulation automatically.
+FROM --platform=linux/amd64 python:3.11-slim AS builder
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 RUN apt-get update && apt-get install -y gcc python3-dev build-essential
 COPY requirements.txt /tmp/
 RUN pip install --no-cache-dir -r /tmp/requirements.txt
 
-FROM python:3.11-slim
-# TARGETARCH is auto-set by Docker buildx (amd64 or arm64).
+FROM --platform=linux/amd64 python:3.11-slim
 # For helm, the install script auto-detects arch at runtime.
 # For kubectl, we derive the arch explicitly from TARGETARCH.
 ARG TARGETARCH=amd64

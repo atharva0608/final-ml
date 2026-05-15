@@ -118,11 +118,11 @@ class WebSocketClient:
         # Normalize base URL: strip trailing /ws if present, then append /ws/cluster/{id}
         base = self.backend_ws_url.rstrip('/')
         if f"/ws/cluster/{self.cluster_id}" in base:
-            url = f"{base}?agent_id={self.agent_id}"
+            url = f"{base}?agent_id={self.agent_id}&api_key={self.api_key}"
         else:
             if base.endswith('/ws'):
                 base = base[:-3]  # strip /ws
-            url = f"{base}/ws/cluster/{self.cluster_id}?agent_id={self.agent_id}"
+            url = f"{base}/ws/cluster/{self.cluster_id}?agent_id={self.agent_id}&api_key={self.api_key}"
 
         headers = {
             'Authorization': f'Bearer {self.api_key}'

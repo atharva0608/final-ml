@@ -81,16 +81,44 @@ def trigger_discovery(
 ):
     """
     Trigger an immediate discovery scan for all accounts.
-    Authentication required.
+    Also returns current per-account sync health so the UI can surface
+    AccessDenied / credential errors without waiting for the async task.
     """
+    from backend.models.account import Account as _Acct, AccountStatus as _AS, SyncStatus as _SS
+
+    # Snapshot account health BEFORE dispatching (reflects the last completed scan)
+    _accounts = db.query(_Acct).filter(
+        _Acct.organization_id == current_user.organization_id,
+    ).all() if hasattr(current_user, 'organization_id') else []
+
+    account_health = []
+    for a in _accounts:
+        account_health.append({
+            "aws_account_id": a.aws_account_id,
+            "account_id": a.id,
+            "status": a.status.value if a.status else "unknown",
+            "sync_status": a.sync_status.value if a.sync_status else "unknown",
+            "sync_error": a.sync_error,
+            "last_sync_at": a.last_sync_at.isoformat() if a.last_sync_at else None,
+        })
+
+    failed_accounts = [h for h in account_health if h["sync_status"] == "failed"]
+
     try:
-        from backend.workers.tasks.discovery import discovery_worker_loop # Trigger the discovery task asynchronously
+        from backend.workers.tasks.discovery import discovery_worker_loop
         task = discovery_worker_loop.delay()
-        return {"status": "accepted", "message": "Discovery scan started", "task_id": str(task.id)}
+        task_id = str(task.id)
     except Exception as e:
         logger.error(f"Failed to trigger discovery: {e}")
-        # Fallback if Celery is not available/configured? No, just error.
         raise HTTPException(status_code=500, detail=f"Failed to start discovery: {str(e)}")
+
+    return {
+        "status": "accepted",
+        "message": "Discovery scan started",
+        "task_id": task_id,
+        "account_health": account_health,
+        "failed_accounts": failed_accounts,
+    }
 
 @router.post("/connect", response_model=ClusterResponse)
 def connect_aws_cluster(
@@ -166,6 +194,14 @@ def toggle_auto_rebalance(
     if not cluster:
         raise HTTPException(status_code=404, detail="Cluster not found")
 
+    # Karpenter gate: cannot enable auto-rebalancing without Karpenter installed
+    if enabled and getattr(cluster, 'karpenter_mode', None) is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Karpenter must be installed before enabling auto-rebalancing. "
+                   "Please install Karpenter first from the cluster settings."
+        )
+
     # Update auto-rebalance setting
     cluster.auto_rebalance_enabled = enabled
     db.commit()
@@ -220,7 +256,14 @@ def delete_cluster(
                 )
 
                 # ── Direct K8s cleanup: remove agent + Karpenter from EKS ──
-                if cluster.endpoint and cluster.ca_data:
+                # Skip K8s cleanup if cluster is already unreachable (deleted/disconnected).
+                # Attempting to connect to a gone EKS endpoint hangs indefinitely.
+                _dead_statuses_del = {'DISCONNECTED', 'DEGRADED', 'INACTIVE', 'DELETED'}
+                _cluster_status_del = cluster.status.value if hasattr(cluster.status, 'value') else str(cluster.status)
+                if _cluster_status_del in _dead_statuses_del:
+                    cleanup_results["k8s"] = {"skipped": f"cluster is {_cluster_status_del} — K8s already unreachable"}
+                    logger.info(f"K8s cleanup skipped for {cluster_id}: cluster is {_cluster_status_del}")
+                elif cluster.endpoint and cluster.ca_data:
                     try:
                         _uninstall_result = _inj.uninstall_agent(
                             cluster_name=cluster.name,
@@ -432,14 +475,24 @@ def auto_install_agent(
                 detail="Cluster must be associated with an AWS account with a valid role ARN"
             )
         
-        # Always sync api_key to AGENT_API_KEY env var so verify_agent_token()
-        # accepts the agent's Bearer token.  Using a stale random key is the
-        # root cause of 401 CrashLoopBackOff on every reinstall.
+        # Ensure the cluster has a stable api_key.
+        # Priority:
+        #   1. AGENT_API_KEY env var (set in production for single-key deployments)
+        #   2. Existing cluster.api_key (preserve across reinstalls — changing it
+        #      would CrashLoopBackOff the already-running agent)
+        #   3. Generate a fresh token only when the cluster has NO key at all.
         import os as _os
-        _backend_key = _os.getenv("AGENT_API_KEY") or secrets.token_urlsafe(32)
-        if cluster.api_key != _backend_key:
-            cluster.api_key = _backend_key
+        _env_key = _os.getenv("AGENT_API_KEY")
+        if _env_key:
+            # Production: enforce global env key so all clusters share one secret
+            if cluster.api_key != _env_key:
+                cluster.api_key = _env_key
+                db.commit()
+        elif not cluster.api_key:
+            # No env key and no existing key — generate one and persist it
+            cluster.api_key = secrets.token_urlsafe(32)
             db.commit()
+        # else: cluster already has its own key — leave it alone
         
         # Trigger background task
         from backend.workers.tasks.agent_tasks import inject_agent_task
@@ -669,9 +722,12 @@ def disconnect_agent(
         raise HTTPException(status_code=404, detail="Cluster not found")
 
     from backend.models.cluster import ClusterStatus
-    import os as _os
-    # Rotate API key — must equal AGENT_API_KEY env var for verify_agent_token()
-    cluster.api_key = _os.getenv("AGENT_API_KEY") or secrets.token_urlsafe(32)
+    # Rotate to a fresh random key so the old agent is definitively blocked.
+    # We do NOT use AGENT_API_KEY here — that env var is a global shared key and
+    # overwriting cluster.api_key with it would break per-cluster isolation.
+    # verify_agent_token() now validates per-cluster from the DB, so any unique
+    # random value stored here is the single source of truth for this cluster.
+    cluster.api_key = secrets.token_urlsafe(32)
     cluster.agent_installed = "N"
     cluster.status = ClusterStatus.DISCONNECTED
     cluster.updated_at = datetime.utcnow()
@@ -785,8 +841,9 @@ def remove_agent(
     cluster.agent_installed = "N"
     cluster.status = ClusterStatus.DISCOVERED
     cluster.last_heartbeat = None
-    import os as _os
-    cluster.api_key = _os.getenv("AGENT_API_KEY") or secrets.token_urlsafe(32)
+    # Rotate to a fresh random key — definitively invalidates any still-running
+    # agent pod. Next reinstall will pick up a new key from auto_install_agent.
+    cluster.api_key = secrets.token_urlsafe(32)
     cluster.updated_at = datetime.utcnow()
 
     db.commit()
@@ -898,7 +955,43 @@ def update_cluster_optimization_settings(
     cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
     if not cluster:
         raise HTTPException(status_code=404, detail="Cluster not found")
-        
+
+    # Karpenter gate: cannot ENABLE auto-rebalancing or rightsizing without Karpenter.
+    # Only fires on False→True transitions, not when re-saving an already-enabled toggle.
+    if settings.automation_controls is not None:
+        _ac = settings.automation_controls.model_dump()
+        # Primary: DB column (set by formal install flow)
+        _karpenter_installed = getattr(cluster, 'karpenter_mode', None) is not None
+        # Secondary: Redis authoritative keys (set by agent heartbeat / live K8s detection)
+        if not _karpenter_installed:
+            try:
+                from backend.core.redis_client import get_redis_client as _grc_karp_gate
+                _kr_gate = _grc_karp_gate()
+                if (
+                    _kr_gate.exists(f"spot:karpenter:installed:{cluster_id}")
+                    or _kr_gate.exists(f"spot:karpenter_auth_verified:{cluster_id}")
+                    or _kr_gate.exists(f"karpenter:detected:{cluster_id}")
+                ):
+                    _karpenter_installed = True
+            except Exception:
+                pass
+        if not _karpenter_installed:
+            # Current values in DB (None means not yet configured → treat as False)
+            _prev_opt = cluster.optimization_settings
+            _prev_rebalance = bool(getattr(_prev_opt, 'auto_rebalance_enabled', False)) if _prev_opt else False
+            _prev_rightsizing = bool(getattr(_prev_opt, 'auto_rightsizing_enabled', False)) if _prev_opt else False
+            # Only block when turning ON, not when preserving an existing True value
+            if _ac.get('auto_rebalance_enabled') and not _prev_rebalance:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Karpenter must be installed before enabling auto-rebalancing. Install Karpenter from the cluster setup page first."
+                )
+            if _ac.get('auto_rightsizing_enabled') and not _prev_rightsizing:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Karpenter must be installed before enabling auto-rightsizing. Install Karpenter from the cluster setup page first."
+                )
+
     # Automation Controls (partial update — only applied when section is present)
     _diversify_just_enabled = False
     if settings.automation_controls is not None:
@@ -1116,18 +1209,29 @@ def start_full_migration(
 @router.get("/{cluster_id}/migration-status")
 def get_migration_status(
     cluster_id: str,
+    limit: int = Query(50, ge=1, le=200),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Get migration progress for a cluster."""
+    """
+    §15 — Get stateful migration status for a cluster.
+
+    Returns two things:
+    - `active`: any controllers currently being frozen/migrated (from Redis)
+    - `history`: recent state-transition events from the migration_event table
+    - `node_summary`: spot/on-demand node counts (legacy fields kept for compatibility)
+    """
     from backend.models.cluster import Cluster, ClusterOptimizationSettings
     from backend.models.instance import Instance, InstanceLifecycle
+    from backend.models.migration_event import MigrationEvent
+    import json
+    import redis as _redis_mod
 
     cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
     if not cluster:
         raise HTTPException(status_code=404, detail="Cluster not found")
 
-    # Count running instances by lifecycle
+    # ── Legacy node counts (kept for backward-compat) ─────────────────────────
     total_running = db.query(Instance).filter(
         Instance.cluster_id == cluster_id,
         Instance.state == 'running',
@@ -1146,33 +1250,92 @@ def get_migration_status(
     opt = cluster.optimization_settings
     karpenter_only = getattr(opt, 'karpenter_only_mode', False) if opt else False
     managed_ng_deleted = getattr(cluster, 'managed_node_group_deleted', False)
-
-    # Compute progress
-    if total_running > 0:
-        spot_pct = round(spot_running / total_running * 100, 1)
-    else:
-        spot_pct = 0.0
-
-    # Determine phase
+    spot_pct = round(spot_running / total_running * 100, 1) if total_running > 0 else 0.0
     if managed_ng_deleted and karpenter_only:
         phase = "completed"
     elif od_running == 0 and spot_running > 0:
-        phase = "completing"  # Awaiting node group deletion
+        phase = "completing"
     elif getattr(opt, 'auto_rebalance_enabled', False):
         phase = "in_progress"
     else:
         phase = "not_started"
 
+    # ── Active migrations from Redis (real-time) ──────────────────────────────
+    active_migrations = []
+    try:
+        _redis_url = __import__("os").getenv("REDIS_URL", "redis://localhost:6379/0")
+        _rc = _redis_mod.from_url(_redis_url, decode_responses=True)
+        _cursor = 0
+        _freeze_prefix = f"spot:autoscaler_freeze:"
+        while True:
+            _cursor, _keys = _rc.scan(_cursor, match=f"{_freeze_prefix}*", count=100)
+            for _k in _keys:
+                try:
+                    _raw = _rc.get(_k)
+                    if not _raw:
+                        continue
+                    _state = json.loads(_raw)
+                    _ttl = _rc.ttl(_k)
+                    active_migrations.append({
+                        "namespace":       _state.get("namespace"),
+                        "controller_name": _state.get("controller_name"),
+                        "frozen_at":       _state.get("frozen_at"),
+                        "hpa_frozen":      _state.get("hpa_frozen", False),
+                        "keda_frozen":     _state.get("keda_frozen", False),
+                        "ttl_remaining_s": _ttl,
+                    })
+                except Exception:
+                    continue
+            if _cursor == 0:
+                break
+    except Exception:
+        pass  # Redis unavailable — return empty active list
+
+    # ── Historical events from migration_event table ───────────────────────────
+    try:
+        _cluster_int_id = int(cluster_id)
+    except (ValueError, TypeError):
+        _cluster_int_id = None
+
+    history = []
+    if _cluster_int_id is not None:
+        events = (
+            db.query(MigrationEvent)
+            .filter(MigrationEvent.cluster_id == _cluster_int_id)
+            .order_by(MigrationEvent.created_at.desc())
+            .limit(limit)
+            .all()
+        )
+        for ev in events:
+            history.append({
+                "id":              ev.id,
+                "namespace":       ev.namespace,
+                "controller_name": ev.controller_name,
+                "controller_kind": ev.controller_kind,
+                "workload_tier":   ev.workload_tier,
+                "source_node":     ev.source_node,
+                "target_node":     ev.target_node,
+                "state":           ev.state,
+                "failure_reason":  ev.failure_reason,
+                "pod_location":    ev.pod_location,
+                "freeze_restored": ev.freeze_restored,
+                "created_at":      ev.created_at.isoformat() if ev.created_at else None,
+            })
+
     return {
-        "cluster_id": cluster_id,
-        "cluster_name": cluster.name,
-        "phase": phase,
-        "total_nodes": total_running,
-        "on_demand_remaining": od_running,
-        "spot_nodes": spot_running,
-        "spot_percentage": spot_pct,
+        "cluster_id":             cluster_id,
+        "cluster_name":           cluster.name,
+        # Legacy fields
+        "phase":                  phase,
+        "total_nodes":            total_running,
+        "on_demand_remaining":    od_running,
+        "spot_nodes":             spot_running,
+        "spot_percentage":        spot_pct,
         "managed_node_group_deleted": managed_ng_deleted,
-        "karpenter_only_mode": karpenter_only,
+        "karpenter_only_mode":    karpenter_only,
+        # New §15 fields
+        "active_migrations":      active_migrations,
+        "history":                history,
     }
 
 
@@ -1216,4 +1379,245 @@ def force_complete_migration(
         "managed_node_group_deleted": True,
         "message": f"Migration force-completed for cluster {cluster.name}. "
                    f"All ASG code paths will be skipped."
+    }
+
+
+# ── W3.6: Anchored Node Status ─────────────────────────────────────────────────
+
+
+@router.get("/{cluster_id}/anchored-status")
+def get_anchored_status(
+    cluster_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Return the list of anchored nodes and their fill ratios for a cluster.
+
+    Anchored nodes are designated on-demand nodes that TIER_0/TIER_1
+    workloads are scheduled onto, protected from Karpenter consolidation.
+    """
+    try:
+        from backend.services.anchored_node_service import AnchoredNodeService
+        from backend.core.redis_client import get_redis_client
+        redis = get_redis_client()
+        svc = AnchoredNodeService(db=db, redis=redis)
+        anchored_nodes = svc.get_anchored_nodes(cluster_id)
+        fill_status = svc.get_anchored_fill_status(cluster_id)
+        return {
+            "cluster_id":     cluster_id,
+            "anchored_nodes": anchored_nodes,
+            "node_count":     len(anchored_nodes),
+            "fill_status":    fill_status,
+        }
+    except Exception as e:
+        logger.error(f"[cluster_routes] anchored-status failed for {cluster_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/{cluster_id}/anchored-nodes/{node_name}")
+def nominate_anchored_node(
+    cluster_id: str,
+    node_name: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Nominate a node as an anchored (on-demand protected) node for TIER_1 workloads."""
+    try:
+        from backend.services.anchored_node_service import AnchoredNodeService
+        from backend.core.redis_client import get_redis_client
+        redis = get_redis_client()
+        svc = AnchoredNodeService(db=db, redis=redis)
+        success = svc.nominate_anchored_node(cluster_id, node_name)
+        return {
+            "success":    success,
+            "cluster_id": cluster_id,
+            "node_name":  node_name,
+            "message":    "Node nominated as anchored" if success else "Node already anchored",
+        }
+    except Exception as e:
+        logger.error(f"[cluster_routes] nominate_anchored_node failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── WorkloadTierPanel: workload tiers endpoint (§15) ───────────────────────────
+
+
+@router.get("/{cluster_id}/workload-tiers")
+def get_workload_tiers(
+    cluster_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Return all cached workload tier classifications for a cluster.
+
+    Reads ``spot:workload_tier:{cluster_id}:*`` keys from Redis and returns
+    them as a list sorted by tier ascending (most critical first).
+
+    Data source: written by ``WorkloadInspector.build_workload_profile()``
+    with each scan cycle (TTL 540s / 9 min).  Refresh with the workload
+    scanner if data is stale.
+    """
+    try:
+        from backend.core.redis_client import get_redis_client
+        import json as _json
+        redis = get_redis_client()
+
+        pattern = f"spot:workload_tier:{cluster_id}:*"
+        tiers = []
+
+        cursor = 0
+        while True:
+            cursor, keys = redis.scan(cursor, match=pattern, count=200)
+            for key in keys:
+                try:
+                    raw = redis.get(key)
+                    if not raw:
+                        continue
+                    data = _json.loads(raw)
+                    # Key format: spot:workload_tier:{cid}:{ns}/{ctrl}
+                    suffix = key.decode("utf-8") if isinstance(key, bytes) else key
+                    ctrl_key = suffix.split(f"spot:workload_tier:{cluster_id}:", 1)[-1]
+                    ns, ctrl = ctrl_key.rsplit("/", 1) if "/" in ctrl_key else ("default", ctrl_key)
+                    tiers.append({
+                        "namespace":             ns,
+                        "controller_name":       ctrl,
+                        "tier":                  data.get("tier", 4),
+                        "tier_name":             data.get("tier_name", "SPOT_ELIGIBLE"),
+                        "migration_policy":      data.get("policy", "spot_eligible"),
+                        "detected_app_type":     data.get("app_type", "unknown"),
+                        "classification_confidence": data.get("confidence", 0.0),
+                    })
+                except Exception:
+                    continue
+            if cursor == 0:
+                break
+
+        tiers.sort(key=lambda t: t["tier"])
+        return {
+            "cluster_id":  cluster_id,
+            "total_count": len(tiers),
+            "tiers":       tiers,
+        }
+    except Exception as e:
+        logger.error(f"[cluster_routes] workload-tiers failed for {cluster_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── §15: Workload tier-override ────────────────────────────────────────────────
+
+@router.patch("/{cluster_id}/workloads/{namespace}/{controller_name}/tier-override")
+def patch_workload_tier_override(
+    cluster_id: str,
+    namespace: str,
+    controller_name: str,
+    body: dict,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    §15 — Manually override the tier classification for a workload controller.
+
+    Body params:
+      - tier (int, required): 0-4 — new tier override
+      - reason (str, optional): human-readable note stored in Redis state
+      - annotations (dict, optional): extra K8s annotations to apply via
+        ANNOTATE_WORKLOAD AgentAction
+
+    Workflow:
+      1. Write override to Redis ``spot:workload_tier:{cid}:{ns}/{ctrl}``
+         (TTL=None — override persists until cleared).
+      2. Queue an ANNOTATE_WORKLOAD AgentAction so the in-cluster agent
+         patches the Deployment/StatefulSet with the tier annotation.
+
+    Returns the new tier state.
+    """
+    import json
+    import redis as _redis_mod
+    from backend.models.cluster import Cluster
+    from backend.models.agent_action import AgentAction, AgentActionType, AgentActionStatus
+
+    # ── Validate ──────────────────────────────────────────────────────────────
+    tier = body.get("tier")
+    if tier is None or not isinstance(tier, int) or tier not in range(5):
+        raise HTTPException(
+            status_code=422,
+            detail="'tier' must be an integer 0-4",
+        )
+    reason = body.get("reason", "")
+    extra_annotations = body.get("annotations", {})
+    if not isinstance(extra_annotations, dict):
+        extra_annotations = {}
+
+    cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
+    if not cluster:
+        raise HTTPException(status_code=404, detail="Cluster not found")
+
+    _TIER_NAMES = {
+        0: "NEVER_MIGRATE",
+        1: "ANCHORED_MANUAL",
+        2: "STATEFUL_CAREFUL",
+        3: "STATELESS_PREFER_SPOT",
+        4: "SPOT_ELIGIBLE",
+    }
+    tier_name = _TIER_NAMES.get(tier, "UNKNOWN")
+
+    # ── Write Redis override ───────────────────────────────────────────────────
+    ctrl_key = f"{namespace}/{controller_name}"
+    redis_key = f"spot:workload_tier:{cluster_id}:{ctrl_key}"
+    tier_state = {
+        "tier":               tier,
+        "tier_name":          tier_name,
+        "policy":             "manual_override",
+        "override_reason":    reason,
+        "override_by":        getattr(current_user, "email", str(current_user.id)),
+        "override_at":        datetime.utcnow().isoformat(),
+        "confidence":         1.0,
+        "manual_override":    True,
+    }
+    try:
+        _redis_url = __import__("os").getenv("REDIS_URL", "redis://localhost:6379/0")
+        _rc = _redis_mod.from_url(_redis_url, decode_responses=True)
+        # No TTL — manual override persists until cleared or overwritten
+        _rc.set(redis_key, json.dumps(tier_state))
+    except Exception as _re:
+        logger.warning(f"[cluster_routes] tier-override Redis write failed: {_re}")
+        raise HTTPException(status_code=500, detail="Redis write failed")
+
+    # ── Queue ANNOTATE_WORKLOAD AgentAction ───────────────────────────────────
+    annotations_to_apply = {
+        "spot-optimizer/workload-tier": str(tier),
+        "spot-optimizer/tier-name":     tier_name,
+        "spot-optimizer/override-by":   getattr(current_user, "email", ""),
+        **extra_annotations,
+    }
+    agent_action = AgentAction(
+        cluster_id=cluster_id,
+        action_type=AgentActionType.ANNOTATE_WORKLOAD,
+        status=AgentActionStatus.PENDING,
+        payload={
+            "namespace":       namespace,
+            "controller_name": controller_name,
+            "controller_kind": body.get("controller_kind", "Deployment"),
+            "annotations":     annotations_to_apply,
+        },
+    )
+    db.add(agent_action)
+    db.commit()
+    db.refresh(agent_action)
+
+    logger.info(
+        f"[cluster_routes] Tier override: cluster={cluster_id} "
+        f"ctrl={ctrl_key} tier={tier} ({tier_name}) by "
+        f"{getattr(current_user, 'email', current_user.id)}"
+    )
+    return {
+        "cluster_id":      cluster_id,
+        "namespace":       namespace,
+        "controller_name": controller_name,
+        "new_tier":        tier,
+        "tier_name":       tier_name,
+        "agent_action_id": str(agent_action.id),
+        "message":         f"Tier override to {tier_name} applied. Agent will annotate the workload.",
     }

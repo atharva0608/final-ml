@@ -58,6 +58,11 @@ class Settings(BaseSettings):
     # Frontend
     FRONTEND_URL: str = Field(default="http://localhost:3000", description="Frontend URL")
 
+    # Backend public URL — used by agent install scripts and ConfigMap generation.
+    # MUST be set in production (e.g. https://api.yourplatform.com).
+    # When unset, installer derives URL from request headers (local dev only).
+    BACKEND_PUBLIC_URL: Optional[str] = Field(None, description="Public-facing backend URL for agent install scripts. Set in production.")
+
     # Email Service (SendGrid/SES)
     EMAIL_ENABLED: bool = Field(default=False, description="Enable email sending")
     SENDGRID_API_KEY: Optional[str] = Field(None, description="SendGrid API key")
@@ -97,6 +102,25 @@ class Settings(BaseSettings):
     FEATURE_KARPENTER_ENABLED: bool = Field(default=True, description="Enable Karpenter integration")
     FEATURE_ML_LAB_ENABLED: bool = Field(default=True, description="Enable ML Lab")
     FEATURE_ADMIN_IMPERSONATION: bool = Field(default=True, description="Enable admin impersonation")
+    
+    # Placement Advisor
+    FEATURE_PLACEMENT_ADVISOR_ENABLED: bool = Field(default=False, description="Enable Placement Intelligence Advisor")
+    PLACEMENT_ADVISOR_OBSERVATION_MODE: bool = Field(default=True, description="Force actionable=false for safety")
+
+    # Placement Controller (§4 — pod-level eviction + stateful rollout)
+    # Disabled by default. Enable after shadow mode observation.
+    # Shadow mode per cluster: SET spot:placement_controller:shadow_mode:{cluster_id} 1
+    FEATURE_PLACEMENT_CONTROLLER_ENABLED: bool = Field(default=False, description="Enable PlacementController pod-level eviction + stateful rollout")
+    FEATURE_NODE_METADATA_PUSH: bool = Field(default=True, description="Enable T-09 agent node metadata push")
+    FEATURE_HPA_CONFIG_PUSH: bool = Field(default=True, description="Enable T-13 agent HPA config push")
+    FEATURE_HEARTBEAT_EXTENDED_FIELDS: bool = Field(default=True, description="Enable T-05 extended Redis fields in heartbeat")
+    FEATURE_CONSOLIDATION_ANALYSIS: bool = Field(default=True, description="Enable T-18 consolidation Celery task")
+    FEATURE_POOL_OPTIMIZATION_ACTIVE: bool = Field(default=False, description="Enable pool rotation execution in pool_optimization_worker")
+    AGENT_MIN_VERSION: str = Field(default="2.0.0", description="Minimum supported agent version — older agents log a deprecation warning")
+    CLUSTER_MAX_SPOT_RATIO_PROD: float = Field(default=0.50, description="Max spot ratio for prod clusters")
+    CLUSTER_MAX_SPOT_RATIO_STAGING: float = Field(default=0.70, description="Max spot ratio for staging clusters")
+    CLUSTER_MAX_SPOT_RATIO_DEV: float = Field(default=0.70, description="Max spot ratio for dev clusters")
+    PLACEMENT_CYCLE_TIME_BUDGET_SECONDS: int = Field(default=480, description="Max seconds a placement cycle can run per cluster")
 
     # Security
     BCRYPT_ROUNDS: int = Field(default=12, ge=10, le=14, description="Bcrypt hashing rounds")

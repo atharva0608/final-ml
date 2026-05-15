@@ -108,12 +108,11 @@ if [ "$SKIP_PUSH" = false ]; then
         --push \
         .
 else
-    # Local build only — single platform (multi-arch --load not supported by Docker daemon).
-    # Defaults to host arch (amd64 on x86, arm64 on Apple Silicon).
-    _LOCAL_ARCH="linux/$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')"
-    echo -e "${YELLOW}Local build only: ${_LOCAL_ARCH}${NC}"
+    # Local build only — always target linux/amd64 because EKS nodes are x86_64.
+    # On Apple Silicon, Docker Desktop uses QEMU emulation automatically.
+    echo -e "${YELLOW}Local build only: linux/amd64 (EKS target)${NC}"
     docker buildx build \
-        --platform "${_LOCAL_ARCH}" \
+        --platform linux/amd64 \
         --build-arg AGENT_VERSION="${VERSION}" \
         -t "${IMAGE_NAME}:${VERSION}" \
         --load \

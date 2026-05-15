@@ -73,6 +73,95 @@ async def poll_actions(
         )
 
 
+@router.get("/active")
+async def get_active_actions(
+    cluster_id: str = Query(..., description="Cluster ID"),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Returns PENDING and PICKED_UP agent_actions for a cluster, plus a recent
+    window of COMPLETED/FAILED actions so the UI can show the full picture.
+    Frontend polls this at /api/v1/actions/active?cluster_id=...
+    """
+    from backend.models.rebalancing_action import RebalancingAction
+    from sqlalchemy import or_
+
+    in_flight = (
+        db.query(AgentAction)
+        .filter(
+            AgentAction.cluster_id == cluster_id,
+            AgentAction.status.in_([AgentActionStatus.PENDING, AgentActionStatus.PICKED_UP]),
+        )
+        .order_by(AgentAction.created_at.desc())
+        .limit(50)
+        .all()
+    )
+
+    recent_terminal = (
+        db.query(AgentAction)
+        .filter(
+            AgentAction.cluster_id == cluster_id,
+            AgentAction.status.in_([AgentActionStatus.COMPLETED, AgentActionStatus.FAILED]),
+        )
+        .order_by(AgentAction.created_at.desc())
+        .limit(20)
+        .all()
+    )
+
+    def _serialize_action(a: AgentAction) -> dict:
+        result = a.result or {}
+        return {
+            "id": str(a.id),
+            "action_type": a.action_type.value,
+            "status": a.status.value,
+            "payload": a.payload or {},
+            "retry_count": getattr(a, "retry_count", 0),
+            "created_at": a.created_at.isoformat() if a.created_at else None,
+            "picked_up_at": a.picked_up_at.isoformat() if a.picked_up_at else None,
+            "completed_at": a.completed_at.isoformat() if a.completed_at else None,
+            "observed": result.get("observed", False),
+            "expected": result.get("expected"),
+            "verified_at": result.get("verified_at"),
+            "failure_reason": result.get("failure_reason"),
+        }
+
+    rebalancing_actions = (
+        db.query(RebalancingAction)
+        .filter(
+            RebalancingAction.cluster_id == cluster_id,
+            RebalancingAction.status == "in_progress",
+        )
+        .order_by(RebalancingAction.created_at.desc())
+        .limit(20)
+        .all()
+    )
+
+    def _serialize_ra(ra: RebalancingAction) -> dict:
+        return {
+            "id": str(ra.id),
+            "trigger": ra.trigger,
+            "source_pool": ra.source_pool,
+            "target_pool": ra.target_pool,
+            "current_state": ra.current_state or ra.status,
+            "status": ra.status,
+            "started_at": ra.started_at.isoformat() if ra.started_at else None,
+        }
+
+    all_agent_actions = [_serialize_action(a) for a in in_flight + recent_terminal]
+    active_count = len(in_flight)
+
+    return {
+        "agent_actions": all_agent_actions,
+        "rebalancing_actions": [_serialize_ra(ra) for ra in rebalancing_actions],
+        "cluster_state": {
+            "active_count": active_count,
+            "batch_limit": 10,
+            "mutex": False,
+        },
+    }
+
+
 @router.post("/{action_id}/result")
 async def update_action_result(
     action_id: str,

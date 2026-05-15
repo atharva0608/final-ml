@@ -605,7 +605,7 @@ const PoolRankings = ({ clusterId, initialTemplateId = null }) => {
                     {(() => {
                         const totalNodes = nodeRecommendations.length;
                         const statelessNodes = nodeRecommendations.filter(r => r.workload_type === 'stateless').length;
-                        const atRiskNodes = nodeRecommendations.filter(r => r.risk_score > 0.60).length;
+                        const atRiskNodes = nodeRecommendations.filter(r => r.risk_score > 0.75 * (dynamicRiskCeiling || 0.25)).length;
                         const spotNodes = nodeRecommendations.filter(r => r.lifecycle === 'spot').length;
                         const s2sCandidates = nodeRecommendations.filter(r => r.s2s_candidate).length;
                         // Realized savings: spot nodes already saving (od_cost - current_cost) × 730h/mo
@@ -1122,15 +1122,39 @@ const PoolRankings = ({ clusterId, initialTemplateId = null }) => {
                                                                 const barColor = isBreaching ? 'bg-red-500' : isWarning ? 'bg-amber-400' : 'bg-emerald-400';
                                                                 const textColor = isBreaching ? 'text-red-600' : isWarning ? 'text-amber-600' : 'text-emerald-600';
                                                                 const glowClass = isBreaching ? 'shadow-[0_0_8px_rgba(239,68,68,0.5)]' : '';
+                                                                // C10: global context via client-side join with pool rankings data
+                                                                const _curPk = `${rec.current_type}:${rec.az || rec.current_az || ''}`;
+                                                                const _poolCtx = pools.find(p => `${p.instance_type}:${p.az}` === _curPk);
+                                                                const _riskSrc = _poolCtx?.risk_source;
+                                                                const _gBreadth = _poolCtx?.global_itn_breadth ?? 0;
+                                                                const _gSev = _poolCtx?.global_itn_severity;
+                                                                const _gConf = _poolCtx?.global_confidence ?? 0;
+                                                                const _showGlobalBadge = (_riskSrc === 'global' || _riskSrc === 'blend') && _gBreadth > 0;
+                                                                const _sevLabel = _gSev === 'actual_termination' ? 'terminations' : _gSev === 'itn_warning' ? 'ITN notices' : 'rebalance notices';
+                                                                const _globalTip = _gBreadth >= 2
+                                                                    ? `Risk elevated globally — ${_gBreadth} other cluster${_gBreadth !== 1 ? 's' : ''} experienced ${_sevLabel} on this pool in the last 24h`
+                                                                    : `Global risk data present (${(_gConf * 100).toFixed(0)}% confidence)`;
                                                                 return (
                                                                     <div className="flex flex-col gap-0.5 min-w-[100px] mt-1">
                                                                         <div className="flex items-center justify-between">
                                                                             <span className={`text-[10px] font-bold ${textColor}`}>
                                                                                 {(riskVal * 100).toFixed(0)}%
                                                                             </span>
-                                                                            <span className="text-[9px] text-slate-400">
-                                                                                / {(ceil * 100).toFixed(0)}%
-                                                                            </span>
+                                                                            <div className="flex items-center gap-1">
+                                                                                {_showGlobalBadge && (
+                                                                                    <div className="relative group">
+                                                                                        <span className={`inline-flex items-center justify-center w-3 h-3 rounded-full text-[8px] font-bold cursor-help ${
+                                                                                            _riskSrc === 'global' ? 'bg-indigo-500 text-white' : 'bg-amber-400 text-white'
+                                                                                        }`}>{_riskSrc === 'global' ? 'G' : '~'}</span>
+                                                                                        <div className="absolute bottom-full right-0 mb-1.5 hidden group-hover:block z-50 w-56 bg-slate-900 text-white text-[10px] rounded-lg px-3 py-2 shadow-xl leading-relaxed pointer-events-none">
+                                                                                            {_globalTip}
+                                                                                        </div>
+                                                                                    </div>
+                                                                                )}
+                                                                                <span className="text-[9px] text-slate-400">
+                                                                                    / {(ceil * 100).toFixed(0)}%
+                                                                                </span>
+                                                                            </div>
                                                                         </div>
                                                                         <div className={`w-full h-1.5 rounded-full bg-slate-100 overflow-hidden ${glowClass}`}>
                                                                             <div
@@ -1276,7 +1300,36 @@ const PoolRankings = ({ clusterId, initialTemplateId = null }) => {
                                                         <td className="px-4 py-2.5 text-xs text-gray-500">{alt.architecture || '—'}</td>
                                                         <td className="px-4 py-2.5 text-right font-mono text-gray-700">${(alt.spot_price || 0).toFixed(4)}</td>
                                                         <td className={`px-4 py-2.5 text-right font-semibold ${alt.saving_pct != null && alt.saving_pct < 0 ? 'text-red-500' : 'text-green-600'}`}>{alt.saving_pct != null ? `${alt.saving_pct}%` : '—'}</td>
-                                                        <td className="px-4 py-2.5 text-center"><span className={`px-2 py-0.5 rounded text-xs font-semibold ${riskColor}`}>{riskLabel}</span></td>
+                                                        <td className="px-4 py-2.5 text-center">
+                                                            {/* C10: global risk tooltip on Risk column */}
+                                                            {(() => {
+                                                                const _badge = <span className={`px-2 py-0.5 rounded text-xs font-semibold ${riskColor}`}>{riskLabel}</span>;
+                                                                const _src = alt.risk_source;
+                                                                const _breadth = alt.global_itn_breadth ?? 0;
+                                                                const _sev = alt.global_itn_severity;
+                                                                const _conf = alt.global_confidence ?? 0;
+                                                                if ((_src === 'global' || _src === 'blend') && _breadth > 0) {
+                                                                    const _sevLabel = _sev === 'actual_termination' ? 'terminations' : _sev === 'itn_warning' ? 'ITN notices' : 'rebalance notices';
+                                                                    const _tipText = _breadth >= 2
+                                                                        ? `Risk elevated globally — ${_breadth} other cluster${_breadth !== 1 ? 's' : ''} experienced ${_sevLabel} on this pool in the last 24h (${(_conf * 100).toFixed(0)}% confidence)`
+                                                                        : `Global risk data present — ${(_conf * 100).toFixed(0)}% confidence`;
+                                                                    return (
+                                                                        <div className="relative group inline-flex items-center gap-1">
+                                                                            {_badge}
+                                                                            <span className={`inline-flex items-center justify-center w-3.5 h-3.5 rounded-full text-[9px] font-bold cursor-help ${
+                                                                                _src === 'global' ? 'bg-indigo-500 text-white' : 'bg-amber-400 text-white'
+                                                                            }`} title={_tipText}>
+                                                                                {_src === 'global' ? 'G' : '~'}
+                                                                            </span>
+                                                                            <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 hidden group-hover:block z-50 w-64 bg-slate-900 text-white text-[10px] rounded-lg px-3 py-2 shadow-xl leading-relaxed pointer-events-none">
+                                                                                {_tipText}
+                                                                            </div>
+                                                                        </div>
+                                                                    );
+                                                                }
+                                                                return _badge;
+                                                            })()}
+                                                        </td>
                                                         <td className="px-4 py-2.5 text-right font-bold text-indigo-600">{(alt.unified_score != null ? alt.unified_score : alt.expected_value != null ? alt.expected_value : (alt.ml_score || 0)).toFixed(3)}</td>
                                                         <td className="px-4 py-2.5 text-center">
                                                             {_isWouldLaunch

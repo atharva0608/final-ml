@@ -29,6 +29,9 @@ def inject_agent_task(self, cluster_id: str):
         if not account:
             logger.error(f"[WORK-AGENT] Account for cluster {cluster_id} not found")
             return {"status": "error", "message": "Account not found"}
+        if not account.role_arn:
+            logger.error(f"[WORK-AGENT] Account {account.id} has no role_arn — cannot assume cross-account role")
+            return {"status": "error", "message": "AWS cross-account role ARN not configured for this account"}
             
         # Inject agent
         injector = AgentInjectorService(db)

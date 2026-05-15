@@ -1,6 +1,20 @@
 import React, { useState, useEffect } from 'react';
-import { decisionEngineAPI } from '../../services/api';
-import { FiLayers, FiCheckCircle, FiShield, FiAlertTriangle, FiXCircle } from 'react-icons/fi';
+import { decisionEngineAPI, workloadClassificationAPI } from '../../services/api';
+import { FiLayers, FiCheckCircle, FiShield, FiAlertTriangle, FiXCircle, FiExternalLink } from 'react-icons/fi';
+import { useNavigate } from 'react-router-dom';
+
+const TIER_COLORS = {
+    Platinum: { bg: '#fef2f2', text: '#991b1b', border: '#fecaca' },
+    Gold:     { bg: '#fffbeb', text: '#92400e', border: '#fde68a' },
+    Silver:   { bg: '#eff6ff', text: '#1e40af', border: '#bfdbfe' },
+    Bronze:   { bg: '#f0fdf4', text: '#166534', border: '#bbf7d0' },
+};
+
+const CONFIDENCE_COLORS = {
+    CONFIRMED:   { color: '#16a34a' },
+    PROVISIONAL: { color: '#d97706' },
+    DRAFT:       { color: '#6b7280' },
+};
 
 const NODE_STATUS_CONFIG = {
     STATELESS_ELIGIBLE: {
@@ -33,6 +47,8 @@ const WorkloadClassificationPanel = ({ clusterId }) => {
     const [classification, setClassification] = useState(null);
     const [loading, setLoading] = useState(true);
     const [expandedNodes, setExpandedNodes] = useState(false);
+    const [wieSummary, setWieSummary] = useState(null);
+    const navigate = useNavigate();
 
     useEffect(() => {
         const fetchClassification = async () => {
@@ -46,8 +62,21 @@ const WorkloadClassificationPanel = ({ clusterId }) => {
             }
         };
 
+        const fetchWieSummary = async () => {
+            try {
+                const res = await workloadClassificationAPI.getSummary(clusterId);
+                setWieSummary(res.data);
+            } catch {
+                // Non-fatal — engine may not have run yet
+            }
+        };
+
         fetchClassification();
-        const interval = setInterval(fetchClassification, 60000); // Every minute
+        fetchWieSummary();
+        const interval = setInterval(() => {
+            fetchClassification();
+            fetchWieSummary();
+        }, 60000);
         return () => clearInterval(interval);
     }, [clusterId]);
 
@@ -174,6 +203,83 @@ const WorkloadClassificationPanel = ({ clusterId }) => {
                     <p className="text-sm text-red-800">
                         <strong>Warning:</strong> No eligible nodes for optimization. All nodes are protected by stateful workloads or system constraints.
                     </p>
+                </div>
+            )}
+
+            {/* Workload Intelligence v4.3 Section */}
+            {wieSummary && (
+                <div className="mt-4 border-t border-gray-200 pt-4">
+                    <div className="flex items-center justify-between mb-3">
+                        <h4 className="text-sm font-semibold text-gray-700">
+                            Workload Intelligence <span className="text-xs text-gray-400 font-normal ml-1">v4.3</span>
+                        </h4>
+                        <button
+                            onClick={() => navigate('/right-sizing?tab=workload')}
+                            className="text-xs text-indigo-600 hover:text-indigo-700 font-medium flex items-center gap-1"
+                        >
+                            View Full Classification
+                            <FiExternalLink size={11} />
+                        </button>
+                    </div>
+
+                    {/* Tier mini-badges */}
+                    <div className="flex gap-2 flex-wrap mb-3">
+                        {['Platinum', 'Gold', 'Silver', 'Bronze'].map(tier => {
+                            const c = TIER_COLORS[tier];
+                            const count = wieSummary.tier_distribution?.[tier] || 0;
+                            return (
+                                <div key={tier} style={{
+                                    padding: '4px 10px',
+                                    background: c.bg,
+                                    border: `1px solid ${c.border}`,
+                                    borderRadius: 99,
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: 5,
+                                }}>
+                                    <span style={{ fontSize: 11, fontWeight: 700, color: c.text }}>{count}</span>
+                                    <span style={{ fontSize: 10, color: c.text }}>{tier}</span>
+                                </div>
+                            );
+                        })}
+                    </div>
+
+                    {/* Confidence distribution bar */}
+                    {(() => {
+                        const total = wieSummary.total_workloads || 1;
+                        const confDist = wieSummary.confidence_distribution || {};
+                        return (
+                            <div>
+                                <div className="text-xs text-gray-500 mb-1">Confidence</div>
+                                <div className="flex rounded overflow-hidden h-2 bg-gray-100">
+                                    {['CONFIRMED', 'PROVISIONAL', 'DRAFT'].map(state => {
+                                        const count = confDist[state] || 0;
+                                        const pct = Math.round((count / total) * 100);
+                                        const c = CONFIDENCE_COLORS[state];
+                                        return pct > 0 ? (
+                                            <div
+                                                key={state}
+                                                style={{ width: `${pct}%`, background: c.color }}
+                                                title={`${state}: ${count} (${pct}%)`}
+                                            />
+                                        ) : null;
+                                    })}
+                                </div>
+                                <div className="flex gap-3 mt-1">
+                                    {['CONFIRMED', 'PROVISIONAL', 'DRAFT'].map(state => {
+                                        const count = confDist[state] || 0;
+                                        if (!count) return null;
+                                        const c = CONFIDENCE_COLORS[state];
+                                        return (
+                                            <span key={state} style={{ fontSize: 10, color: c.color, fontWeight: 600 }}>
+                                                {state}: {count}
+                                            </span>
+                                        );
+                                    })}
+                                </div>
+                            </div>
+                        );
+                    })()}
                 </div>
             )}
         </div>

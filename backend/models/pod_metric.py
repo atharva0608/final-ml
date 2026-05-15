@@ -54,6 +54,10 @@ class PodMetric(Base):
     cpu_utilization_pct = Column(Float, nullable=True)             # usage / request * 100
     memory_utilization_pct = Column(Float, nullable=True)          # usage / request * 100
 
+    # Pod phase and start time (T-12 — migration 20260427_pod_metrics_phase_starttime)
+    phase = Column(String(20), nullable=True, index=True)
+    start_time = Column(DateTime, nullable=True)
+
     # Container count
     container_count = Column(Integer, nullable=False, default=1)
 
@@ -79,6 +83,9 @@ class PodMetric(Base):
 
         # Unique pod queries (latest metric for a pod)
         Index("idx_pod_metric_pod_time", "cluster_id", "namespace", "pod_name", "timestamp"),
+
+        # Phase filtering (T-12)
+        Index("idx_pod_metric_phase", "cluster_id", "phase"),
     )
 
     def __repr__(self):

@@ -22,24 +22,48 @@ logger = logging.getLogger(__name__)
 # N3 fix: Expected agent version — log warning on mismatch during registration.
 EXPECTED_AGENT_VERSION = "1.1.6"
 
-# BUG-10 fix: Agent endpoint authentication.
-# AGENT_API_KEY is the same value as the agent's API_KEY env var.
-# The agent already sends Authorization: Bearer {API_KEY} on all HTTP calls.
-AGENT_API_KEY = os.getenv("AGENT_API_KEY")
+def verify_agent_token(
+    authorization: Optional[str] = Header(None),
+    db: Session = Depends(get_db),
+) -> Cluster:
+    """
+    Validate the agent's Bearer token.
 
+    Permanent fix: validates per-cluster via Cluster.api_key stored in the DB.
+    This removes the dependency on the AGENT_API_KEY env var, which was read
+    once at module-load time and caused 500 errors whenever the env var was
+    absent or mismatched with the deployed cluster's api_key.
 
-def verify_agent_token(authorization: Optional[str] = Header(None)):
-    """Validate the agent's Bearer token against AGENT_API_KEY."""
-    if not AGENT_API_KEY:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="AGENT_API_KEY not configured on backend",
-        )
-    if authorization != f"Bearer {AGENT_API_KEY}":
+    Falls back to env-var validation only when no cluster has the submitted key
+    (supports legacy single-key deployments).
+    """
+    if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid agent token",
+            detail="Missing or malformed Authorization header",
         )
+    api_key = authorization[len("Bearer "):].strip()
+    if not api_key:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Empty bearer token",
+        )
+
+    # Primary path: per-cluster DB lookup (matches api/agent_routes.py behaviour).
+    # This is the authoritative check — each cluster stores its own api_key.
+    cluster = db.query(Cluster).filter(Cluster.api_key == api_key).first()
+    if cluster:
+        return cluster
+
+    # Fallback: env-var global key (legacy single-key deployments).
+    _env_key = os.getenv("AGENT_API_KEY")
+    if _env_key and api_key == _env_key:
+        return None  # token valid but cluster lookup by key skipped
+
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Invalid agent token",
+    )
 
 
 @router.get("/discover-url")
@@ -139,8 +163,21 @@ async def register_agent(
         else:
             # Update existing cluster heartbeat
             cluster.last_heartbeat = datetime.utcnow()
+
+            # Detect agent reinstall: if agent_installed was not "Y",
+            # this is a fresh install — reset all migration toggles to OFF.
+            _was_installed = getattr(cluster, 'agent_installed', None) == 'Y'
             cluster.agent_installed = "Y"
             cluster.status = ClusterStatus.ACTIVE
+
+            if not _was_installed:
+                logger.info(f"Agent reinstall detected for cluster {cluster_id} — resetting migration toggles to OFF")
+                cluster.auto_rebalance_enabled = False
+                cluster.rightsizing_enabled = False
+                # Also reset ClusterOptimizationSettings if they exist
+                if hasattr(cluster, 'optimization_settings') and cluster.optimization_settings:
+                    cluster.optimization_settings.auto_rebalance_enabled = False
+                    cluster.optimization_settings.auto_rightsizing_enabled = False
 
         db.commit()
 
@@ -225,7 +262,13 @@ async def action_result(action_id: str, payload: Dict[str, Any], _: None = Depen
                 _cluster = db.query(Cluster).filter(Cluster.id == agent_action.cluster_id).first()
                 if _cluster:
                     _cluster.karpenter_mode = None
-                    logger.info(f"Cleared karpenter_mode for cluster {agent_action.cluster_id}")
+                    # Karpenter removed — force-disable auto-rebalancing & rightsizing
+                    _cluster.auto_rebalance_enabled = False
+                    _cluster.rightsizing_enabled = False
+                    if hasattr(_cluster, 'optimization_settings') and _cluster.optimization_settings:
+                        _cluster.optimization_settings.auto_rebalance_enabled = False
+                        _cluster.optimization_settings.auto_rightsizing_enabled = False
+                    logger.info(f"Cleared karpenter_mode and disabled migration toggles for cluster {agent_action.cluster_id}")
 
         db.commit()
         # Clear heartbeat key so the rebalancer picks it up immediately

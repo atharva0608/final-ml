@@ -61,6 +61,7 @@ spec:
     spec:
       serviceAccountName: spot-agent-sa
       hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
       volumes:
       - name: proc
         hostPath:

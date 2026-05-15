@@ -59,6 +59,11 @@ class Instance(Base):
     # Standby flag: True = hot standby node (cordoned, ready for emergency activation)
     standby = Column(Boolean, nullable=False, default=False, index=True)
 
+    # Node ownership type: bootstrap | legacy_mng | karpenter_dynamic | unknown
+    # Populated by _sync_instance_state_from_k8s() on every agent heartbeat cycle.
+    # Controls which optimization engines are allowed to drain this node.
+    node_owner_type = Column(String(32), nullable=True, default="unknown", index=True)
+
     # Timestamps
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)

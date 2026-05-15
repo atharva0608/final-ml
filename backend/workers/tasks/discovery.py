@@ -3,11 +3,13 @@ Discovery Worker (WORK-DISC-01)
 Scans AWS accounts for EC2 instances and EKS clusters every 5 minutes
 """
 import logging
+import re
 from typing import List, Dict, Any
 from datetime import datetime, timedelta
 from celery import Task
 from sqlalchemy.orm import Session
 import boto3
+from botocore.config import Config as BotocoreConfig
 from botocore.exceptions import ClientError
 
 from backend.workers import app
@@ -151,6 +153,43 @@ def _make_boto3_client(service: str, region: str, credentials):
     return boto3.client(service, region_name=region)
 
 
+def _sync_clock_from_signature_error(error_message: str) -> bool:
+    """
+    Parse a SignatureDoesNotMatch / Signature expired error, extract the
+    server-side UTC time, and set the system clock to match.
+    Returns True if the clock was adjusted, False otherwise.
+
+    Error format (AWS STS):
+    "Signature expired: 20260510T223057Z is now earlier than 20260510T224558Z - 15 min."
+    We use the second timestamp (the server's view of "now") to sync.
+    """
+    try:
+        import subprocess
+        # Try to extract the server-side UTC datetime from the error string.
+        # Pattern: two ISO8601 compact datetimes, take the second one (server now).
+        matches = re.findall(r'(\d{8}T\d{6}Z)', error_message)
+        if len(matches) >= 2:
+            server_ts = matches[1]  # e.g. "20260510T224558Z"
+            # Convert to date -s format: "2026-05-10 22:45:58"
+            formatted = (
+                f"{server_ts[0:4]}-{server_ts[4:6]}-{server_ts[6:8]} "
+                f"{server_ts[9:11]}:{server_ts[11:13]}:{server_ts[13:15]}"
+            )
+            result = subprocess.run(
+                ["date", "-s", formatted, "-u"],
+                capture_output=True, text=True
+            )
+            if result.returncode == 0:
+                logger.warning(
+                    f"[WORK-DISC-01] Clock synced to AWS server time {formatted} UTC "
+                    "(Docker VM clock drift detected). Discovery will retry."
+                )
+                return True
+    except Exception as _ce:
+        logger.debug(f"[WORK-DISC-01] Clock sync attempt failed: {_ce}")
+    return False
+
+
 def _get_platform_sts_client(db: Session):
     """
     Get an STS client using platform credentials stored in SystemConfig.
@@ -159,21 +198,31 @@ def _get_platform_sts_client(db: Session):
     access_key = db.query(SystemConfig).filter(SystemConfig.key == "PLATFORM_AWS_ACCESS_KEY").first()
     secret_key = db.query(SystemConfig).filter(SystemConfig.key == "PLATFORM_AWS_SECRET").first()
     region = db.query(SystemConfig).filter(SystemConfig.key == "PLATFORM_AWS_REGION").first()
-    
-    region_name = region.value if region and region.value else 'us-east-1'
-    
+
+    region_name = region.value if region and region.value else 'ap-south-1'
+
+    # Adaptive retry handles transient STS errors; max_attempts=3 covers 1 clock-sync retry
+    sts_config = BotocoreConfig(
+        retries={"max_attempts": 3, "mode": "standard"},
+        region_name=region_name,
+    )
+
+    kwargs = {
+        "region_name": region_name,
+        "config": sts_config,
+        # Regional endpoint avoids global-endpoint routing issues
+        "endpoint_url": f"https://sts.{region_name}.amazonaws.com",
+    }
     if access_key and secret_key and access_key.value and secret_key.value:
         logger.info("[WORK-DISC-01] Using platform credentials from SystemConfig")
-        return boto3.client(
-            'sts',
-            aws_access_key_id=access_key.value,
-            aws_secret_access_key=secret_key.value,
-            region_name=region_name
-        )
+        kwargs["aws_access_key_id"] = access_key.value
+        kwargs["aws_secret_access_key"] = secret_key.value
     else:
-        # Fallback to environment variables / instance profile
-        logger.warning("[WORK-DISC-01] Platform credentials not found in SystemConfig, falling back to env/instance profile")
-        return boto3.client('sts', region_name=region_name)
+        logger.warning(
+            "[WORK-DISC-01] Platform credentials not found in SystemConfig, "
+            "falling back to env/instance profile"
+        )
+    return boto3.client("sts", **kwargs)
 
 
 
@@ -333,7 +382,26 @@ def scan_account(account: Account, db: Session, redis_client) -> Dict[str, int]:
             logger.info(f"[WORK-DISC-01] Successfully assumed role for account {account.aws_account_id}")
         except ClientError as assume_err:
             error_code = assume_err.response['Error']['Code']
-            if error_code in ('AccessDenied', 'AccessDeniedException'):
+            error_msg = str(assume_err)
+            # ── Clock-skew recovery: sync system clock from AWS error and retry once ──
+            if error_code == 'SignatureDoesNotMatch' and 'Signature expired' in error_msg:
+                logger.warning(
+                    f"[WORK-DISC-01] SignatureExpired for account {account.aws_account_id} — "
+                    "likely Docker VM clock drift. Attempting clock sync + retry."
+                )
+                synced = _sync_clock_from_signature_error(error_msg)
+                if synced:
+                    # Re-create client with fresh signing time and retry once
+                    sts_client = _get_platform_sts_client(db)
+                    assumed_role = sts_client.assume_role(**assume_kwargs)
+                    credentials = assumed_role['Credentials']
+                    logger.info(
+                        f"[WORK-DISC-01] AssumeRole succeeded after clock sync for "
+                        f"account {account.aws_account_id}"
+                    )
+                else:
+                    raise
+            elif error_code in ('AccessDenied', 'AccessDeniedException'):
                 # Check if same-account scenario — if so, fall back to env credentials directly
                 try:
                     caller = sts_client.get_caller_identity()
@@ -566,16 +634,14 @@ def scan_eks_clusters(account: Account, eks_client, db: Session, credentials: Di
                 ).first()
 
             if existing:
-                # If cluster was dismissed earlier, auto-revive when it is seen in AWS again.
+                # Dismissed clusters: cluster is back in AWS — auto-revive it.
                 if getattr(existing, 'is_dismissed', False):
                     existing.is_dismissed = False
-                    if existing.agent_installed == 'Y' and existing.last_heartbeat:
-                        existing.status = ClusterStatus.ACTIVE
-                    else:
-                        existing.status = ClusterStatus.DISCOVERED
+                    existing.status = ClusterStatus.DISCOVERED
+                    existing.updated_at = datetime.utcnow()
                     logger.info(
-                        f"[WORK-DISC-01] Revived dismissed cluster {cluster_name} "
-                        f"({existing.id}) after AWS rediscovery"
+                        f"[WORK-DISC-01] Cluster {cluster_name} was dismissed but is back in AWS "
+                        f"— auto-reviving."
                     )
 
                 # If cluster was DEGRADED (missing from AWS previously), restore it
@@ -613,7 +679,7 @@ def scan_eks_clusters(account: Account, eks_client, db: Session, credentials: Di
                 if should_update_cost:
                     existing.last_cost_update = datetime.utcnow()
             else:
-                # If this ARN was previously dismissed, revive the same row.
+                # If this ARN was previously dismissed, revive it since it's back in AWS.
                 _dismissed = db.query(Cluster).filter(
                     Cluster.account_id == account.id,
                     Cluster.arn == cluster_data.get('arn'),
@@ -621,33 +687,14 @@ def scan_eks_clusters(account: Account, eks_client, db: Session, credentials: Di
                 ).first()
                 if _dismissed:
                     _dismissed.is_dismissed = False
-                    _dismissed.name = cluster_name
+                    _dismissed.status = ClusterStatus.DISCOVERED
                     _dismissed.version = cluster_data.get('version')
                     _dismissed.endpoint = cluster_data.get('endpoint')
                     _dismissed.ca_data = cluster_data.get('certificateAuthority', {}).get('data')
-                    _dismissed.region = (
-                        cluster_data.get('arn').split(':')[3]
-                        if cluster_data.get('arn') else (account.region or 'us-east-1')
-                    )
-                    _dismissed.monthly_cost = int(total_cost)
-                    _dismissed.estimated_savings = int(potential_savings)
-                    _dismissed.potential_savings_monthly = teaser_data['potential_savings_monthly']
-                    _dismissed.on_demand_node_count = teaser_data['on_demand_node_count']
-                    _dismissed.spot_count = teaser_data['spot_node_count']
-                    _dismissed.inventory_summary = teaser_data['inventory_summary']
-                    _dismissed.last_assessed = datetime.utcnow()
                     _dismissed.updated_at = datetime.utcnow()
-                    _dismissed.status = (
-                        ClusterStatus.ACTIVE
-                        if _dismissed.agent_installed == 'Y' and _dismissed.last_heartbeat
-                        else ClusterStatus.DISCOVERED
-                    )
-                    if should_update_cost:
-                        _dismissed.last_cost_update = datetime.utcnow()
-                    existing = _dismissed
                     logger.info(
-                        f"[WORK-DISC-01] Revived previously dismissed ARN for "
-                        f"{cluster_name} ({_dismissed.id})"
+                        f"[WORK-DISC-01] Dismissed cluster {cluster_name} ({_dismissed.id}) is back "
+                        f"in AWS — auto-reviving."
                     )
                 else:
 
@@ -687,8 +734,8 @@ def scan_eks_clusters(account: Account, eks_client, db: Session, credentials: Di
             try:
                 from backend.core.redis_client import get_redis_client as _get_disc_redis
                 _disc_redis = _get_disc_redis()
-                if _disc_redis:
-                    _synced_id = existing.id if existing else new_cluster.id
+                _synced_id = (existing.id if existing else None) or (new_cluster.id if 'new_cluster' in dir() else None)
+                if _disc_redis and _synced_id:
                     _disc_redis.setex(
                         f"spot:discovery_last_updated:{_synced_id}",
                         600,
@@ -718,8 +765,14 @@ def _cleanup_deleted_clusters(account: Account, db: Session, all_discovered_name
     clusters_to_degrade = []
 
     for db_cluster in db_clusters:
-        # Skip dismissed clusters — user already removed them
+        # Dismissed clusters not found in AWS → hard-delete all data
         if getattr(db_cluster, 'is_dismissed', False):
+            if db_cluster.name not in all_discovered_names:
+                clusters_to_delete.append(db_cluster)
+                logger.info(
+                    f"[WORK-DISC-01] Dismissed cluster {db_cluster.name} not found in AWS "
+                    f"— hard-deleting from DB."
+                )
             continue
 
         # Skip clusters that were found in AWS
@@ -756,16 +809,26 @@ def _cleanup_deleted_clusters(account: Account, db: Session, all_discovered_name
         clusters_to_delete.append(db_cluster)
         logger.info(f"[WORK-DISC-01] Non-agent cluster {db_cluster.name} not in AWS — scheduling deletion.")
 
-    # Apply DEGRADED status
+    # Apply DEGRADED status and clear stale K8s data
     for cluster in clusters_to_degrade:
         cluster.status = ClusterStatus.DEGRADED
+        cluster.agent_installed = 'N'
         cluster.updated_at = datetime.utcnow()
-        logger.info(f"[WORK-DISC-01] Set cluster {cluster.name} to DEGRADED")
+        # The EKS cluster no longer exists — delete all instance records so the
+        # UI doesn't show ghost nodes. Pod metrics are kept for historical analysis.
+        from backend.models.instance import Instance as _Inst_deg
+        _deleted_inst = db.query(_Inst_deg).filter(_Inst_deg.cluster_id == cluster.id).delete(synchronize_session=False)
+        logger.info(
+            f"[WORK-DISC-01] Set cluster {cluster.name} to DEGRADED, "
+            f"cleared {_deleted_inst} stale instance(s)."
+        )
 
     # Delete non-agent orphan clusters
     for cluster in clusters_to_delete:
         from backend.models.instance import Instance
-        db.query(Instance).filter(Instance.cluster_id == cluster.id).delete()
+        from backend.models.cluster_metric import ClusterMetric
+        db.query(Instance).filter(Instance.cluster_id == cluster.id).delete(synchronize_session=False)
+        db.query(ClusterMetric).filter(ClusterMetric.cluster_id == cluster.id).delete(synchronize_session=False)
         db.delete(cluster)
         logger.info(f"[WORK-DISC-01] Removed non-agent cluster: {cluster.name}")
 
@@ -828,6 +891,8 @@ def scan_ec2_instances(account: Account, ec2_client, db: Session) -> int:
                     tags = instance_data.get('Tags', [])
                     cluster_name = None
                     launched_by = None
+                    _karpenter_nodepool = None      # karpenter.sh/nodepool tag value
+                    _karpenter_capacity_type = None  # karpenter.sh/capacity-type tag value
                     for tag in tags:
                         key = tag.get('Key', '')
                         val = tag.get('Value', '')
@@ -838,8 +903,28 @@ def scan_ec2_instances(account: Account, ec2_client, db: Session) -> int:
                             cluster_name = key.replace('kubernetes.io/cluster/', '')
                         elif key in ('spot-optimizer:launched-by', 'spot-optimizer/launched-by'):
                             launched_by = val
+                        elif key == 'karpenter.sh/nodepool':
+                            _karpenter_nodepool = val
+                        elif key == 'karpenter.sh/capacity-type':
+                            _karpenter_capacity_type = val
                             
                         # If we have both, we can break early, but let's just loop through all tags (usually <10)
+
+                    # Karpenter authoritative lifecycle override:
+                    # If karpenter.sh/nodepool tag is present, this node is Karpenter-managed.
+                    # karpenter.sh/capacity-type (if present) is MORE reliable than InstanceLifecycle
+                    # during AWS eventual-consistency windows (especially right after launch).
+                    # Fallback: infer from nodepool name (spot-general→SPOT, od-general→ON_DEMAND).
+                    if _karpenter_nodepool is not None:
+                        if _karpenter_capacity_type == 'spot':
+                            lifecycle = InstanceLifecycle.SPOT
+                        elif _karpenter_capacity_type == 'on-demand':
+                            lifecycle = InstanceLifecycle.ON_DEMAND
+                        elif 'spot' in _karpenter_nodepool.lower():
+                            lifecycle = InstanceLifecycle.SPOT
+                        elif 'od' in _karpenter_nodepool.lower() or 'ondemand' in _karpenter_nodepool.lower():
+                            lifecycle = InstanceLifecycle.ON_DEMAND
+                        # else: keep AWS InstanceLifecycle field as-is
 
                     cluster_id = None
                     if cluster_name:
@@ -883,6 +968,17 @@ def scan_ec2_instances(account: Account, ec2_client, db: Session) -> int:
                                     lifecycle = InstanceLifecycle.SPOT
                             except Exception:
                                 pass
+                        # Skip RC3 for Karpenter-managed nodes — lifecycle is already
+                        # authoritative from the karpenter.sh/capacity-type tag above.
+                        if _karpenter_nodepool is not None:
+                            existing.lifecycle = lifecycle
+                            existing.az = az
+                            existing.state = 'running'
+                            existing.price = hourly_price
+                            existing.launched_by = launched_by
+                            existing.updated_at = datetime.utcnow()
+                            instance_count += 1
+                            continue  # skip RC3 streak logic entirely
                         #
                         # Counter key: "rc3:od_streak:{instance_id}"  (int, TTL=30 min)
                         _rc3_key = f"rc3:od_streak:{instance_id}"
@@ -1014,9 +1110,12 @@ def scan_ec2_instances(account: Account, ec2_client, db: Session) -> int:
                 f"[WORK-DISC-01] Skipping stale-mark (instances={instance_count}, region={_scan_region or 'unknown'})"
             )
 
-        # ── Clean up terminated instances older than 30 min ───────────────────
+        # ── Clean up terminated instances older than 45 min ───────────────────
+        # 45 min retention (was 5 min) gives Karpenter time to complete async
+        # replacement before the source node record is deleted, preventing
+        # the AR from re-queuing the same node in the next discovery cycle.
         try:
-            _cutoff = datetime.utcnow() - timedelta(minutes=5)
+            _cutoff = datetime.utcnow() - timedelta(minutes=45)
             _terminated = db.query(Instance).filter(
                 Instance.account_id == account.id,
                 Instance.state == 'terminated',
@@ -1026,9 +1125,36 @@ def scan_ec2_instances(account: Account, ec2_client, db: Session) -> int:
                 for _t in _terminated:
                     db.delete(_t)
                 db.commit()
-                logger.info(f"[WORK-DISC-01] Deleted {len(_terminated)} terminated instance(s) (>30min old)")
+                logger.info(f"[WORK-DISC-01] Deleted {len(_terminated)} terminated instance(s) (>45min old)")
         except Exception as _cleanup_err:
             logger.warning(f"[WORK-DISC-01] Terminated instance cleanup failed: {_cleanup_err}")
+
+        # ── az=NULL stale-mark: catch Redis-seeded synthetic instances ─────────
+        # The region-scoped stale-mark above uses az LIKE 'region%' so instances
+        # with az=NULL (Redis-seeded synthetics) are invisible to it, creating
+        # immortal ghost nodes.  This secondary pass marks all null-AZ instances
+        # for this account that were NOT seen in this scan as terminated.
+        if _seen_instance_ids and _scan_region:
+            try:
+                from sqlalchemy import or_ as _or_null
+                _null_az_qs = db.query(Instance).filter(
+                    Instance.account_id == account.id,
+                    Instance.state == 'running',
+                    Instance.az.is_(None),
+                ).with_for_update().all()
+                _null_stale = 0
+                for _ns in _null_az_qs:
+                    if _ns.instance_id and _ns.instance_id not in _seen_instance_ids:
+                        _ns.state = 'terminated'
+                        _ns.updated_at = datetime.utcnow()
+                        _null_stale += 1
+                if _null_stale:
+                    db.commit()
+                    logger.info(
+                        f"[WORK-DISC-01] Marked {_null_stale} null-AZ ghost instance(s) as terminated"
+                    )
+            except Exception as _null_err:
+                logger.warning(f"[WORK-DISC-01] Null-AZ stale-mark pass failed: {_null_err}")
 
         return instance_count
 

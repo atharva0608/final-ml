@@ -119,6 +119,13 @@ export const clusterAPI = {
     startMigration: (clusterId) => api.post(`/api/v1/clusters/${clusterId}/start-migration`),
     getMigrationStatus: (clusterId) => api.get(`/api/v1/clusters/${clusterId}/migration-status`),
     forceCompleteMigration: (clusterId) => api.post(`/api/v1/clusters/${clusterId}/force-complete-migration`),
+    // Execution data endpoints for WorkloadInventoryDashboard
+    getPods: (clusterId, limit = 200) => api.get(`/api/v1/pods?cluster_id=${clusterId}&limit=${limit}`),
+    getAgentActions: (clusterId, limit = 50) => api.get(`/api/v1/agent-actions?cluster_id=${clusterId}&limit=${limit}`),
+    getNodeClaims: (clusterId, limit = 50) => api.get(`/api/v1/nodeclaims?cluster_id=${clusterId}&limit=${limit}`),
+    // Real metrics endpoints to replace fake data
+    getPlacementMetrics: (clusterId) => api.get(`/api/v1/placement-metrics?cluster_id=${clusterId}`),
+    getRolloutStatus: (clusterId) => api.get(`/api/v1/rollout-status?cluster_id=${clusterId}`),
 };
 export const clustersAPI = clusterAPI;
 
@@ -149,6 +156,7 @@ export const adminAPI = {
     getAgentFleet: () => api.get('/api/v1/admin/agent-fleet'),
     getCircuitBreakers: () => api.get('/api/v1/admin/circuit-breakers'),
     resetCircuitBreaker: (clusterId) => api.post(`/api/v1/admin/circuit-breakers/${clusterId}/reset`),
+    getAwsPoolData: (regions) => api.get('/api/v1/admin/aws-pool-data', { params: { regions: regions.join(',') } }),
 };
 
 export const metricAPI = {
@@ -193,6 +201,13 @@ export const policyAPI = {
     togglePolicy: (id) => api.post(`/api/v1/policies/${id}/toggle`),
 };
 export const policiesAPI = policyAPI;
+
+export const placementPolicyAPI = {
+    list: (clusterId, params) => api.get(`/api/v1/placement-policy/${clusterId}/placement-policies`, { params }),
+    getSummary: (clusterId) => api.get(`/api/v1/placement-policy/${clusterId}/placement-policies/summary`),
+    getDetail: (clusterId, workloadId) => api.get(`/api/v1/placement-policy/${clusterId}/placement-policies/${encodeURIComponent(workloadId)}`),
+    generate: (clusterId) => api.post(`/api/v1/placement-policy/${clusterId}/placement-policies/generate`, {}),
+};
 
 export const hibernationAPI = {
     list: (params) => api.get('/api/v1/hibernation/schedules', { params }),
@@ -415,6 +430,23 @@ export const ascpaiAPI = {
     getSavingsVelocity: (clusterId, days = 30) => api.get('/api/v1/ascpai/savings-velocity', {
         params: { cluster_id: clusterId, days }
     }),
+
+    // Optimized Configuration (BFD-TSC recommended config)
+    getRecommendedConfig: (clusterId, { odNodeCount, spotNodeCount, bufferNodeCount } = {}) => {
+        const params = {};
+        if (odNodeCount !== undefined) params.od_node_count = odNodeCount;
+        if (spotNodeCount !== undefined) params.spot_node_count = spotNodeCount;
+        if (bufferNodeCount !== undefined) params.buffer_node_count = bufferNodeCount;
+        return api.get(`/api/v1/ascpai/clusters/${clusterId}/recommended-config`, { params });
+    },
+
+    applyRecommendedConfig: (clusterId, body) =>
+        api.post(`/api/v1/ascpai/clusters/${clusterId}/apply-recommended-config`, body),
+
+    downloadRecommendedConfigYaml: (clusterId) =>
+        api.get(`/api/v1/ascpai/clusters/${clusterId}/recommended-config/yaml`, {
+            responseType: 'blob',
+        }),
 };
 export const cleanupAPI = hygieneAPI;
 
@@ -499,6 +531,44 @@ export const karpenterAPI = {
 
     // Detect whether Karpenter is installed in-cluster
     detectKarpenter: (clusterId) => api.get(`/api/v1/karpenter/detect/${clusterId}`),
+};
+
+// ── KEDA Autoscaler Install / Uninstall ───────────────────────────────────────
+export const kedaAPI = {
+    install: (clusterId, data = {}) => api.post(`/api/v1/keda/${clusterId}/install`, data),
+    uninstall: (clusterId) => api.delete(`/api/v1/keda/${clusterId}/install`),
+    getInstallStatus: (clusterId) => api.get(`/api/v1/keda/${clusterId}/install-status`),
+    detect: (clusterId) => api.get(`/api/v1/keda/${clusterId}/detect`),
+    listScaledObjects: (clusterId) => api.get(`/api/v1/keda/${clusterId}/scaled-objects`),
+    pauseScaledObject: (clusterId, namespace, name) =>
+        api.post(`/api/v1/keda/${clusterId}/scaled-objects/${namespace}/${name}/pause`),
+    resumeScaledObject: (clusterId, namespace, name) =>
+        api.post(`/api/v1/keda/${clusterId}/scaled-objects/${namespace}/${name}/resume`),
+};
+
+// ── Integrations (KEDA + Karpenter combined status) ───────────────────────────
+export const integrationsAPI = {
+    getStatus: (clusterId) => api.get(`/api/v1/clusters/${clusterId}/integrations-status`),
+};
+
+// ── Workload Tier Override ────────────────────────────────────────────────────
+export const workloadTierAPI = {
+    listTiers: (clusterId) => api.get(`/api/v1/clusters/${clusterId}/workload-tiers`),
+    setTierOverride: (clusterId, namespace, controllerName, data) =>
+        api.patch(
+            `/api/v1/clusters/${clusterId}/workloads/${namespace}/${controllerName}/tier-override`,
+            data,
+        ),
+};
+
+// ── Stateful Migration Status ─────────────────────────────────────────────────
+export const migrationStatusAPI = {
+    get: (clusterId, limit = 50) =>
+        api.get(`/api/v1/clusters/${clusterId}/migration-status`, { params: { limit } }),
+    startMigration: (clusterId, data = {}) =>
+        api.post(`/api/v1/clusters/${clusterId}/start-full-migration`, data),
+    forceComplete: (clusterId) =>
+        api.post(`/api/v1/clusters/${clusterId}/force-complete-migration`),
 };
 
 // ── Native Spot (No-Karpenter) — ASG MixedInstancesPolicy ────────────────────
@@ -615,6 +685,123 @@ export const multiClusterAPI = {
     getSummary: () => api.get('/api/v1/multi-cluster/summary'),
     getActions: (limit = 50) => api.get('/api/v1/multi-cluster/actions', { params: { limit } }),
     getTrends: (days = 30) => api.get('/api/v1/multi-cluster/trends', { params: { days } }),
+};
+
+// ── Workload Identification Engine v4.3 API ─────────────────────────────
+export const workloadClassificationAPI = {
+    /**
+     * Cluster-level tier/confidence/role distribution summary.
+     * @param {string} clusterId
+     */
+    getSummary: (clusterId) =>
+        api.get(`/api/v1/workload-classification/${clusterId}/summary`),
+
+    /**
+     * Paginated workload classification list with optional filters.
+     * @param {string} clusterId
+     * @param {object} params - { namespace, tier, confidence_state, spot_friendly, role, search, page, page_size }
+     */
+    getWorkloads: (clusterId, params = {}) =>
+        api.get(`/api/v1/workload-classification/${clusterId}/workloads`, { params }),
+
+    /**
+     * Full classification detail + scoring breakdown for one workload.
+     * @param {string} clusterId
+     * @param {string} workloadId - "namespace/name" (URL-encoded by axios automatically)
+     */
+    getWorkloadDetail: (clusterId, workloadId) =>
+        api.get(
+            `/api/v1/workload-classification/${clusterId}/workloads/${encodeURIComponent(workloadId)}`
+        ),
+
+    /**
+     * Candidate sets:
+     * - safe_candidates: CONFIRMED + spot_friendly
+     * - potential_candidates: PROVISIONAL + spot_friendly
+     * @param {string} clusterId
+     */
+    getSpotCandidates: (clusterId) =>
+        api.get(`/api/v1/workload-classification/${clusterId}/spot-candidates`),
+
+    /**
+     * Engine health metrics: scan rate, write suppression, signal freq, etc.
+     * @param {string} clusterId
+     */
+    getMetrics: (clusterId) =>
+        api.get(`/api/v1/workload-classification/${clusterId}/metrics`),
+
+    /**
+     * Trigger an immediate WIE reclassification cycle for all workloads.
+     * Returns 202 immediately; classifications update in the background (~5-15s).
+     * @param {string} clusterId
+     */
+    rescan: (clusterId) =>
+        api.post(`/api/v1/workload-classification/${clusterId}/rescan`),
+
+    getSystemNamespaces: (clusterId) =>
+        api.get(`/api/v1/workload-classification/${clusterId}/system-namespaces`),
+
+    /**
+     * Set a classification override for a single workload.
+     * @param {string} clusterId
+     * @param {string} workloadId
+     * @param {{ spot_override?: boolean, tier_override?: string, reason?: string, expires_hours?: number }} payload
+     */
+    setOverride: (clusterId, workloadId, payload) =>
+        api.post(
+            `/api/v1/workload-classification/${clusterId}/workloads/${encodeURIComponent(workloadId)}/override`,
+            payload
+        ),
+
+    /**
+     * Remove an active override for a workload.
+     * @param {string} clusterId
+     * @param {string} workloadId
+     */
+    deleteOverride: (clusterId, workloadId) =>
+        api.delete(
+            `/api/v1/workload-classification/${clusterId}/workloads/${encodeURIComponent(workloadId)}/override`
+        ),
+};
+
+
+// ── Optimize Page API (Nodes + Workloads) ──────────────────────────────────
+export const optimizeAPI = {
+    getNodeBinPacking: (clusterId) =>
+        api.get('/api/v1/optimize/nodes/bin-packing', { params: { cluster_id: clusterId } }),
+
+    getNodeBinPackingDetail: (nodeName, clusterId) =>
+        api.get(`/api/v1/optimize/nodes/${encodeURIComponent(nodeName)}/bin-packing-detail`, { params: { cluster_id: clusterId } }),
+
+    getWorkloadsScaling: (clusterId) =>
+        api.get('/api/v1/optimize/workloads/scaling', { params: { cluster_id: clusterId } }),
+
+    getWorkloadScalingDetail: (workloadId, clusterId) =>
+        api.get(`/api/v1/optimize/workloads/${encodeURIComponent(workloadId)}/scaling-detail`, { params: { cluster_id: clusterId } }),
+
+    getWorkloadsPlacement: (clusterId, page = 1, pageSize = 50) =>
+        api.get('/api/v1/optimize/workloads/placement', { params: { cluster_id: clusterId, page, page_size: pageSize } }),
+
+    getWorkloadPlacementDetail: (workloadId, clusterId) =>
+        api.get(`/api/v1/optimize/workloads/${encodeURIComponent(workloadId)}/placement-detail`, { params: { cluster_id: clusterId } }),
+
+    getWorkloadProfilingDetail: (workloadId, clusterId) =>
+        api.get(`/api/v1/optimize/workloads/${encodeURIComponent(workloadId)}/profiling-detail`, { params: { cluster_id: clusterId } }),
+
+    getKarpenterMetrics: (clusterId) =>
+        api.get(`/api/v1/optimize/clusters/${clusterId}/karpenter-metrics`),
+
+    getActiveRebalancing: (workloadId, clusterId) =>
+        api.get(`/api/v1/optimize/workloads/${encodeURIComponent(workloadId)}/rebalancing`, { params: { cluster_id: clusterId } }),
+
+    triggerAzRebalance: (workloadId, clusterId) =>
+        api.post(`/api/v1/optimize/workloads/${encodeURIComponent(workloadId)}/rebalance-az`, null, { params: { cluster_id: clusterId } }),
+
+    getNodeExecutionPlan: (nodeName, clusterId) =>
+        api.get(`/api/v1/optimize/nodes/${encodeURIComponent(nodeName)}/execution-plan`, { params: { cluster_id: clusterId } }),
+
+    getClusterExecutionPlan: (clusterId) =>
+        api.get(`/api/v1/optimize/nodes/cluster-execution-plan`, { params: { cluster_id: clusterId } }),
 };
 
 

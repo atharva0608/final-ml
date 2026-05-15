@@ -5,7 +5,7 @@ image:
 
 config:
   apiKey: ""
-  backendUrl: "https://basketball-trees-estimates-generally.trycloudflare.com"
+  backendUrl: "https://edwards-aruba-des-gba.trycloudflare.com"
   clusterId: ""
 
 resources:

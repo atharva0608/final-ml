@@ -88,6 +88,9 @@ from backend.models.substitute_nodes import SubstituteNode, SubstituteNodeState
 # Global EMA (cross-customer interruption tracker)
 from backend.models.global_pool_ema import GlobalPoolEMA, GlobalPoolEMAHistory
 
+# Placement Advisor
+from backend.models.placement_policy import PlacementPolicyRecord
+
 __all__ = [
     "User",
     "Organization",
@@ -178,4 +181,5 @@ __all__ = [
     # Global EMA
     "GlobalPoolEMA",
     "GlobalPoolEMAHistory",
+    "PlacementPolicyRecord",
 ]

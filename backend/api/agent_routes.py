@@ -14,8 +14,12 @@ from pydantic import BaseModel
 from typing import Any, Dict, List, Optional
 from sqlalchemy.orm import Session
 
+from sqlalchemy.exc import OperationalError
+
+from backend.core.config import settings
 from backend.models.base import get_db
 from backend.models.cluster import Cluster, ClusterStatus
+from backend.utils.retry import with_retry
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/agents", tags=["agents"])
@@ -43,6 +47,14 @@ class AgentHeartbeatRequest(BaseModel):
     timestamp: str
     metrics: Optional[dict] = None
     health: Optional[dict] = None
+    karpenter_status: Optional[dict] = None
+    components: Optional[dict] = None
+    
+    # Phase 2e metrics
+    pod_metrics_per_workload: Optional[dict] = None
+    cluster_spot_summary: Optional[dict] = None
+    hpa_pdb_data: Optional[dict] = None
+    agent_version: Optional[str] = None
 
 
 class AgentResponse(BaseModel):
@@ -165,7 +177,20 @@ async def agent_heartbeat(
             status_code=403, 
             detail="Cluster ID mismatch"
         )
-    
+
+    # P-24: agent version compat check
+    if request.agent_version:
+        try:
+            from packaging.version import Version
+            _min_v = Version(settings.AGENT_MIN_VERSION)
+            if Version(request.agent_version) < _min_v:
+                logger.warning(
+                    "agent_version_deprecated agent_id=%s version=%s min=%s",
+                    request.agent_id, request.agent_version, settings.AGENT_MIN_VERSION,
+                )
+        except Exception:
+            pass
+
     # Update heartbeat timestamp
     cluster.last_heartbeat = datetime.utcnow()
 
@@ -178,6 +203,70 @@ async def agent_heartbeat(
     cluster.agent_installed = "Y"
     
     db.commit()
+
+    # Cache Phase 2e metrics in Redis (Task 5.3)
+    try:
+        from backend.core.redis_client import get_redis_client
+        import json
+        from backend.redis_keys import (
+            agent_data_pod_metrics_key,
+            agent_data_cluster_spot_summary_key,
+            agent_data_hpa_pdb_key
+        )
+        
+        _r = get_redis_client()
+        if _r:
+            if request.pod_metrics_per_workload is not None:
+                _r.setex(agent_data_pod_metrics_key(cluster.id), 120, json.dumps(request.pod_metrics_per_workload))
+            if request.cluster_spot_summary is not None:
+                _r.setex(agent_data_cluster_spot_summary_key(cluster.id), 120, json.dumps(request.cluster_spot_summary))
+                # P1-B: write pending pods count so PlacementController scaling guard reads real data
+                _pending = int((request.cluster_spot_summary or {}).get("unhealthy_pending_pods", 0))
+                _r.setex(f"spot:cluster:pending_pods:{cluster.id}", 120, str(_pending))
+            if request.hpa_pdb_data is not None:
+                _r.setex(agent_data_hpa_pdb_key(cluster.id), 300, json.dumps(request.hpa_pdb_data))
+                # P0-A: translate cluster-level hpa_pdb into per-workload state keys consumed by
+                # PlacementAdvisorService, PlacementRolloutService, and PlacementControllerTask.
+                import time as _t
+                _now = _t.time()
+                _pmw = request.pod_metrics_per_workload or {}
+                for _wid, _wls in (request.hpa_pdb_data or {}).items():
+                    if not isinstance(_wls, dict):
+                        continue
+                    # ready_replicas = total running pods (spot + od) from the same heartbeat
+                    _wpm = _pmw.get(_wid, {})
+                    _ready = int(_wpm.get("spot_pods", 0)) + int(_wpm.get("od_pods", 0))
+                    try:
+                        _state_payload = {
+                            "pdb_min_available":       _wls.get("pdb_min_available"),
+                            "hpa_min_replicas":        _wls.get("hpa_min"),
+                            "hpa_max_replicas":        _wls.get("hpa_max"),
+                            "ready_replicas":          _ready,
+                            "updated_at":              _now,
+                            "current_spot_pods":       int(_wpm.get("spot_pods", 0)),
+                            "current_ondemand_pods":   int(_wpm.get("od_pods", 0)),
+                            "has_pdb":                 bool(_wls.get("has_pdb", False)),
+                            "has_topology_spread":     bool(_wls.get("has_topology_spread", False)),
+                            "has_pod_anti_affinity":   bool(_wls.get("has_pod_anti_affinity", False)),
+                            "pod_cpu_cv":              None,
+                            "pod_request_rate_cv":     None,
+                        }
+                    except Exception as _ext_exc:
+                        logger.warning(f"[AGENT] T-05 extended state fields failed for {_wid}: {_ext_exc}")
+                        _state_payload = {
+                            "pdb_min_available": _wls.get("pdb_min_available"),
+                            "hpa_min_replicas":  _wls.get("hpa_min"),
+                            "hpa_max_replicas":  _wls.get("hpa_max"),
+                            "ready_replicas":    _ready,
+                            "updated_at":        _now,
+                        }
+                    _r.setex(
+                        f"spot:workload:state:{cluster.id}:{_wid}",
+                        300,
+                        json.dumps(_state_payload),
+                    )
+    except Exception as e:
+        logger.error(f"Failed to cache Phase 2e heartbeat metrics for {cluster.id}: {e}")
     
     return AgentResponse(
         success=True,
@@ -346,6 +435,21 @@ async def submit_action_result(
         f"(type={action.action_type.value})"
     )
 
+    # Post-eviction placement validation: verify the pod landed on the correct
+    # capacity type (Spot vs On-Demand).  Only runs when eviction itself succeeded;
+    # if the agent reported failure, the pod may still be running — no point
+    # checking placement.  handle_eviction_result() may override the COMPLETED
+    # status to FAILED if the pod ended up on On-Demand.
+    if request.success and action.action_type.value == "EVICT_POD":
+        try:
+            from backend.pipeline.stage3_ppe.controller_service import handle_eviction_result
+            from backend.core.redis_client import get_redis_client
+            handle_eviction_result(action, db, get_redis_client())
+        except Exception as _handler_exc:
+            logger.warning(
+                f"[agent] Post-eviction placement validation failed for action={action_id}: {_handler_exc}"
+            )
+
 
 # ── T18: Spot Interruption + Rebalance Recommendation Endpoints ─────────────
 
@@ -466,6 +570,428 @@ async def get_pending_commands(
         db.commit()
 
     return {"cluster_id": cluster_id, "commands": commands, "count": len(commands)}
+
+
+# ---------------------------------------------------------------------------
+# POST /agents/node-metadata/batch — T-09
+# ---------------------------------------------------------------------------
+
+class NodeMetadataItem(BaseModel):
+    node_name: str
+    az: Optional[str] = None
+    capacity_type: Optional[str] = None
+    nodepool_name: Optional[str] = None
+    instance_type: Optional[str] = None
+    do_not_disrupt: bool = False
+    is_ready: bool = True
+    allocatable_cpu_millicores: Optional[float] = None
+    allocatable_memory_bytes: Optional[float] = None
+    labels: Optional[dict] = None
+
+
+class NodeMetadataBatchRequest(BaseModel):
+    cluster_id: str
+    nodes: List[NodeMetadataItem]
+
+
+@router.post("/node-metadata/batch", summary="Upsert static node metadata from agent")
+async def upsert_node_metadata_batch(
+    request: NodeMetadataBatchRequest,
+    db: Session = Depends(get_db),
+    cluster: Cluster = Depends(validate_api_key),
+):
+    """
+    Upserts static per-node properties (AZ, capacity type, nodepool, etc.)
+    from the agent's node_metric collection.
+    ON CONFLICT (cluster_id, node_name) → UPDATE all fields.
+    """
+    if cluster.id != request.cluster_id:
+        raise HTTPException(status_code=403, detail="API key does not match cluster_id")
+
+    if not settings.FEATURE_NODE_METADATA_PUSH:
+        return {"status": "disabled", "message": "Feature flag FEATURE_NODE_METADATA_PUSH=False"}
+
+    from backend.models.node_metadata import NodeMetadata
+    from datetime import datetime as _dt
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+    if not request.nodes:
+        return {"upserted": 0, "cluster_id": request.cluster_id}
+
+    _skipped_nm = sum(1 for n in request.nodes if not n.node_name)
+    if _skipped_nm:
+        logger.warning("node_metadata_batch_skipped_missing_node_name count=%d", _skipped_nm)
+    rows = [
+        {
+            "id": str(__import__('uuid').uuid4()),
+            "cluster_id": request.cluster_id,
+            "node_name": n.node_name,
+            "az": n.az,
+            "capacity_type": n.capacity_type,
+            "nodepool_name": n.nodepool_name,
+            "instance_type": n.instance_type,
+            "do_not_disrupt": n.do_not_disrupt,
+            "is_ready": n.is_ready,
+            "allocatable_cpu_millicores": n.allocatable_cpu_millicores,
+            "allocatable_memory_bytes": n.allocatable_memory_bytes,
+            "updated_at": _dt.utcnow(),
+        }
+        for n in request.nodes
+        if n.node_name
+    ]
+
+    @with_retry(exceptions=(OperationalError,), max_attempts=3, backoff_seconds=0.5)
+    def _bulk_upsert_node_metadata():
+        _stmt = pg_insert(NodeMetadata).values(rows)
+        _stmt = _stmt.on_conflict_do_update(
+            index_elements=["cluster_id", "node_name"],
+            set_={
+                "az": _stmt.excluded.az,
+                "capacity_type": _stmt.excluded.capacity_type,
+                "nodepool_name": _stmt.excluded.nodepool_name,
+                "instance_type": _stmt.excluded.instance_type,
+                "do_not_disrupt": _stmt.excluded.do_not_disrupt,
+                "is_ready": _stmt.excluded.is_ready,
+                "allocatable_cpu_millicores": _stmt.excluded.allocatable_cpu_millicores,
+                "allocatable_memory_bytes": _stmt.excluded.allocatable_memory_bytes,
+                "updated_at": _stmt.excluded.updated_at,
+            },
+        )
+        db.execute(_stmt)
+        db.commit()
+
+    try:
+        _bulk_upsert_node_metadata()
+    except OperationalError as exc:
+        logger.error("node_metadata_batch_upsert_failed after retries: %s", exc)
+        try:
+            from backend.services.observability_logger import ObservabilityLogger
+            from backend.core.redis_client import get_redis_client as _rl_rc
+            _obs_r = _rl_rc()
+            ObservabilityLogger(redis_client=_obs_r).log_decision(
+                cluster_id=request.cluster_id,
+                decision_type="AGENT_BATCH_FAILURE",
+                approved=False,
+                reason=str(exc),
+                metadata={"endpoint": "node-metadata/batch"},
+            )
+            _obs_r.incr(f"spot:errors:celery_task_failure:{request.cluster_id}")
+            _obs_r.expire(f"spot:errors:celery_task_failure:{request.cluster_id}", 86400)
+        except Exception:
+            pass
+        raise HTTPException(status_code=503, detail="Database temporarily unavailable. Retry heartbeat.")
+
+    # node_owner_type population: derive from node labels or structured fields
+    # and bulk-UPDATE matching Instance rows.  Fail-safe — any error is logged and ignored.
+    try:
+        from backend.workers.tasks.auto_rebalancer import _derive_node_owner_type as _derive_owt
+        from backend.models.instance import Instance as _Inst
+
+        def _owt_from_item(n: NodeMetadataItem) -> str:
+            if n.labels:
+                return _derive_owt(n.labels)
+            # Fallback when agent doesn't send labels: derive from structured fields
+            if n.nodepool_name:
+                return "karpenter_dynamic"
+            return "unknown"
+
+        _owt_map = {
+            n.node_name: _owt_from_item(n)
+            for n in request.nodes
+            if n.node_name
+        }
+        _node_names = list(_owt_map.keys())
+        _batch_size = 100
+        for _i in range(0, len(_node_names), _batch_size):
+            _batch = _node_names[_i:_i + _batch_size]
+            _insts = db.query(_Inst).filter(
+                _Inst.cluster_id == request.cluster_id,
+                _Inst.node_name.in_(_batch),
+            ).all()
+            for _inst in _insts:
+                _new_owt = _owt_map.get(_inst.node_name, "unknown")
+                if _inst.node_owner_type != _new_owt:
+                    _inst.node_owner_type = _new_owt
+        db.commit()
+        logger.debug(
+            "node_owner_type_populated cluster=%s nodes=%d",
+            request.cluster_id, len(_node_names),
+        )
+    except Exception as _owt_exc:
+        logger.warning(
+            "node_owner_type_population_failed cluster=%s: %s",
+            request.cluster_id, _owt_exc,
+        )
+
+    return {"upserted": len(rows), "cluster_id": request.cluster_id}
+
+
+# ---------------------------------------------------------------------------
+# POST /agents/hpa-configs/batch — T-13
+# ---------------------------------------------------------------------------
+
+class HpaConfigItem(BaseModel):
+    namespace: str
+    workload_name: str
+    hpa_name: Optional[str] = None
+    min_replicas: Optional[int] = None
+    max_replicas: Optional[int] = None
+    target_cpu_pct: Optional[int] = None
+    current_replicas: Optional[int] = None
+    desired_replicas: Optional[int] = None
+    scale_up_stabilization_seconds: Optional[int] = None
+    scale_down_stabilization_seconds: Optional[int] = None
+    cpu_utilization_pct: Optional[int] = None
+
+
+class HpaConfigBatchRequest(BaseModel):
+    cluster_id: str
+    hpas: List[HpaConfigItem]
+
+
+@router.post("/hpa-configs/batch", summary="Upsert HPA configs and append status snapshots")
+async def upsert_hpa_configs_batch(
+    request: HpaConfigBatchRequest,
+    db: Session = Depends(get_db),
+    cluster: Cluster = Depends(validate_api_key),
+):
+    """
+    Upserts HPA configuration rows and appends status snapshots.
+    ON CONFLICT (cluster_id, namespace, workload_name) → UPDATE config fields.
+    Always appends a new hpa_status_snapshots row for each HPA.
+    Skips gracefully if no HPAs (KEDA-only cluster).
+    """
+    if cluster.id != request.cluster_id:
+        raise HTTPException(status_code=403, detail="API key does not match cluster_id")
+
+    if not settings.FEATURE_HPA_CONFIG_PUSH:
+        return {"status": "disabled", "message": "Feature flag FEATURE_HPA_CONFIG_PUSH=False"}
+
+    from backend.models.hpa_configs import HpaConfig
+    from backend.models.hpa_status_snapshots import HpaStatusSnapshot
+    from datetime import datetime as _dt
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+    if not request.hpas:
+        return {"upserted_configs": 0, "inserted_snapshots": 0, "cluster_id": request.cluster_id}
+
+    config_rows = []
+    snapshot_rows = []
+    now = _dt.utcnow()
+
+    _skipped_hpa = sum(1 for h in request.hpas if not h.namespace or not h.workload_name)
+    if _skipped_hpa:
+        logger.warning("hpa_configs_batch_skipped_missing_key count=%d", _skipped_hpa)
+    for h in request.hpas:
+        if not h.namespace or not h.workload_name:
+            continue
+        config_rows.append({
+            "id": str(__import__('uuid').uuid4()),
+            "cluster_id": request.cluster_id,
+            "namespace": h.namespace,
+            "workload_name": h.workload_name,
+            "hpa_name": h.hpa_name,
+            "min_replicas": h.min_replicas,
+            "max_replicas": h.max_replicas,
+            "target_cpu_pct": h.target_cpu_pct,
+            "current_replicas": h.current_replicas,
+            "desired_replicas": h.desired_replicas,
+            "scale_up_stabilization_seconds": h.scale_up_stabilization_seconds,
+            "scale_down_stabilization_seconds": h.scale_down_stabilization_seconds,
+            "updated_at": now,
+        })
+        snapshot_rows.append({
+            "id": str(__import__('uuid').uuid4()),
+            "cluster_id": request.cluster_id,
+            "namespace": h.namespace,
+            "workload_name": h.workload_name,
+            "desired_replicas": h.desired_replicas,
+            "current_replicas": h.current_replicas,
+            "cpu_utilization_pct": h.cpu_utilization_pct,
+            "snapshot_at": now,
+        })
+
+    @with_retry(exceptions=(OperationalError,), max_attempts=3, backoff_seconds=0.5)
+    def _bulk_upsert_hpa_configs():
+        _stmt = pg_insert(HpaConfig).values(config_rows)
+        _stmt = _stmt.on_conflict_do_update(
+            index_elements=["cluster_id", "namespace", "workload_name"],
+            set_={
+                "hpa_name": _stmt.excluded.hpa_name,
+                "min_replicas": _stmt.excluded.min_replicas,
+                "max_replicas": _stmt.excluded.max_replicas,
+                "target_cpu_pct": _stmt.excluded.target_cpu_pct,
+                "current_replicas": _stmt.excluded.current_replicas,
+                "desired_replicas": _stmt.excluded.desired_replicas,
+                "scale_up_stabilization_seconds": _stmt.excluded.scale_up_stabilization_seconds,
+                "scale_down_stabilization_seconds": _stmt.excluded.scale_down_stabilization_seconds,
+                "updated_at": _stmt.excluded.updated_at,
+            },
+        )
+        db.execute(_stmt)
+        if snapshot_rows:
+            _snap_stmt = pg_insert(HpaStatusSnapshot).values(snapshot_rows)
+            _snap_stmt = _snap_stmt.on_conflict_do_nothing(
+                index_elements=["cluster_id", "workload_name", "snapshot_at"],
+            )
+            db.execute(_snap_stmt)
+        db.commit()
+
+    try:
+        _bulk_upsert_hpa_configs()
+    except OperationalError as exc:
+        logger.error("hpa_configs_batch_upsert_failed after retries: %s", exc)
+        try:
+            from backend.services.observability_logger import ObservabilityLogger
+            from backend.core.redis_client import get_redis_client as _rl_rc
+            _obs_r = _rl_rc()
+            ObservabilityLogger(redis_client=_obs_r).log_decision(
+                cluster_id=request.cluster_id,
+                decision_type="AGENT_BATCH_FAILURE",
+                approved=False,
+                reason=str(exc),
+                metadata={"endpoint": "hpa-configs/batch"},
+            )
+            _obs_r.incr(f"spot:errors:celery_task_failure:{request.cluster_id}")
+            _obs_r.expire(f"spot:errors:celery_task_failure:{request.cluster_id}", 86400)
+        except Exception:
+            pass
+        raise HTTPException(status_code=503, detail="Database temporarily unavailable. Retry heartbeat.")
+
+    # Write HPA scaling-event key so PlacementController scaling guard
+    # sees an active HPA scale-up and inhibits evictions for 3 minutes.
+    try:
+        _hpa_scaling_up = any(
+            h.desired_replicas is not None
+            and h.current_replicas is not None
+            and h.desired_replicas > h.current_replicas
+            for h in request.hpas
+        )
+        if _hpa_scaling_up:
+            from backend.core.redis_client import get_redis_client as _hpa_rc
+            import time as _hpa_t
+            _hpa_r = _hpa_rc()
+            if _hpa_r:
+                _hpa_r.set(
+                    f"spot:pc:hpa_scaling_event:{request.cluster_id}",
+                    str(_hpa_t.time()),
+                    ex=300,  # 5-min TTL; PC checks within 3-min window
+                )
+    except Exception as _hpa_err:
+        logger.warning("hpa_scaling_event_write_failed cluster=%s: %s", request.cluster_id, _hpa_err)
+
+    return {
+        "upserted_configs": len(config_rows),
+        "inserted_snapshots": len(snapshot_rows),
+        "cluster_id": request.cluster_id,
+    }
+
+
+# ---------------------------------------------------------------------------
+# POST /agents/nodeclaims/batch — T-11
+# ---------------------------------------------------------------------------
+
+class NodeClaimItem(BaseModel):
+    node_name: str
+    instance_type: Optional[str] = None
+    capacity_type: Optional[str] = None
+    az: Optional[str] = None
+    nodepool_name: Optional[str] = None
+    state: Optional[str] = None
+    provisioned_at: Optional[str] = None
+
+
+class NodeClaimsBatchRequest(BaseModel):
+    cluster_id: str
+    claims: List[NodeClaimItem]
+
+
+@router.post("/nodeclaims/batch", summary="Upsert Karpenter NodeClaims from watcher")
+async def upsert_nodeclaims_batch(
+    request: NodeClaimsBatchRequest,
+    db: Session = Depends(get_db),
+    cluster: Cluster = Depends(validate_api_key),
+):
+    """
+    Upserts NodeClaim CRD data from karpenter_watcher._poll_nodeclaims().
+    ON CONFLICT (cluster_id, node_name) → UPDATE all fields.
+    """
+    if cluster.id != request.cluster_id:
+        raise HTTPException(status_code=403, detail="API key does not match cluster_id")
+
+    from backend.models.karpenter_node_claims import KarpenterNodeClaim
+    from datetime import datetime as _dt
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+    if not request.claims:
+        return {"upserted": 0, "cluster_id": request.cluster_id}
+
+    _skipped_nc = sum(1 for c in request.claims if not c.node_name)
+    if _skipped_nc:
+        logger.warning("nodeclaims_batch_skipped_missing_node_name count=%d", _skipped_nc)
+    rows = []
+    for c in request.claims:
+        if not c.node_name:
+            continue
+        provisioned_at = None
+        if c.provisioned_at:
+            try:
+                provisioned_at = _dt.fromisoformat(c.provisioned_at.replace("Z", "+00:00"))
+            except (ValueError, AttributeError):
+                pass
+        rows.append({
+            "id": str(__import__('uuid').uuid4()),
+            "cluster_id": request.cluster_id,
+            "node_name": c.node_name,
+            "instance_type": c.instance_type,
+            "capacity_type": c.capacity_type,
+            "az": c.az,
+            "nodepool_name": c.nodepool_name,
+            "state": c.state,
+            "provisioned_at": provisioned_at,
+            "updated_at": _dt.utcnow(),
+        })
+
+    @with_retry(exceptions=(OperationalError,), max_attempts=3, backoff_seconds=0.5)
+    def _bulk_upsert_nodeclaims():
+        _stmt = pg_insert(KarpenterNodeClaim).values(rows)
+        _stmt = _stmt.on_conflict_do_update(
+            index_elements=["cluster_id", "node_name"],
+            set_={
+                "instance_type": _stmt.excluded.instance_type,
+                "capacity_type": _stmt.excluded.capacity_type,
+                "az": _stmt.excluded.az,
+                "nodepool_name": _stmt.excluded.nodepool_name,
+                "state": _stmt.excluded.state,
+                "provisioned_at": _stmt.excluded.provisioned_at,
+                "updated_at": _stmt.excluded.updated_at,
+            },
+        )
+        db.execute(_stmt)
+        db.commit()
+
+    try:
+        _bulk_upsert_nodeclaims()
+    except OperationalError as exc:
+        logger.error("nodeclaims_batch_upsert_failed after retries: %s", exc)
+        try:
+            from backend.services.observability_logger import ObservabilityLogger
+            from backend.core.redis_client import get_redis_client as _rl_rc
+            _obs_r = _rl_rc()
+            ObservabilityLogger(redis_client=_obs_r).log_decision(
+                cluster_id=request.cluster_id,
+                decision_type="AGENT_BATCH_FAILURE",
+                approved=False,
+                reason=str(exc),
+                metadata={"endpoint": "nodeclaims/batch"},
+            )
+            _obs_r.incr(f"spot:errors:celery_task_failure:{request.cluster_id}")
+            _obs_r.expire(f"spot:errors:celery_task_failure:{request.cluster_id}", 86400)
+        except Exception:
+            pass
+        raise HTTPException(status_code=503, detail="Database temporarily unavailable. Retry heartbeat.")
+
+    return {"upserted": len(rows), "cluster_id": request.cluster_id}
 
 
 @router.post("/orchestrator/{cluster_id}/command-result")

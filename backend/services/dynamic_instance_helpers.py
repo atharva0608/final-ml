@@ -163,9 +163,17 @@ def load_instance_catalog_from_db(
         if not rows:
             logger.info(
                 f"InstanceCatalog DB is empty for region={region}. "
-                "Run the instance_catalog_worker to populate it."
+                "Trying any available region as fallback."
             )
-            return {}
+            rows = db.query(InstanceCatalog).filter(
+                InstanceCatalog.current_generation == True,
+            ).all()
+            if not rows:
+                logger.info(
+                    "InstanceCatalog DB is globally empty. "
+                    "Run the instance_catalog_worker to populate it."
+                )
+                return {}
 
         catalog = {}
         for row in rows:

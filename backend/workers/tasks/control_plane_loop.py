@@ -85,7 +85,7 @@ class ControlPlaneController:
     def _init_services(self):
         from backend.services.blacklist_service import BlacklistService
         from backend.services.circuit_breaker import CircuitBreaker
-        from backend.services.guardrail_engine import evaluate_all_guardrails
+        from backend.pipeline.stage4_decision.guardrails import evaluate_all_guardrails
         from backend.services.observability_logger import ObservabilityLogger
         from backend.core.risk_engine import compute_pool_risk
         from backend.core.ev_model import evaluate_candidate_ev
@@ -138,7 +138,10 @@ class ControlPlaneController:
                 "reason": "No eligible nodes (all stateful/cooldown/policy)",
                 "step_completed": "STEP_4_NODE_FILTER",
             }
-
+        # ── W3.5: Anchored fill check post Step 4 ────────────────────────
+        # After filtering, check anchored node fill ratio. If critical (>85%)
+        # auto-nominate another on-demand node. If warning (>70%) emit alert.
+        self._step4b_anchored_fill_check(cluster_id, eligible_nodes)
         # ── Step 5: Right-Sizing Baseline ─────────────────────────
         sizing_baseline = self._step5_rightsizing_baseline(cluster_id)
 
@@ -228,6 +231,107 @@ class ControlPlaneController:
         except Exception as e:
             logger.warning(f"[Step4] Node filter error: {e}")
             return []
+
+    def _step4b_anchored_fill_check(self, cluster_id: str, node_profiles: list):
+        """
+        W3.5 — Check anchored node fill ratios after Step 4 filtering.
+
+        - fill > 85% (CRITICAL): auto-nominate the least-loaded eligible on-demand node
+          as an additional anchored node.
+        - fill > 70% (WARNING): log alert; platform will surface this in
+          AnchoredNodePanel via GET /api/v1/clusters/{id}/anchored-status.
+
+        node_profiles is the list of eligible node dicts returned by Step 4.
+        """
+        try:
+            from backend.services.anchored_node_service import AnchoredNodeService
+
+            _FILL_WARN     = 0.70
+            _FILL_CRITICAL = 0.85
+
+            svc = AnchoredNodeService(db=self.db, redis=self.redis)
+            fill_status = svc.get_anchored_fill_status(cluster_id, node_profiles=node_profiles)
+
+            if not fill_status:
+                return  # No anchored nodes nominted yet — nothing to check
+
+            for node_name, fill_info in fill_status.items():
+                cpu_fill = fill_info.get("vcpu_fill_pct", 0.0)
+                mem_fill = fill_info.get("mem_fill_pct", 0.0)
+                max_fill = max(cpu_fill, mem_fill)
+                alert    = fill_info.get("alert_level", "OK")
+
+                if max_fill >= _FILL_CRITICAL:
+                    logger.warning(
+                        f"[Step4b] CRITICAL anchored fill: node {node_name} at "
+                        f"cpu={cpu_fill:.0%} mem={mem_fill:.0%} — auto-nominating backup"
+                    )
+                    # Find candidate: pick the eligible on-demand node with lowest fill
+                    _candidate = self._pick_anchored_candidate(
+                        cluster_id, node_profiles, exclude={node_name}
+                    )
+                    if _candidate:
+                        ok = svc.nominate_anchored_node(cluster_id, _candidate)
+                        if ok:
+                            logger.info(
+                                f"[Step4b] Auto-nominated {_candidate} as additional "
+                                f"anchored node (fill critical on {node_name})"
+                            )
+                        else:
+                            logger.warning(
+                                f"[Step4b] Auto-nomination failed for candidate {_candidate}"
+                            )
+                    else:
+                        logger.warning(
+                            f"[Step4b] No on-demand candidate available for auto-nomination "
+                            f"— anchored fill CRITICAL on {node_name}"
+                        )
+
+                elif max_fill >= _FILL_WARN:
+                    logger.warning(
+                        f"[Step4b] WARNING anchored fill: node {node_name} at "
+                        f"cpu={cpu_fill:.0%} mem={mem_fill:.0%} — consider nominating backup"
+                    )
+
+        except Exception as exc:
+            # Non-fatal — log and continue; anchored fill check must never block the cycle
+            logger.warning(f"[Step4b] Anchored fill check error (non-fatal): {exc}")
+
+    def _pick_anchored_candidate(
+        self, cluster_id: str, node_profiles: list, exclude: set
+    ) -> Optional[str]:
+        """
+        Pick the best candidate for auto-nomination as an additional anchored node.
+
+        Prefers the on-demand node with the lowest current fill ratio that is
+        not already anchored and not in `exclude`.
+        Returns the node_name string or None.
+        """
+        try:
+            from backend.services.anchored_node_service import AnchoredNodeService
+            svc = AnchoredNodeService(db=self.db, redis=self.redis)
+            already_anchored = set(svc.get_anchored_nodes(cluster_id))
+
+            candidates = []
+            for node in node_profiles:
+                n_name = node.get("node_name") or node.get("name")
+                if not n_name:
+                    continue
+                if n_name in exclude or n_name in already_anchored:
+                    continue
+                # Prefer nodes with lower utilization (use cpu_requests_pct as proxy)
+                cpu_fill = node.get("cpu_requests_pct", 0.5)
+                candidates.append((cpu_fill, n_name))
+
+            if not candidates:
+                return None
+
+            candidates.sort(key=lambda x: x[0])
+            return candidates[0][1]
+
+        except Exception as exc:
+            logger.warning(f"[Step4b] _pick_anchored_candidate error: {exc}")
+            return None
 
     def _step5_rightsizing_baseline(self, cluster_id: str) -> dict:
         """Compute current sizing baseline for the cluster."""

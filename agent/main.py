@@ -29,6 +29,7 @@ from heartbeat import HeartbeatSender
 from websocket_client import WebSocketClient
 from poller import SpotPoller
 from pod_metrics_collector import PodMetricsCollector
+from karpenter_watcher import KarpenterWatcher
 
 logging.basicConfig(
     level=logging.INFO,
@@ -107,6 +108,8 @@ class Agent:
         self.websocket_thread = None
         self.spot_poller_thread = None
         self.pod_metrics_thread = None
+        self.karpenter_watcher = None
+        self.karpenter_watcher_thread = None
 
         # State
         self.running = False
@@ -117,7 +120,7 @@ class Agent:
         # Prevents runaway restarts: max 5 attempts per component, then DEAD.
         self._restart_counts: Dict[str, int] = {}
         self._restart_backoffs: Dict[str, float] = {}
-        _components = ['collector', 'actuator', 'heartbeat', 'websocket', 'spot_poller', 'pod_metrics']
+        _components = ['collector', 'actuator', 'heartbeat', 'websocket', 'spot_poller', 'pod_metrics', 'karpenter_watcher']
         for _c in _components:
             self._restart_counts[_c] = 0
             self._restart_backoffs[_c] = 0.0
@@ -200,6 +203,8 @@ class Agent:
             self.heartbeat.backend_url = new_url
         if self.pod_metrics_collector:
             self.pod_metrics_collector.backend_url = new_url
+        if self.karpenter_watcher:
+            self.karpenter_watcher.backend_url = new_url
 
         # WebSocket client needs reconnect with new URL
         if self.websocket_client:
@@ -367,6 +372,22 @@ class Agent:
             cluster_id=self.cluster_id
         )
         logger.info("Pod Metrics Collector initialized")
+        
+        # Link Pod Metrics Collector to Heartbeat for Phase 2e data extraction
+        if self.heartbeat and self.pod_metrics_collector:
+            self.heartbeat.set_pod_metrics_collector(self.pod_metrics_collector)
+
+        # T-09: Link node metrics collector to Heartbeat for node-metadata batch push
+        if self.heartbeat and self.collector:
+            self.heartbeat.set_metrics_collector(self.collector)
+
+        # Initialize Karpenter Event Watcher
+        self.karpenter_watcher = KarpenterWatcher(
+            backend_url=self.backend_url,
+            api_key=self.api_key,
+            cluster_id=self.cluster_id,
+        )
+        logger.info("Karpenter Event Watcher initialized")
 
         logger.info("All components initialized successfully")
 
@@ -437,6 +458,15 @@ class Agent:
         )
         self.pod_metrics_thread.start()
         logger.info("Pod Metrics Collector started")
+
+        # Start Karpenter Event Watcher
+        self.karpenter_watcher_thread = threading.Thread(
+            target=self.karpenter_watcher.run,
+            name="KarpenterWatcher",
+            daemon=True,
+        )
+        self.karpenter_watcher_thread.start()
+        logger.info("Karpenter Event Watcher started")
 
         # Update health status
         if self.heartbeat:
@@ -512,7 +542,8 @@ class Agent:
         timeout = 10
         for thread in [self.collector_thread, self.actuator_thread,
                       self.websocket_thread, self.heartbeat_thread,
-                      self.spot_poller_thread, self.pod_metrics_thread]:
+                      self.spot_poller_thread, self.pod_metrics_thread,
+                      self.karpenter_watcher_thread]:
             if thread and thread.is_alive():
                 thread.join(timeout=timeout)
 

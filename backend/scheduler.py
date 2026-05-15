@@ -13,6 +13,8 @@ from backend.services.workload_inspector import WorkloadInspector
 from backend.services.substitute_manager import SubstituteManager
 from backend.services.event_monitor import EventMonitor
 from backend.services.blacklist_service import BlacklistService
+from backend.services.karpenter_metrics_collector import KarpenterMetricsCollector
+from backend.services.blacklist_service import BlacklistService
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +57,7 @@ def job_refresh_active_count():
         db.close()
 
 def job_scan_clusters():
-    """Every 10 min: Scan clusters for node classification (with jitter)"""
+    """Every 10 min: Scan clusters for node classification (with jitter) + WIE slow loop"""
     try:
         redis_client = get_redis_client()
         svc = WorkloadInspector(redis=redis_client)
@@ -68,6 +70,26 @@ def job_scan_clusters():
                 time.sleep(random.randint(0, 10)) # Small local jitter to spread DB load
                 classification = svc.scan_cluster(cluster.id)
                 logger.debug(f"[Scheduler] Scanned cluster {cluster.id}, got {len(classification or {})} nodes")
+
+                # E1: Build per-controller workload profiles + misconfig recommendations
+                try:
+                    svc.build_all_profiles_for_cluster(cluster.id)
+                except Exception as _wp_err:
+                    logger.warning(f"[Scheduler] Workload profile build failed for {cluster.id}: {_wp_err}")
+
+                # WIE v4.3 slow loop — full classification, DB + Redis writes
+                try:
+                    from backend.pipeline.stage2_wie.engine import WorkloadIdentificationEngine
+                    db = SessionLocal()
+                    try:
+                        engine = WorkloadIdentificationEngine(redis=redis_client, db=db, k8s_client=None)
+                        engine.slow_loop_classify(cluster_id=cluster.id)
+                        logger.debug(f"[Scheduler] WIE slow loop complete for cluster {cluster.id}")
+                    finally:
+                        db.close()
+                except Exception as _wie_err:
+                    logger.warning(f"[Scheduler] WIE slow loop failed for cluster {cluster.id}: {_wie_err}")
+
             except Exception as e:
                 logger.error(f"[Scheduler] Failed to scan cluster {cluster.id}: {e}")
     except Exception as e:
@@ -139,9 +161,83 @@ def job_cleanup_blacklist():
     except Exception as e:
         logger.error(f"[Scheduler] Failed cleanup job: {e}")
 
+
+def job_wie_fast_loop():
+    """Every 2 min: WIE fast loop — update pod_state cache (restarts, ready count, zones)"""
+    try:
+        redis_client = get_redis_client()
+        clusters = get_active_clusters()
+
+        for cluster in clusters:
+            try:
+                from backend.pipeline.stage2_wie.engine import WorkloadIdentificationEngine
+                db = SessionLocal()
+                try:
+                    engine = WorkloadIdentificationEngine(redis=redis_client, db=db, k8s_client=None)
+                    engine.fast_loop_update(cluster_id=cluster.id)
+                    logger.debug(f"[Scheduler] WIE fast loop complete for cluster {cluster.id}")
+                finally:
+                    db.close()
+            except Exception as e:
+                logger.error(f"[Scheduler] WIE fast loop failed for cluster {cluster.id}: {e}")
+    except Exception as e:
+        logger.error(f"[Scheduler] WIE fast loop job failed: {e}")
+
+def job_karpenter_metrics_collection():
+    """Every 2 mins: Collect Karpenter provision success rates and p90s (Tasks 2.3/2.4)"""
+    try:
+        redis_client = get_redis_client()
+        clusters = get_active_clusters()
+        db = SessionLocal()
+        try:
+            collector = KarpenterMetricsCollector(db=db, redis_client=redis_client)
+            for cluster in clusters:
+                collector.collect_metrics_for_cluster(cluster.id)
+        finally:
+            db.close()
+    except Exception as e:
+        logger.error(f"[Scheduler] Karpenter metrics collection job failed: {e}")
+
 # =========================================================================
 # Scheduler Initialization
 # =========================================================================
+
+def job_run_placement_cycle():
+    """Every 10 min: Run placement advisor cycle for active clusters"""
+    from backend.core.config import settings
+    if not settings.FEATURE_PLACEMENT_ADVISOR_ENABLED:
+        return
+        
+    try:
+        from backend.workers.tasks.placement_advisor_task import run_placement_cycle_task
+        redis_client = get_redis_client()
+        clusters = get_active_clusters()
+        
+        for cluster in clusters:
+            # Guard: check if WIE has completed at least one scan
+            wie_key = f"spot:wie:metrics:{cluster.id}"
+            if not redis_client.exists(wie_key):
+                logger.debug(f"[Scheduler] Skipping placement cycle for {cluster.id} - WIE metrics not found")
+                continue
+                
+            logger.info(f"[Scheduler] Dispatching placement advisor cycle for {cluster.id}")
+            run_placement_cycle_task.apply_async(args=[cluster.id])
+            
+    except Exception as e:
+        logger.error(f"[Scheduler] Failed placement advisor cycle dispatch: {e}")
+
+def job_reconcile_nodepool_classes():
+    """Every 10 min: Reconcile Karpenter NodePool classes (throttled internally to 30m / 6h)"""
+    from backend.core.config import settings
+    if not settings.FEATURE_PLACEMENT_ADVISOR_ENABLED:
+        return
+        
+    try:
+        from backend.workers.tasks.reconciliation_worker import reconcile_nodepool_classes_task
+        logger.info(f"[Scheduler] Dispatching NodePool classes reconciliation")
+        reconcile_nodepool_classes_task.apply_async()
+    except Exception as e:
+        logger.error(f"[Scheduler] Failed NodePool classes reconciliation dispatch: {e}")
 
 def start_scheduler():
     """Initialize and start the background scheduler"""
@@ -206,6 +302,46 @@ def start_scheduler():
         trigger=CronTrigger(hour=2, minute=0),
         id="cleanup_blacklist",
         replace_existing=True,
+    )
+
+    # 7. WIE fast loop — pod_state cache updates (Every 2 minutes)
+    scheduler.add_job(
+        job_wie_fast_loop,
+        trigger=IntervalTrigger(minutes=2),
+        id="wie_fast_loop",
+        replace_existing=True,
+        max_instances=1,
+        next_run_time=first_run + timedelta(seconds=40),
+    )
+    
+    # Task 2.3 / 2.4: Karpenter metrics collection (Every 2 minutes)
+    scheduler.add_job(
+        job_karpenter_metrics_collection,
+        trigger=IntervalTrigger(minutes=2),
+        id="karpenter_metrics_collection",
+        replace_existing=True,
+        max_instances=1,
+        next_run_time=first_run + timedelta(seconds=45),
+    )
+    
+    # 8. Placement Advisor cycle (Every 10 minutes)
+    scheduler.add_job(
+        job_run_placement_cycle,
+        trigger=IntervalTrigger(minutes=10),
+        id="run_placement_cycle",
+        replace_existing=True,
+        max_instances=1,
+        next_run_time=first_run + timedelta(seconds=50),
+    )
+    
+    # Task 2.1: NodePool Class Reconciler (Every 10 minutes)
+    scheduler.add_job(
+        job_reconcile_nodepool_classes,
+        trigger=IntervalTrigger(minutes=10),
+        id="reconcile_nodepool_classes",
+        replace_existing=True,
+        max_instances=1,
+        next_run_time=first_run + timedelta(seconds=55),
     )
     
     scheduler.start()

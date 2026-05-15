@@ -112,11 +112,24 @@ class Cluster(Base):
     hibernation_lock = Column(String(255), nullable=True)  # UUID of worker holding hibernation lock
     hibernation_lock_acquired_at = Column(DateTime, nullable=True)  # When lock was acquired
 
+    # Per-cluster instance selection policy (Problems 10, 15).
+    # Schema: {"cost_strategy": "balanced", "risk_threshold": 0.30,
+    #          "workload_overrides": {"stateful": {...}, "stateless": {...}}}
+    # NULL = use InstanceSelectionService built-in defaults.
+    placement_policy = Column(JSONB, nullable=True, default=None)
+
     # Dismissed flag — prevents re-discovery after user removes the cluster
     is_dismissed = Column(Boolean, default=False, nullable=False, server_default="false")
 
     # Migration tracking: True when the original managed node group has been deleted
     managed_node_group_deleted = Column(Boolean, default=False, nullable=False, server_default="false")
+
+    # Onboarding lifecycle phase: shadow | takeover | managed
+    # shadow   — observation only, all mutation engines gated
+    # takeover — MNG → Karpenter OD migration in progress, normal optimization gated
+    # managed  — fully managed by our system, all engines active
+    # Existing clusters must be backfilled to 'managed' via DB migration.
+    onboarding_phase = Column(String(32), nullable=False, default="shadow", server_default="shadow")
 
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

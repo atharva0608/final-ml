@@ -66,7 +66,7 @@ class StatusResponse(BaseModel):
 def rank_for_node(req: RankForNodeRequest, db: Session = Depends(get_db)):
     """Return top ranked pools for a specific node."""
     try:
-        from backend.services.decision_engine_service import DecisionEngineService
+        from backend.pipeline.stage4_decision.engine import DecisionEngineService
 
         redis = get_redis_client()
         de = DecisionEngineService(db, redis)
@@ -86,7 +86,7 @@ def rank_for_node(req: RankForNodeRequest, db: Session = Depends(get_db)):
 def rank_for_template(req: RankForTemplateRequest, db: Session = Depends(get_db)):
     """Return top ranked pools for a template specification."""
     try:
-        from backend.services.decision_engine_service import DecisionEngineService
+        from backend.pipeline.stage4_decision.engine import DecisionEngineService
 
         redis = get_redis_client()
         de = DecisionEngineService(db, redis)
@@ -106,7 +106,7 @@ def rank_for_template(req: RankForTemplateRequest, db: Session = Depends(get_db)
 def report_termination(req: ReportTerminationRequest, db: Session = Depends(get_db)):
     """Report a spot interruption — globally blacklist the pool."""
     try:
-        from backend.services.decision_engine_service import DecisionEngineService
+        from backend.pipeline.stage4_decision.engine import DecisionEngineService
 
         redis = get_redis_client()
         de = DecisionEngineService(db, redis)
@@ -121,7 +121,7 @@ def report_termination(req: ReportTerminationRequest, db: Session = Depends(get_
 def report_launch_failure(req: ReportLaunchFailureRequest, db: Session = Depends(get_db)):
     """Report a launch failure. Auto-blacklists after threshold."""
     try:
-        from backend.services.decision_engine_service import DecisionEngineService
+        from backend.pipeline.stage4_decision.engine import DecisionEngineService
 
         redis = get_redis_client()
         de = DecisionEngineService(db, redis)
@@ -148,7 +148,7 @@ def get_blacklist(
 ):
     """Return global blacklist for a region."""
     try:
-        from backend.services.decision_engine_service import DecisionEngineService
+        from backend.pipeline.stage4_decision.engine import DecisionEngineService
 
         redis = get_redis_client()
         de = DecisionEngineService(db, redis)

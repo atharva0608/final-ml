@@ -115,8 +115,10 @@ async def submit_pod_metrics_batch(
                     cpu_utilization_pct=cpu_utilization,
                     memory_utilization_pct=memory_utilization,
                     container_count=metric_data.container_count,
+                    phase=metric_data.phase,
+                    start_time=metric_data.start_time,
                     timestamp=batch.timestamp,
-                    metadata=metric_data.metadata or {}
+                    pod_metadata=metric_data.metadata or {}
                 )
 
                 db.add(pod_metric)

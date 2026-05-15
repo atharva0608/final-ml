@@ -12,32 +12,20 @@ Workers:
 """
 
 from .discovery import discovery_worker_loop, stream_discovery_status
-from .optimization import trigger_manual_optimization, optimize_cluster
+# P4: optimization.py moved to temp-bin/DEPRECATED_optimization.py — not scheduled in beat
 from .hibernation_worker import (
     execute_hibernation_scheduler,
     execute_hibernation,
     execute_wake,
     execute_prewarm
 )
-from .report_worker import (
-    generate_weekly_report,
-    generate_monthly_report,
-    export_savings_to_csv
-)
-from .event_processor import (
-    process_event,
-    replay_event,
-    cleanup_old_events
-)
+# P4: report_worker.py moved to temp-bin/DEPRECATED_report_worker.py — not scheduled in beat
+# P4: event_processor.py moved to temp-bin/DEPRECATED_event_processor.py — not scheduled in beat
 
 __all__ = [
     # Discovery worker
     "discovery_worker_loop",
     "stream_discovery_status",
-
-    # Optimization worker
-    "trigger_manual_optimization",
-    "optimize_cluster",
 
     # Hibernation worker
     "execute_hibernation_scheduler",
@@ -45,13 +33,4 @@ __all__ = [
     "execute_wake",
     "execute_prewarm",
 
-    # Report worker
-    "generate_weekly_report",
-    "generate_monthly_report",
-    "export_savings_to_csv",
-
-    # Event processor
-    "process_event",
-    "replay_event",
-    "cleanup_old_events",
 ]

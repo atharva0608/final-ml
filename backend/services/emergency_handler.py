@@ -67,8 +67,13 @@ def handle_termination(instance_id, cluster_id, region, instance_type, az, node_
         # Direct replacement via ExecutionController (spot attempt)
         spot_ok = False
         try:
-            from backend.services.execution_controller import ExecutionController
-            controller = ExecutionController(cluster_id=cluster_id, region=region)
+            from backend.pipeline.stage5_execution.controller import ExecutionController
+            from backend.services.circuit_breaker import CircuitBreaker
+            from backend.core.redis_client import get_redis_client as _get_r
+            _cb_redis = _get_r()
+            _cb = CircuitBreaker(redis_client=_cb_redis) if _cb_redis else None
+            controller = ExecutionController(cluster_id=cluster_id, region=region,
+                                             circuit_breaker=_cb)
             result = controller.execute_replacement(bypass_double_gate=True, db=db)
             spot_ok = bool(result and result.get('success'))
         except Exception as e:
@@ -96,6 +101,20 @@ def handle_termination(instance_id, cluster_id, region, instance_type, az, node_
         redis.setex(key_cluster_floor(cluster_id), 86400, json.dumps({'instance_type': instance_type, 'az': az}))
         # Set emergency cooldown
         redis.setex(key_cluster_cooldown(cluster_id), EMERGENCY_COOLDOWN_MINUTES * 60, '1')
+
+        # C4/C5: Record AWS actual termination in the global adaptive ledger.
+        # initiated_by="aws" — this event came from AWS IMDS, not from the rebalancer.
+        try:
+            from backend.services.adaptive_itn_service import AdaptiveItnService
+            AdaptiveItnService.record_global_interruption(
+                pool_key=pool_key,
+                cluster_id=cluster_id,
+                event_type="actual_termination",
+                initiated_by="aws",
+                redis_client=redis,
+            )
+        except Exception as _ail_err:
+            logger.warning(f"[emergency_handler] Adaptive ledger update failed: {_ail_err}")
 
         return {'status': 'handled', 'instance_id': instance_id, 'cluster_id': cluster_id}
     finally:

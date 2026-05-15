@@ -25,6 +25,10 @@ class PodMetricCreate(BaseModel):
 
     container_count: int = Field(1, description="Number of containers in pod")
 
+    # T-12: pod phase and start time for AZ distribution dot map (age_seconds)
+    phase: Optional[str] = Field(None, description="Pod phase (Running, Pending, etc.)")
+    start_time: Optional[datetime] = Field(None, description="Pod start time (pod.status.startTime)")
+
     metadata: Optional[Dict[str, Any]] = Field(default_factory=dict, description="Additional metadata")
 
     class Config:
@@ -95,6 +99,8 @@ class PodMetricResponse(BaseModel):
     memory_utilization_pct: Optional[float]
 
     container_count: int
+    phase: Optional[str] = None
+    start_time: Optional[datetime] = None
     timestamp: datetime
     metadata: Optional[Dict[str, Any]]
 

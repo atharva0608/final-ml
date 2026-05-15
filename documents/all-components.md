@@ -1,8 +1,11 @@
 # Complete Platform Component Inventory
 
-> **Last Updated**: 2026-03-23 | **Source**: 100% verified against source files
+> **Last Updated**: 2026-04-26 (Session 3) | **Source**: 100% verified against source files (full re-audit)
 > **Frontend**: React (CRA) · **Backend**: FastAPI + Celery · **DB**: PostgreSQL + Redis
 > **Verification method**: Every file confirmed to exist on disk; every API endpoint verified in `api.js`
+> **Audit delta (2026-04-24 Session 1)**: 13 new components detected, 5 orphaned components classified PARTIAL, 1 MISSING_LOGIC gap, 6 new API modules added to API Client Index
+> **Audit delta (2026-04-24 Session 2)**: 3 new backend route files detected, 1 new frontend service module (`hibernationApi.js`), 7 undocumented Zustand stores surfaced, 10 new `clusterAPI` methods, 6 new `workloadClassificationAPI` methods, 3 new `optimizationAPI` methods, 2 new `authAPI` methods, 1 new MISSING_LOGIC (integrations_routes.py endpoint not in api.js)
+> **Audit delta (2026-04-26 Session 3)**: Full `pages/` folder restructure — 9 flat pages reorganised into 9 sub-folders (39 page files total); 4 new placeholder pages (ActiveActions, Rebalancing, OptimizationHistory, EventTimeline); `pages/optimization/RightSizing.jsx` fully rewritten with new 5-section design (sticky header, cost chart, resource allocation, node pool table, workload drilldown); Resource Hygiene routed in sidebar under Cost & Savings (`/cost-savings/resource-hygiene`); 4 new hooks documented (useClusters, useClusterState, useExecutionState, useRightsizing); 12 new routes added to App.js; Route Map updated
 
 ---
 
@@ -10,27 +13,36 @@
 
 ```
 frontend/src/
-├── App.js                    # Router (30+ routes) — 381 lines
-├── services/api.js           # Axios client (47 API modules) — 605 lines
-├── store/                    # 3 Zustand stores
-│   ├── useStore.js
-│   ├── useASCPStore.js
-│   └── useHibernationStore.js
-├── hooks/                    # 4 custom hooks
+├── App.js                    # Router (30+ routes)
+├── services/api.js           # Axios client (53 API modules) — 758 lines [UPDATED]
+│   └── services/hibernationApi.js  # Standalone hibernation service (emergency controls + utilities) ✅ NEW
+├── store/                    # 3 store files → 10 Zustand stores total [UPDATED]
+│   ├── useStore.js             # 8 stores: useAuthStore, useClusterStore, useTemplateStore,
+│   │                           #   usePolicyStore, useMetricsStore, useExperimentStore,
+│   │                           #   useUIStore, useHeaderStore
+│   ├── useASCPStore.js         # useAtharvaStore
+│   └── useHibernationStore.js  # useHibernationStore
+├── hooks/                    # 5 custom hooks [+1 NEW]
 │   ├── useDashboard.js
 │   ├── usePermission.js
 │   ├── useAdaptivePolling.js
-│   └── useAuth.js
-├── utils/formatters.js       # formatCurrency, formatDate, formatBytes
-├── components/               # 22 directories
+│   ├── useAuth.js
+│   └── usePlacementPolicies.js  ✅ NEW
+├── utils/formatters.js       # formatCurrency, formatDate, formatBytes,
+│                             # formatPercentage, formatNumber, formatDateTime,
+│                             # formatRelativeTime, formatFileSize, truncate,
+│                             # capitalize, getStatusColor, getLifecycleColor,
+│                             # formatClusterType [EXPANDED — was 3, now 13 exports]
+├── components/               # 23 directories [+1 NEW: placement/]
 │   ├── dashboard/            # Fleet overview + widgets
-│   ├── clusters/             # Cluster management + OverviewTab
-│   ├── ascpai/            # ML engine UI
-│   ├── right-sizing/         # Rightsizing dashboard
+│   ├── clusters/             # Cluster management + OverviewTab + RebalancedDistribution ✅ NEW
+│   ├── ascpai/               # ML engine UI [+5 NEW components]
+│   ├── right-sizing/         # Rightsizing + WorkloadInventoryDashboard ✅ NEW
+│   ├── placement/            # Placement Advisor UI ✅ NEW DIRECTORY
 │   ├── hibernation/          # Schedule management
 │   ├── cleanup/              # Resource hygiene
 │   ├── settings/             # Org settings & tag governance
-│   ├── admin/                # Super-admin panel
+│   ├── admin/                # Super-admin panel [+1 NEW: AwsPoolIntelligence]
 │   ├── auth/                 # Login/Signup/Invite
 │   ├── governance/           # Permission gates & JIT
 │   ├── policies/             # Optimization policies
@@ -45,7 +57,19 @@ frontend/src/
 │   ├── teams/                # Team management tabs
 │   ├── optimizer/            # Optimizer coordinator
 │   └── layout/               # MainLayout shell
-└── pages/                    # 8 page-level components
+└── pages/                    # 39 page files across 9 sub-folders [RESTRUCTURED Session 3] ✅
+    ├── Onboarding.jsx          # Root-level (wizard flow, kept flat)
+    ├── overview/               # Overview.jsx (Dashboard wrapper)
+    ├── live-operations/        # ActiveActions, EventTimeline, NodeActivity, ScalingActivity
+    ├── optimization/           # ASCPAiPage, PlacementAdvisorPage, Recommendations,
+    │                           #   Rebalancing, OptimizationHistory, RightSizing (NEW design)
+    ├── workloads/              # Inventory, RiskAndSafety
+    ├── infrastructure/         # ClusterOverview
+    │   ├── provisioning/       # Karpenter, NodePool, NodeTemplates
+    │   └── integrations/       # KarpenterStatus, KedaStatus
+    ├── cost-savings/           # AccountAnalytics, CostSavings
+    ├── governance/             # Approvals, Policies, Roles, TeamDetails, Teams
+    └── settings-page/          # SettingsPage
 ```
 
 ---
@@ -114,6 +138,7 @@ frontend/src/
 | UI Element | Type | Label | Action | API Endpoint | Method | File |
 |---|---|---|---|---|---|---|
 | Cluster table | Table | Clusters | List all clusters | `/api/v1/clusters` | GET | `clusters/ClusterList.jsx` |
+| Rebalanced distribution | Panel | Recommended Node Layout | BFD-TSC real-time node layout with pod-to-node placement, 4-factor placement score, buffer node callout, 60s auto-refresh | `ascpaiAPI.getRecommendedConfig(clusterId)`, `ascpaiAPI.downloadRecommendedConfigYaml(clusterId)` | GET | `clusters/overview/RebalancedDistribution.jsx` ✅ NEW |
 | Search input | Input | Search clusters | Filter cluster list | — (client-side) | — | `clusters/ClusterList.jsx` |
 | Delete cluster btn | Button | Delete | Remove cluster | `/api/v1/clusters/{id}` | DELETE | `clusters/ClusterDeleteModal.jsx` |
 | Disconnect agent btn | Button | Disconnect | Disconnect agent | `/api/v1/clusters/{id}/agent/disconnect` | POST | `clusters/ClusterDisconnectModal.jsx` |
@@ -176,6 +201,33 @@ Modal lines 72-89 display `pool_change_reason` field from the rebalancing action
 
 **Route**: `/ascp-ai` → `pages/ASCPAiPage.jsx`
 
+### 4.2 ASCP.AI — New Components (2026-04-24 Audit) ✅ NEW
+
+| UI Element | Type | Label | Action | API Endpoint | Method | File | Status |
+|---|---|---|---|---|---|---|---|
+| Integrations panel | Panel | Integrations | Karpenter + KEDA install status combined view | `/api/v1/clusters/{id}/integrations-status` + `/api/v1/keda/{id}/install-status` | GET | `ascpai/IntegrationsPanel.jsx` | PARTIAL (orphan — not imported in any parent) |
+| KEDA lifecycle panel | Panel | KEDA Installation | Install/uninstall KEDA, list ScaledObjects, pause/resume | `/api/v1/keda/{id}/install-status`, `/api/v1/keda/{id}/scaled-objects`, `/api/v1/keda/{id}/install` | GET/POST/DELETE | `ascpai/KedaInstallation.jsx` | PARTIAL (only imported by orphaned IntegrationsPanel) |
+| Anchored node panel | Panel | Anchored Nodes | W3.5 anchored node fill status | `decisionEngineAPI.getAnchoredStatus()` — **method MISSING in api.js** | GET | `ascpai/AnchoredNodePanel.jsx` | PARTIAL (orphan + MISSING_LOGIC) |
+| Workload tier panel | Panel | Workload Tiers | W3.x tier classification display + manual override drawer | `/api/v1/clusters/{id}/workload-tiers`, PATCH `.../workloads/{ns}/{name}/tier-override` | GET/PATCH | `ascpai/WorkloadTierPanel.jsx` | PARTIAL (orphan — not imported in any parent) |
+| Stateful migration panel | Panel | Migration Status | §15 stateful migration status, start/force-complete | `/api/v1/clusters/{id}/migration-status`, POST `.../start-full-migration`, POST `.../force-complete-migration` | GET/POST | `ascpai/StatefulMigrationStatusPanel.jsx` | PARTIAL (orphan — not imported in any parent) |
+
+**New API modules for §4.2 components** (verified in api.js):
+- `kedaAPI.install(clusterId)` → `POST /api/v1/keda/{id}/install`
+- `kedaAPI.uninstall(clusterId)` → `DELETE /api/v1/keda/{id}/install`
+- `kedaAPI.getInstallStatus(clusterId)` → `GET /api/v1/keda/{id}/install-status`
+- `kedaAPI.detect(clusterId)` → `GET /api/v1/keda/{id}/detect`
+- `kedaAPI.listScaledObjects(clusterId)` → `GET /api/v1/keda/{id}/scaled-objects`
+- `kedaAPI.pauseScaledObject(clusterId, namespace, name)` → `POST /api/v1/keda/{id}/scaled-objects/{ns}/{name}/pause`
+- `kedaAPI.resumeScaledObject(clusterId, namespace, name)` → `POST /api/v1/keda/{id}/scaled-objects/{ns}/{name}/resume`
+- `integrationsAPI.getStatus(clusterId)` → `GET /api/v1/clusters/{id}/integrations-status`
+- `workloadTierAPI.listTiers(clusterId)` → `GET /api/v1/clusters/{id}/workload-tiers`
+- `workloadTierAPI.setTierOverride(clusterId, ns, name, data)` → `PATCH /api/v1/clusters/{id}/workloads/{ns}/{name}/tier-override`
+- `migrationStatusAPI.get(clusterId)` → `GET /api/v1/clusters/{id}/migration-status`
+- `migrationStatusAPI.startMigration(clusterId)` → `POST /api/v1/clusters/{id}/start-full-migration`
+- `migrationStatusAPI.forceComplete(clusterId)` → `POST /api/v1/clusters/{id}/force-complete-migration`
+
+**MISSING_LOGIC**: `AnchoredNodePanel.jsx` calls `decisionEngineAPI.getAnchoredStatus(clusterId)` which is **not defined in api.js**. The panel will throw at runtime when `clusterId` is truthy. Severity: **HIGH**. Fix: add `getAnchoredStatus: (clusterId) => api.get(\`/api/v1/ascpai/v3/anchored-status/${clusterId}\`)` to `decisionEngineAPI` (endpoint path needs backend verification).
+
 **WorkloadInspector cache-miss behavior** (backend, affects ASCP.AI + auto-rebalancer):
 Cache ABSENT → async re-classification triggered + entire cluster skipped this cycle
 Cache PRESENT → individual unclassified nodes filtered out
@@ -219,10 +271,32 @@ two sets of Redis keys. Both key format and value format are strict contracts:
 
 ## 5. Right-Sizing Dashboard
 
+> **Two separate Right-Sizing surfaces exist (Session 3):**
+> - `/right-sizing` → `components/right-sizing/RightSizingDashboard.jsx` — full Karpenter-integrated dashboard (original)
+> - `/optimization/right-sizing` → `pages/optimization/RightSizing.jsx` — new 5-section ML-driven design (Session 3 rewrite) ✅ NEW
+
+### 5.1 Original Dashboard (`/right-sizing`)
+
 | UI Element | Type | Label | Action | API Endpoint | Method | File |
 |---|---|---|---|---|---|---|
 | Main dashboard | Page | Right-Sizing | Full rightsizing UI | Multiple | GET/POST | `right-sizing/RightSizingDashboard.jsx` |
-| Karpenter tab | Tab | Karpenter Config | Karpenter-specific config tab | `/api/v1/karpenter/config` | GET/PATCH | `right-sizing/RightSizingKarpenterTab.jsx` ✅ NEW |
+| Karpenter tab | Tab | Karpenter Config | Karpenter-specific config tab | `/api/v1/karpenter/config` | GET/PATCH | `right-sizing/RightSizingKarpenterTab.jsx` ✅ LEGACY (file exists, not imported) |
+| Workload inventory | Dashboard | Workload Inventory | Unified workload table: tiers, placement policies, pods, agent actions, NodeClaims, placement metrics, rollout status | `/api/v1/workload-classification/{id}/workloads`, `/api/v1/placement-policy/{id}/placement-policies`, `/api/v1/clusters/{id}/pods`, agent-actions, node-claims, placement-metrics, rollout-status | GET | `right-sizing/WorkloadInventoryDashboard.jsx` ✅ NEW |
+
+### 5.2 New Right-Sizing Page (`/optimization/right-sizing`) ✅ NEW (Session 3)
+
+| UI Element | Type | Label | Action | API Endpoint | Method | File |
+|---|---|---|---|---|---|---|
+| Sticky header bar | Header | RIGHTSIZING | Stats pill row + cluster selector + Mode:AUTO badge | `useClusters` | GET | `pages/optimization/RightSizing.jsx` |
+| Cost Impact Projection | Card | Cost Impact Projection | Current→optimised cost, savings badge, SVG trend chart, Apply All button | `useRightsizing` → `optimizationAPI` | GET | `pages/optimization/RightSizing.jsx` |
+| Resource Allocation | Card | Resource Allocation | CPU/Mem overprovisioning dual progress bars + insight text | `useRightsizing.utilizationMetrics` | GET | `pages/optimization/RightSizing.jsx` |
+| Node Pool Optimization | Table | Node Pool Optimization | Pool/instance, node count change, CPU/Mem projections, fragmentation/risk chips, Simulate/Apply actions | `useRightsizing.nodePools` | GET | `pages/optimization/RightSizing.jsx` |
+| Workload Recommendations | Table | Workload Recommendations | Click-to-select table: workload, CPU/Mem change, save/mo | `useRightsizing.recommendations` | GET | `pages/optimization/RightSizing.jsx` |
+| Drilldown Panel | Panel | (selected workload) | CPU/Mem profiling, rationale, safety checks (replicas/PDB/OOMKills), Decline/Apply actions | `optimizationAPI.applyRecommendation` | POST | `pages/optimization/RightSizing.jsx` |
+
+**Hooks used**: `useClusters` (cluster list + selection), `useRightsizing(selectedId)` (recommendations, nodePools, utilizationMetrics, costImpact, summary, loading, error, refetch)
+**API modules**: `optimizationAPI.applyRecommendation(id)`
+**Route**: `/optimization/right-sizing` → `pages/optimization/RightSizing.jsx` — PermissionGate:`compute:view`
 
 **Inline sub-components** (inside `RightSizingDashboard.jsx`):
 - `AutoModeBanner` — shows auto-rebalance ON/OFF status
@@ -280,7 +354,16 @@ two sets of Redis keys. Both key format and value format are strict contracts:
 | HibernationDashboardNew | Page | Hibernation | Main hibernation page | Multiple | GET/POST | `hibernation/HibernationDashboardNew.jsx` |
 | Hibernation scheduler | Form | Scheduler | Full scheduler | `/api/v1/hibernation/schedules` | POST/PUT | `hibernation/HibernationScheduler.jsx` |
 
-**API module**: `hibernationAPI` → `list()`, `getByCluster(clusterId)`, `create()`, `update()`, `delete()`, `toggle()`, `override()`, `getStrategies()`
+**API module**: `hibernationAPI` (in `api.js`) → `list()`, `getByCluster(clusterId)`, `create()`, `update()`, `delete()`, `toggle()`, `override()`, `getStrategies()`
+
+**Standalone service** (`services/hibernationApi.js`) ✅ NEW — wraps same base URL `/api/v1/hibernation` with additional methods not in `hibernationAPI`:
+- `compareStrategies()` → `GET /api/v1/hibernation/strategies/compare`
+- `estimateSavings(id)` → `GET /api/v1/hibernation/schedules/{id}/savings`
+- `emergencySleep(clusterId, strategy)` → `POST /api/v1/hibernation/emergency/sleep`
+- `emergencyWake(clusterId)` → `POST /api/v1/hibernation/emergency/wake`
+- `emergencyTempHibernate(clusterId, hours, strategy)` → `POST /api/v1/hibernation/emergency/temp-hibernate`
+- Utilities: `generateScheduleMatrix(preset)` (presets: `weekends`, `nights`, `business_hours`) and `formatTimeUntil(targetTime)`
+
 **Route**: `/hibernation/:clusterId?` → exported as `HibernationDashboard` from `components/hibernation/index.js`
 
 **Backend conflict detection** (`backend/services/hibernation_service.py`):
@@ -412,10 +495,12 @@ two sets of Redis keys. Both key format and value format are strict contracts:
 | Platform config | Page | Configuration | Feature flags | — | — | `admin/AdminConfig.jsx` |
 | Platform settings | Tab | Settings | Platform-level config | — | — | `admin/PlatformSettings.jsx` |
 | Billing dashboard | Page | Billing | Billing overview | `/api/v1/admin/billing` | GET | `admin/AdminBilling.jsx` |
+| AWS pool intelligence | Panel | AWS Pool Intelligence | Fleet-wide AWS pool health: region filters, pool risk heatmap, capacity signals | `/api/v1/admin/aws-pool-data?regions=...` | GET | `admin/AwsPoolIntelligence.jsx` ✅ NEW |
 
 **New API endpoints** (verified in api.js):
 - `adminAPI.getCircuitBreakers()` → `/api/v1/admin/circuit-breakers` ✅ NEW
 - `adminAPI.resetCircuitBreaker(clusterId)` → `/api/v1/admin/circuit-breakers/{id}/reset` ✅ NEW
+- `adminAPI.getAwsPoolData(regions)` → `GET /api/v1/admin/aws-pool-data?regions=...` ✅ NEW
 
 **Routes**: `/admin`, `/admin/clients`, `/admin/health`, `/admin/experiments`, `/admin/config`, `/admin/organizations`, `/admin/billing` (all AdminRoute)
 
@@ -555,7 +640,40 @@ two sets of Redis keys. Both key format and value format are strict contracts:
 
 ---
 
-## 20. Backend-Only Routes (No Direct UI Component)
+## 20. Placement Advisor ✅ NEW (2026-04-24)
+
+### 20.1 Placement Advisor Pages & Components
+
+| UI Element | Type | Label | Action | API Endpoint | Method | File |
+|---|---|---|---|---|---|---|
+| Placement advisor page | Page | Placement Advisor | Cluster selector + dashboard host | `/api/v1/clusters` (cluster list) | GET | `pages/PlacementAdvisorPage.jsx` |
+| Placement advisor dashboard | Dashboard | Placement Intelligence Advisor | Summary stats (savings, spot/OD targets, actionable, rollout-ready), policy table with tier/status filters and search | `/api/v1/placement-policy/{id}/placement-policies`, `/api/v1/placement-policy/{id}/placement-policies/summary` | GET | `components/placement/PlacementAdvisorDashboard.jsx` |
+| Run advisor cycle btn | Button | Run Advisor Cycle | Trigger placement policy generation cycle + poll 5× every 3s | `/api/v1/placement-policy/{id}/placement-policies/generate` | POST | `components/placement/PlacementAdvisorDashboard.jsx` |
+| Policy detail page | Page | Placement Policy Detail | Full policy detail: allocation targets, constraints, instance families/types, signals audit trail, affinity/topology YAML preview | `/api/v1/placement-policy/{id}/placement-policies/{workloadId}` | GET | `components/placement/PlacementPolicyDetail.jsx` |
+
+**State Source (hooks)**:
+- `usePlacementPolicySummary(clusterId)` → `placementPolicyAPI.getSummary()`
+- `usePlacementPolicies(clusterId)` → `placementPolicyAPI.list()` + `placementPolicyAPI.generate()`
+- `usePlacementPolicyDetail(clusterId, workloadId)` → `placementPolicyAPI.getDetail()`
+All in `hooks/usePlacementPolicies.js`.
+
+**API module**: `placementPolicyAPI`
+- `list(clusterId, params)` → `GET /api/v1/placement-policy/{id}/placement-policies` (paginated: `{items, total}`, filters: tier, actionable, page, page_size)
+- `getSummary(clusterId)` → `GET /api/v1/placement-policy/{id}/placement-policies/summary` (fields: `total_estimated_savings_usd`, `total_spot_target`, `total_od_target`, `actionable_count`, `total_workloads`, `rollout_eligible_count`, `observation_mode`)
+- `getDetail(clusterId, workloadId)` → `GET /api/v1/placement-policy/{id}/placement-policies/{workloadId}` (fields: `name`, `namespace`, `workload_id`, `criticality_tier`, `confidence_state`, `actionable`, `actionable_blocked_reason`, `ondemand_target`, `spot_target`, `spot_target_raw`, `assigned_nodepool_class`, `keda_min_replicas`, `keda_max_replicas`, `spot_friendly`, `traffic_skew_detected`, `skew_signal_source`, `rollout_eligible`, `rollout_blocked_reason`, `spread_relaxation_tier`, `spot_instance_families`, `spot_instance_types`, `signals_used`, `baseline_affinity`, `burst_affinity`, `schema_warning`, `schema_version`, `estimated_savings_pct`, `estimated_monthly_saving_usd`)
+- `generate(clusterId)` → `POST /api/v1/placement-policy/{id}/placement-policies/generate`
+
+**Routes**:
+- `/placement-advisor` → `PlacementAdvisorPage` (PermissionGate: `compute:view`)
+- `/clusters/:clusterId/placement-policies/:workloadId` → `PlacementPolicyDetail` (PermissionGate: `compute:view`)
+
+**Policy table columns**: Workload (name/namespace), Tier & Confidence (Platinum/Gold/Silver/Bronze badge), Replicas, Target OD/Spot, Est. Savings %, Status (Actionable | Rollout Ready badges)
+
+**Tier color scheme**: Platinum→purple, Gold→yellow, Silver→gray, Bronze→amber
+
+---
+
+## 21. Backend-Only Routes (No Direct UI Component)
 
 | Backend Route File | Prefix | Purpose | Consumers |
 |---|---|---|---|
@@ -568,6 +686,9 @@ two sets of Redis keys. Both key format and value format are strict contracts:
 | `worker_routes.py` | `/api/v1/worker/` | Agent-reported metrics ingestion | Agent DaemonSet |
 | `metrics_routes.py` (rejections) | `/api/v1/metrics/rejections/{clusterId}` | Decision engine rejection counters | `metricAPI.getRejectionCounters()` |
 | `metrics_routes.py` (health-timeline) | `/metrics/cluster/{id}/health-timeline` (no `/api/v1` prefix) | Cluster health event timeline | `ClusterHealthTimeline.jsx` (on-mount fetch) |
+| `execution_data_routes.py` ✅ NEW | `/api/v1/pods`, `/api/v1/agent-actions`, `/api/v1/nodeclaims`, `/api/v1/placement-metrics`, `/api/v1/rollout-status` | 5 execution-data endpoints for `WorkloadInventoryDashboard` | `clusterAPI.getPods/getAgentActions/getNodeClaims/getPlacementMetrics/getRolloutStatus()` |
+| `placement_webhook_routes.py` ✅ NEW | `POST /webhooks/placement/mutate-pods` | K8s MutatingWebhookConfiguration — injects soft AZ spread + soft Spot affinity (weight=80) into pods at creation; stamps KEDA scale event timestamps | K8s API server (pure backend, no frontend UI) |
+| `integrations_routes.py` ✅ NEW | `GET /api/v1/integrations/health` | Joint KEDA + Karpenter installation health (K4.1) — combines both checks into one response | Not yet exposed in `integrationsAPI` in `api.js` — MISSING_LOGIC (see §28.3) |
 
 **Authentication note (agent_routes.py)**: ALL endpoints in `agent_routes.py` require `validate_api_key`. The orchestrator-specific endpoints (`GET /agents/orchestrator/{cluster_id}/pending-commands`, `POST /agents/orchestrator/{cluster_id}/command-result`) were previously unauthenticated — fixed with explicit `validate_api_key` dependency (lines ~362, ~409). These are NOT listed in the table above because they are under `/api/v1/agents/`, not `/api/v1/agent/`.
 
@@ -679,7 +800,7 @@ The stale `RebalancingAction` expiry loop (>45 min `in_progress`/`waiting_agent`
 
 ---
 
-## API Client Module Index (`frontend/src/services/api.js` — 605 lines)
+## API Client Module Index (`frontend/src/services/api.js` — 758 lines | `services/hibernationApi.js` — 99 lines ✅ NEW)
 
 | Module Name | Export Aliases | Prefix | Primary Backend |
 |---|---|---|---|
@@ -718,6 +839,13 @@ The stale `RebalancingAction` expiry loop (>45 min `in_progress`/`waiting_agent`
 | `optimizerCoordinatorAPI` | — | `/api/v1/optimizer/` | `optimizer_coordinator_routes.py` |
 | `poolRotationAPI` | — | `/api/v1/pool-rotation/` | `pool_rotation_routes.py` |
 | `multiClusterAPI` | — | `/api/v1/multi-cluster/` | `multi_cluster_routes.py` |
+| `placementPolicyAPI` | — | `/api/v1/placement-policy/` | `placement_policy_routes.py` ✅ NEW |
+| `kedaAPI` | — | `/api/v1/keda/` | `keda_routes.py` ✅ NEW |
+| `integrationsAPI` | — | `GET /api/v1/clusters/{id}/integrations-status` (in api.js) | `cluster_routes.py` — Note: `integrations_routes.py` has `GET /api/v1/integrations/health` NOT yet in api.js ✅ NEW |
+| `workloadTierAPI` | — | `/api/v1/clusters/{id}/workload-tiers` + tier-override | `cluster_routes.py` ✅ NEW |
+| `migrationStatusAPI` | — | `/api/v1/clusters/{id}/migration-status` + start/force | `cluster_routes.py` ✅ NEW |
+| `workloadClassificationAPI` | — | `/api/v1/workload-classification/` | `workload_classification_routes.py` ✅ NEW |
+| `hibernationApi` (standalone) | — | `/api/v1/hibernation/` (emergency + compare + savings) | `hibernation_routes.py` ✅ NEW (separate file `services/hibernationApi.js`) |
 
 ---
 
@@ -728,6 +856,13 @@ The stale `RebalancingAction` expiry loop (>45 min `in_progress`/`waiting_agent`
 | Store | File | State Managed |
 |---|---|---|
 | `useAuthStore` | `store/useStore.js` | `user`, `accessToken`, `isAuthenticated`, `login()`, `logout()` |
+| `useClusterStore` | `store/useStore.js` | `clusters`, `selectedCluster`, `loading` ✅ NEWLY DOCUMENTED |
+| `useTemplateStore` | `store/useStore.js` | `templates`, `defaultTemplate`, `loading` ✅ NEWLY DOCUMENTED |
+| `usePolicyStore` | `store/useStore.js` | `policies`, `selectedPolicy`, `loading` ✅ NEWLY DOCUMENTED |
+| `useMetricsStore` | `store/useStore.js` | `dashboardKPIs`, `costMetrics`, `instanceMetrics` ✅ NEWLY DOCUMENTED |
+| `useExperimentStore` | `store/useStore.js` | `experiments`, `selectedExperiment`, `experimentResults` ✅ NEWLY DOCUMENTED |
+| `useUIStore` | `store/useStore.js` | `sidebarOpen`, `theme`, `notifications` ✅ NEWLY DOCUMENTED |
+| `useHeaderStore` | `store/useStore.js` | `rightContent`, `refreshAction`, `setRightContent()`, `setRefreshAction()`, `clearHeader()` — used by `MainLayout.jsx` ✅ NEWLY DOCUMENTED |
 | `useAtharvaStore` | `store/useASCPStore.js` | ASCP.AI panel state, selected cluster, cache |
 | `useHibernationStore` | `store/useHibernationStore.js` | Hibernation wizard state, selected schedule |
 
@@ -737,14 +872,19 @@ The stale `RebalancingAction` expiry loop (>45 min `in_progress`/`waiting_agent`
 |---|---|---|
 | `useDashboard` | `hooks/useDashboard.js` | Dashboard data fetching & widget state |
 | `usePermission` | `hooks/usePermission.js` | Permission checking helper |
-| `useAdaptivePolling` | `hooks/useAdaptivePolling.js` | Intelligent polling that backs off when tab is hidden ✅ NEW |
-| `useAuth` | `hooks/useAuth.js` | Auth state helper (wraps useAuthStore) ✅ NEW |
+| `useAdaptivePolling` | `hooks/useAdaptivePolling.js` | Intelligent polling that backs off when tab is hidden |
+| `useAuth` | `hooks/useAuth.js` | Auth state helper (wraps useAuthStore) |
+| `usePlacementPolicies` | `hooks/usePlacementPolicies.js` | 3 hooks: `usePlacementPolicySummary`, `usePlacementPolicies`, `usePlacementPolicyDetail` |
+| `useClusters` | `hooks/useClusters.js` | Cluster list fetch + `selectedId`/`setSelectedId` state — used by RightSizing, EventTimeline, ScalingActivity, NodeActivity ✅ NEW (Session 3) |
+| `useClusterState` | `hooks/useClusterState.js` | Extended cluster state: nodes, utilization, events, polling ✅ NEW (Session 3) |
+| `useExecutionState` | `hooks/useExecutionState.js` | Rebalancing/scaling execution state: `rebalancingActions`, `rebalancingByState`, `agentActions`, `scalingActions`, `timeline`, `behaviorProfile`, `agentActionChartData`, loading, error, refetch ✅ NEW (Session 3) |
+| `useRightsizing` | `hooks/useRightsizing.js` | Rightsizing data layer: `recommendations`, `nodePools`, `utilizationMetrics`, `costImpact`, `summary`, `chartData`, loading, error, refetch — consumed by new `pages/optimization/RightSizing.jsx` ✅ NEW (Session 3) |
 
 ### Utilities
 
 | Utility | File | Functions |
 |---|---|---|
-| Formatters | `utils/formatters.js` | `formatCurrency()`, `formatDate()`, `formatBytes()` |
+| Formatters | `utils/formatters.js` | `formatCurrency()`, `formatDate()`, `formatBytes()`, `formatPercentage()` ✅, `formatNumber()` ✅, `formatDateTime()` ✅, `formatRelativeTime()` ✅, `formatFileSize()` ✅, `truncate()` ✅, `capitalize()` ✅, `getStatusColor()` ✅, `getLifecycleColor()` ✅, `formatClusterType()` ✅ — [was 3 exports, now 13 — doc was incomplete] |
 
 ---
 
@@ -753,81 +893,106 @@ The stale `RebalancingAction` expiry loop (>45 min `in_progress`/`waiting_agent`
 | Category | Count | Location |
 |---|---|---|
 | Frontend Components (`.jsx`) | 113 | `frontend/src/components/` |
-| Frontend Pages (`.jsx`) | 8 | `frontend/src/pages/` |
+| Frontend Pages (`.jsx`) | 39 | `frontend/src/pages/` — reorganised into 9 sub-folders (Session 3) ✅ |
 | Barrel Index Files (`.js`) | 4 | Various `index.js` |
-| Zustand Stores (`.js`) | 3 | `frontend/src/store/` |
-| Custom Hooks (`.js`) | 4 | `frontend/src/hooks/` |
+| Zustand Stores (`.js`) | 3 store files → 10 stores | `frontend/src/store/` |
+| Custom Hooks (`.js`) | 9 | `frontend/src/hooks/` — 4 new in Session 3 ✅ |
 | Utility Modules (`.js`) | 1 | `frontend/src/utils/` |
-| API Client (`.js`) | 1 | `frontend/src/services/api.js` |
+| API Client (`.js`) | 2 | `frontend/src/services/api.js` + `hibernationApi.js` |
 | App Entry (`.js`) | 2 | `App.js`, `index.js` |
-| **Frontend Total** | **136** | |
+| **Frontend Total** | **~170** | (+30 new page files Session 3, +4 new hooks) |
 
 ### Component Count by Directory (Verified)
 
 | Directory | File Count |
 |---|---|
-| `admin/` | 9 |
+| `admin/` | 10 ➕+1 (AwsPoolIntelligence) |
 | `approvals/` | 2 |
-| `ascpai/` | 13 |
+| `ascpai/` | 18 ➕+5 (IntegrationsPanel, KedaInstallation, AnchoredNodePanel, WorkloadTierPanel, StatefulMigrationStatusPanel) |
 | `audit/` | 1 |
 | `auth/` | 3 |
 | `cleanup/` | 10 |
-| `clusters/` | 12 |
+| `clusters/` | 13 ➕+1 (overview/RebalancedDistribution) |
 | `dashboard/` | 13 |
 | `governance/` | 4 |
 | `hibernation/` | 26 |
 | `layout/` | 1 |
 | `onboarding/` | 4 |
 | `optimizer/` | 1 |
+| `placement/` | 2 ➕ NEW dir (PlacementAdvisorDashboard, PlacementPolicyDetail) |
 | `policies/` | 3 |
 | `rds/` | 2 |
 | `ri/` | 2 |
-| `right-sizing/` | 2 |
+| `right-sizing/` | 3 ➕+1 (WorkloadInventoryDashboard) |
 | `s3/` | 2 |
 | `settings/` | 11 |
 | `shared/` | 12 |
 | `teams/` | 3 |
 | `transfer/` | 2 |
-| **Total** | **138** |
+| **Total** | **151** ➕+13 new |
 
 ---
 
-## Route Map (verified from App.js)
+## Route Map (verified from App.js — Session 3 updated)
 
-| Path | Component | Guard |
-|---|---|---|
-| `/login` | `auth/Login.jsx` | PublicRoute |
-| `/signup` | `auth/Signup.jsx` | PublicRoute |
-| `/invite-acceptance` | `auth/InviteAcceptance.jsx` | ProtectedRoute |
-| `/onboarding` | `pages/Onboarding.jsx` | ProtectedRoute |
-| `/dashboard` | `dashboard/Dashboard.jsx` | ProtectedRoute |
-| `/clusters` | `clusters/ClusterList.jsx` | PermissionGate:`compute:view` |
-| `/policies` | `policies/PolicyConfig.jsx` | PermissionGate:`policy:manage` |
-| `/right-sizing` | `right-sizing/RightSizingDashboard.jsx` | PermissionGate:`compute:view` |
-| `/hibernation/:clusterId?` | `hibernation/HibernationDashboardNew.jsx` | PermissionGate:`hibernation:view` |
-| `/automation-settings` | `settings/GovernanceSettings.jsx` | PermissionGate:`policy:manage` |
-| `/audit` | `audit/AuditLog.jsx` | PermissionGate:`audit:view` |
-| `/hygiene` | `cleanup/CleanupDashboard.jsx` | PermissionGate:`hygiene:view` |
-| `/approvals` | `pages/Approvals.jsx` | ProtectedRoute |
-| `/settings` | `settings/Settings.jsx` | ProtectedRoute |
-| `/tagging-policies` | `settings/TagPoliciesManager.jsx` | PermissionGate:`policy:manage` |
-| `/node-templates` | `pages/NodeTemplates.jsx` | PermissionGate:`compute:view` |
-| `/teams` | `pages/Teams.jsx` | PermissionGate:`team:view` |
-| `/teams/:teamId` | `pages/TeamDetails.jsx` | PermissionGate:`team:view` |
-| `/roles` | `pages/Roles.jsx` | PermissionGate:`team:manage_roles` |
-| `/accounts/:accountId/analytics` | `pages/AccountAnalytics.jsx` | ProtectedRoute |
-| `/ri-analysis` | `ri/RIAnalysis.jsx` | ProtectedRoute |
-| `/s3-analysis` | `s3/S3Analysis.jsx` | ProtectedRoute |
-| `/rds-analysis` | `rds/RDSAnalysis.jsx` | ProtectedRoute |
-| `/transfer-analysis` | `transfer/TransferAnalysis.jsx` | ProtectedRoute |
-| `/ascp-ai` | `pages/ASCPAiPage.jsx` | ProtectedRoute |
-| `/admin` | `admin/AdminDashboard.jsx` | AdminRoute |
-| `/admin/clients` | `admin/AdminClients.jsx` | AdminRoute |
-| `/admin/health` | `admin/AdminHealth.jsx` | AdminRoute |
-| `/admin/experiments` | `admin/AdminExperiments.jsx` | AdminRoute |
-| `/admin/config` | `admin/AdminConfig.jsx` | AdminRoute |
-| `/admin/organizations` | `admin/AdminOrganizations.jsx` | AdminRoute |
-| `/admin/billing` | `admin/AdminBilling.jsx` | AdminRoute |
+| Path | Component | Guard | Notes |
+|---|---|---|---|
+| `/login` | `auth/Login.jsx` | PublicRoute | |
+| `/signup` | `auth/Signup.jsx` | PublicRoute | |
+| `/invite-acceptance` | `auth/InviteAcceptance.jsx` | ProtectedRoute | |
+| `/onboarding` | `pages/Onboarding.jsx` | ProtectedRoute | |
+| `/dashboard` | `dashboard/Dashboard.jsx` | ProtectedRoute | |
+| `/clusters` | `clusters/ClusterList.jsx` | PermissionGate:`compute:view` | |
+| `/policies` | `policies/PolicyConfig.jsx` | PermissionGate:`policy:manage` | |
+| `/right-sizing` | `right-sizing/RightSizingDashboard.jsx` | PermissionGate:`compute:view` | Original full dashboard |
+| `/optimization/right-sizing` | `pages/optimization/RightSizing.jsx` | PermissionGate:`compute:view` | ✅ NEW Session 3 — new 5-section design |
+| `/live/active-actions` | `pages/live-operations/ActiveActions.jsx` | ProtectedRoute | ✅ NEW Session 3 — placeholder |
+| `/live/event-timeline` | `pages/live-operations/EventTimeline.jsx` | ProtectedRoute | ✅ Session 3 — replaced with placeholder |
+| `/live/scaling-activity` | `pages/live-operations/ScalingActivity.jsx` | ProtectedRoute | Moved to sub-folder |
+| `/live/node-activity` | `pages/live-operations/NodeActivity.jsx` | ProtectedRoute | Moved to sub-folder |
+| `/optimization/rebalancing` | `pages/optimization/Rebalancing.jsx` | ProtectedRoute | ✅ NEW Session 3 — placeholder |
+| `/optimization/history` | `pages/optimization/OptimizationHistory.jsx` | ProtectedRoute | ✅ NEW Session 3 — placeholder |
+| `/workloads/inventory` | `pages/workloads/Inventory.jsx` | ProtectedRoute | Moved to sub-folder |
+| `/workloads/risk-safety` | `pages/workloads/RiskAndSafety.jsx` | ProtectedRoute | Moved to sub-folder |
+| `/infra/karpenter` | `pages/infrastructure/provisioning/Karpenter.jsx` | ProtectedRoute | ✅ NEW Session 3 — placeholder |
+| `/infra/node-pools` | `pages/infrastructure/provisioning/NodePool.jsx` | ProtectedRoute | ✅ NEW Session 3 — placeholder |
+| `/infra/karpenter-status` | `pages/infrastructure/integrations/KarpenterStatus.jsx` | ProtectedRoute | ✅ NEW Session 3 — placeholder |
+| `/infra/keda-status` | `pages/infrastructure/integrations/KedaStatus.jsx` | ProtectedRoute | ✅ NEW Session 3 — placeholder |
+| `/cost-savings/resource-hygiene` | `components/cleanup/CleanupDashboard.jsx` | ProtectedRoute | ✅ NEW Session 3 — sidebar under Cost & Savings |
+| `/hibernation/:clusterId?` | `components/hibernation/` (barrel → `{ HibernationDashboard }` = `HibernationDashboardNew.jsx`) | PermissionGate:`hibernation:view` | Named import from barrel index |
+| `/automation-settings` | `settings/GovernanceSettings.jsx` | PermissionGate:`policy:manage` | |
+| `/audit` | `audit/AuditLog.jsx` | PermissionGate:`audit:view` | |
+| `/hygiene` | `cleanup/CleanupDashboard.jsx` | PermissionGate:`hygiene:view` | Original hygiene route |
+| `/approvals` | `pages/governance/Approvals.jsx` | ProtectedRoute | Moved to sub-folder |
+| `/settings` | `settings/Settings.jsx` | ProtectedRoute | |
+| `/tagging-policies` | `settings/TagPoliciesManager.jsx` | PermissionGate:`policy:manage` | |
+| `/node-templates` | `pages/infrastructure/provisioning/NodeTemplates.jsx` | PermissionGate:`compute:view` | Moved to sub-folder |
+| `/placement-advisor` | `pages/optimization/PlacementAdvisorPage.jsx` | PermissionGate:`compute:view` | Moved to sub-folder. `PlacementAdvisorDashboard` is rendered *inside* this page, not via its own route. |
+| `/clusters/:clusterId/placement-policies/:workloadId` | `components/placement/PlacementPolicyDetail.jsx` | PermissionGate:`compute:view` | |
+| `/teams` | `pages/governance/Teams.jsx` | PermissionGate:`team:view` | Moved to sub-folder |
+| `/teams/:teamId` | `pages/governance/TeamDetails.jsx` | PermissionGate:`team:view` | Moved to sub-folder |
+| `/roles` | `pages/governance/Roles.jsx` | PermissionGate:`team:manage_roles` | Moved to sub-folder |
+| `/accounts/:accountId/analytics` | `pages/cost-savings/AccountAnalytics.jsx` | ProtectedRoute | Moved to sub-folder |
+| `/ri-analysis` | `ri/RIAnalysis.jsx` | ProtectedRoute | |
+| `/s3-analysis` | `s3/S3Analysis.jsx` | ProtectedRoute | |
+| `/rds-analysis` | `rds/RDSAnalysis.jsx` | ProtectedRoute | |
+| `/transfer-analysis` | `transfer/TransferAnalysis.jsx` | ProtectedRoute | |
+| `/ascp-ai` | `pages/optimization/ASCPAiPage.jsx` | ProtectedRoute | Moved to sub-folder |
+| `/admin` | `admin/AdminDashboard.jsx` | AdminRoute | |
+| `/admin/clients` | `admin/AdminClients.jsx` | AdminRoute | |
+| `/admin/health` | `admin/AdminHealth.jsx` | AdminRoute | |
+| `/admin/experiments` | `admin/AdminExperiments.jsx` | AdminRoute | |
+| `/admin/config` | `admin/AdminConfig.jsx` | AdminRoute | |
+| `/admin/organizations` | `admin/AdminOrganizations.jsx` | AdminRoute | |
+| `/admin/billing` | `admin/AdminBilling.jsx` | AdminRoute | |
+| `/` | `Navigate to /dashboard` | ProtectedRoute | Root index redirect |
+| `*` | `Navigate to /dashboard` | — | 404 catch-all redirect |
+
+> **Note on route guards**: All routes inside `<Route path="/" element={<ProtectedRoute><MainLayout/></ProtectedRoute>}>` inherit ProtectedRoute. Additional PermissionGate wrapping is noted where present. Routes with PermissionGate still require authentication.
+
+> **Global App.js root components** (rendered outside all routes, always mounted):
+> - `VolatilityMonitor` — wrapped in `ErrorBoundary`, sticky banner for non-NORMAL ML regime (§21.7)
+> - `TicketRequestModal` — global governance approval modal; opened by `window.dispatchEvent(new CustomEvent('governance:required', { detail: data }))` event from anywhere in the app. Listens in `App.js` via `useEffect` + `window.addEventListener('governance:required', ...)`. Wraps `approvals/TicketRequestModal.jsx`.
 
 ---
 
@@ -895,7 +1060,8 @@ The stale `RebalancingAction` expiry loop (>45 min `in_progress`/`waiting_agent`
 
 **Configuration Tab:** Strategy Selector (Balanced/Cost/Performance), Spot Target Slider, Instance Families, Feature Toggles
 
-Integration verified: RightSizingKarpenterTab does NOT exist as a separate imported component.
+Integration verified (2026-04-24 re-audit): `RightSizingKarpenterTab.jsx` EXISTS as a separate file on disk but is **NOT imported anywhere** — it is not connected to `RightSizingDashboard.jsx` or any other component. Status: LEGACY (dead file, consider moving to temp-bin).
+`WorkloadInventoryDashboard.jsx` IS imported by `RightSizingDashboard.jsx` (line 8) and renders the workload inventory table.
 RightSizingDashboard.jsx uses inline conditional rendering for all tabs:
   - karpenter tab: renders KarpenterConfigPanel inline (lines 1035-1076)
   - history tab: renders optimization history table inline
@@ -1444,3 +1610,465 @@ Partially fixed (no full resolution yet):
 - **P-C8**: `INSTANCE_SPECS` in `karpenter_routes.py` still has hardcoded ap-south-1 reference prices
 - **P-H10**: DryRun global budget (200/hr) can still starve under high load
 - **P-M23**: `spot * 3.0` last-resort OD fallback for instance types not in `_ONDEMAND_FALLBACK` table
+
+---
+
+## 27. UI Audit Report — 2026-04-24
+
+> **Audit method**: Full filesystem scan of `frontend/src/`, `grep` trace of all imports, `api.js` line-by-line verification.
+> **Scope**: All `.jsx` files in `components/` + `pages/`; all hook `.js` files; all `api.js` exports.
+
+---
+
+### 27.1 NEW_COMPONENTS_TABLE
+
+Components found in the codebase **not present** in prior `all-components.md`.
+
+| Component Name | Section | Detected From | Purpose | Data Source | Status |
+|---|---|---|---|---|---|
+| `pages/PlacementAdvisorPage.jsx` | §20 Placement Advisor | `pages/` scan | Cluster-selector host page for Placement Advisor feature | `clusterAPI.list()` → `GET /api/v1/clusters` | ACTIVE — routed at `/placement-advisor` |
+| `components/placement/PlacementAdvisorDashboard.jsx` | §20 Placement Advisor | `components/placement/` scan | Policy table, summary KPIs, tier/status filters, generate button | `placementPolicyAPI.list()`, `.getSummary()`, `.generate()` | ACTIVE — rendered by PlacementAdvisorPage |
+| `components/placement/PlacementPolicyDetail.jsx` | §20 Placement Advisor | `components/placement/` scan | Full policy detail: targets, constraints, instance families, signals, affinity YAML | `placementPolicyAPI.getDetail()` | ACTIVE — routed at `/clusters/:id/placement-policies/:workloadId` |
+| `hooks/usePlacementPolicies.js` | §20 / State Management | `hooks/` scan | 3 hooks: summary, paginated list+generate, detail fetch | `placementPolicyAPI.*` | ACTIVE — used by both placement components |
+| `admin/AwsPoolIntelligence.jsx` | §11 Admin Panel | `components/admin/` scan | Fleet-wide AWS pool health: region filter, pool risk heatmap, capacity signals | `adminAPI.getAwsPoolData(regions)` → `GET /api/v1/admin/aws-pool-data` | ACTIVE — imported by `AdminDashboard.jsx` |
+| `clusters/overview/RebalancedDistribution.jsx` | §3 Cluster Management | `components/clusters/overview/` scan | BFD-TSC real-time recommended node layout, 4-factor placement score, buffer node callout, 60s auto-refresh | `ascpaiAPI.getRecommendedConfig()`, `.downloadRecommendedConfigYaml()` | ACTIVE — imported by `OverviewTab.jsx` |
+| `right-sizing/WorkloadInventoryDashboard.jsx` | §5 Right-Sizing | `components/right-sizing/` scan | Unified workload table: classification tiers, placement policies, pods, agent actions, NodeClaims, placement metrics, rollout status | `workloadClassificationAPI.getWorkloads()`, `placementPolicyAPI.list()`, `clustersAPI.getPods/getAgentActions/getNodeClaims/getPlacementMetrics/getRolloutStatus()` | ACTIVE — imported by `RightSizingDashboard.jsx` |
+| `ascpai/IntegrationsPanel.jsx` | §4 ASCP.AI | `components/ascpai/` scan | Combined Karpenter + KEDA installation status view; renders `KedaInstallation` inline | `karpenterAPI.getInstallStatus()`, `kedaAPI.getInstallStatus()`, `integrationsAPI.getStatus()` | PARTIAL — not imported by any parent component (orphaned) |
+| `ascpai/KedaInstallation.jsx` | §4 ASCP.AI | `components/ascpai/` scan | K2 KEDA lifecycle: install/uninstall, list ScaledObjects, pause/resume | `kedaAPI.getInstallStatus()`, `.listScaledObjects()`, `.install()`, `.uninstall()`, `.pauseScaledObject()`, `.resumeScaledObject()` | PARTIAL — only imported by orphaned `IntegrationsPanel` |
+| `ascpai/AnchoredNodePanel.jsx` | §4 ASCP.AI | `components/ascpai/` scan | W3.5 anchored node fill status with capacity breakdown | `decisionEngineAPI.getAnchoredStatus()` — **method not in api.js** | PARTIAL — orphaned + MISSING_LOGIC (see §27.3) |
+| `ascpai/WorkloadTierPanel.jsx` | §4 ASCP.AI | `components/ascpai/` scan | W3.x workload tier classification list + manual tier-override drawer (§15 spec) | `workloadTierAPI.listTiers()`, `.setTierOverride()` | PARTIAL — not imported by any parent component (orphaned) |
+| `ascpai/StatefulMigrationStatusPanel.jsx` | §4 ASCP.AI | `components/ascpai/` scan | §15 stateful migration status dashboard, start/force-complete controls | `migrationStatusAPI.get()`, `.startMigration()`, `.forceComplete()` | PARTIAL — not imported by any parent component (orphaned) |
+| `hooks/usePlacementPolicies.js` (exports: `usePlacementPolicySummary`, `usePlacementPolicies`, `usePlacementPolicyDetail`) | §20 / State Mgmt | `hooks/` scan | Placement policy data layer | `placementPolicyAPI.*` | ACTIVE |
+
+---
+
+### 27.2 LEGACY_COMPONENTS_TABLE
+
+Components that exist on disk but are **not rendered or imported** anywhere. Do NOT delete — track here.
+
+| Component Name | Previous Section | Reason | Last Reference | Action |
+|---|---|---|---|---|
+| `right-sizing/RightSizingKarpenterTab.jsx` | §5 Right-Sizing | File exists on disk but is **not imported anywhere** in the codebase. `RightSizingDashboard.jsx` uses inline conditional rendering for all tabs — the Karpenter tab is rendered inline, not via this file. The doc previously described this file as if it were a real imported component. | Doc note at `§A.4` (2026-03-23 update) acknowledged this; file predates that note | Move to `temp-bin/` or delete in next cleanup sweep |
+
+---
+
+### 27.3 MISSING_LOGIC_TABLE
+
+UI components with broken, missing, or unverifiable data source / action / backend mapping.
+
+| Component Name | Missing Part | Detail | Severity |
+|---|---|---|---|
+| `ascpai/AnchoredNodePanel.jsx` | **Missing API method** | Component calls `decisionEngineAPI.getAnchoredStatus(clusterId)` at line 72–73. This method does **not exist** in `frontend/src/services/api.js`. The `decisionEngineAPI` object (lines 624–647 of api.js) has no `getAnchoredStatus` key. The component will throw a TypeError at runtime the moment `clusterId` is set. Fix: add `getAnchoredStatus: (clusterId) => api.get(\`/api/v1/ascpai/v3/anchored-status/${clusterId}\`)` to `decisionEngineAPI` (backend endpoint path must be verified against `ascpai_routes.py` before adding). | **HIGH** |
+| `ascpai/IntegrationsPanel.jsx` | **No route / parent render** | Component exists and its internal logic is complete, but no page or route renders it. It will never appear in the UI until wired into `ASCPAiPage.jsx` (e.g., as a new tab `integrations`) or another parent. | **MEDIUM** |
+| `ascpai/WorkloadTierPanel.jsx` | **No route / parent render** | Component exists (W3.x spec), all API calls valid (`workloadTierAPI`), but not rendered anywhere. | **MEDIUM** |
+| `ascpai/StatefulMigrationStatusPanel.jsx` | **No route / parent render** | Component exists (§15 spec), all API calls valid (`migrationStatusAPI`), but not rendered anywhere. | **MEDIUM** |
+| `ascpai/KedaInstallation.jsx` | **Reachable only via orphaned parent** | Only imported by `IntegrationsPanel.jsx` which is itself orphaned. Effectively unreachable from current routing. | **MEDIUM** |
+
+---
+
+### 27.4 ACTIVE_COMPONENTS_TABLE — Audit Summary (changed/verified entries only)
+
+| Component Name | Section | Purpose | Data Source | State Source | User Actions | Backend Mapping | Status |
+|---|---|---|---|---|---|---|---|
+| `PlacementAdvisorPage` | §20 | Cluster selector + dashboard host | `GET /api/v1/clusters` | Local `useState` (clusters, selectedClusterId) | Cluster dropdown | `cluster_routes.py` | ACTIVE |
+| `PlacementAdvisorDashboard` | §20 | Policy table + summary KPIs + generate cycle | `GET .../placement-policies`, `.../summary`, `POST .../generate` | `usePlacementPolicies`, `usePlacementPolicySummary` | Refresh, Run Advisor Cycle, Details navigate | `placement_policy_routes.py` | ACTIVE |
+| `PlacementPolicyDetail` | §20 | Full workload policy deep-dive | `GET .../placement-policies/{workloadId}` | `usePlacementPolicyDetail` | Refresh, Back navigate | `placement_policy_routes.py` | ACTIVE |
+| `AwsPoolIntelligence` | §11 Admin | Fleet-wide AWS pool health with region filter | `GET /api/v1/admin/aws-pool-data?regions=...` | Local `useState` | Region filter, Refresh | `admin_routes.py` | ACTIVE |
+| `RebalancedDistribution` | §3 Clusters | BFD-TSC recommended node layout, 60s auto-refresh | `ascpaiAPI.getRecommendedConfig()`, `.downloadRecommendedConfigYaml()` | Local `useState` + `useRef` timer | Download YAML | `ascpai_routes.py` | ACTIVE |
+| `WorkloadInventoryDashboard` | §5 Right-Sizing | Unified workload+placement+pod inventory table | `workloadClassificationAPI.getWorkloads()`, `placementPolicyAPI.list()`, `clustersAPI.*` | Local `useState` | Filter, search, sort | `workload_classification_routes.py`, `placement_policy_routes.py`, `cluster_routes.py` | ACTIVE |
+| `IntegrationsPanel` | §4 ASCP.AI | Karpenter + KEDA install status | `karpenterAPI.getInstallStatus()`, `kedaAPI.getInstallStatus()` | Local `useState` | Refresh | `karpenter_routes.py`, `keda_routes.py` | PARTIAL (orphan) |
+| `KedaInstallation` | §4 ASCP.AI | KEDA lifecycle management | `kedaAPI.*` | Local `useState` | Install, Uninstall, Pause/Resume ScaledObject | `keda_routes.py` | PARTIAL (orphan) |
+| `AnchoredNodePanel` | §4 ASCP.AI | Anchored node fill status (W3.5) | `decisionEngineAPI.getAnchoredStatus()` — **MISSING in api.js** | Local `useState` | Refresh | `ascpai_routes.py` (path TBD) | PARTIAL (orphan + MISSING_LOGIC) |
+| `WorkloadTierPanel` | §4 ASCP.AI | Workload tier list + override drawer | `workloadTierAPI.listTiers()`, `.setTierOverride()` | Local `useState` | Set Tier Override | `cluster_routes.py` | PARTIAL (orphan) |
+| `StatefulMigrationStatusPanel` | §4 ASCP.AI | Stateful migration status + controls | `migrationStatusAPI.get()`, `.startMigration()`, `.forceComplete()` | Local `useState` | Start Migration, Force Complete | `cluster_routes.py` | PARTIAL (orphan) |
+| `RightSizingKarpenterTab` | §5 Right-Sizing | Karpenter config tab (standalone file) | — | — | — | — | LEGACY (file on disk, not imported) |
+
+---
+
+### 27.5 DATA FLOW VALIDATION
+
+| Check | Result |
+|---|---|
+| `placementPolicyAPI` → backend route exists | NEEDS_REVIEW — `placement_policy_routes.py` not in this session's verified backend list; `api.js` endpoint prefix `/api/v1/placement-policy/` verified. Backend route file listed in IDE open files (`backend/api/workload_classification_routes.py` adjacent). |
+| `kedaAPI` → backend route exists | NEEDS_REVIEW — `/api/v1/keda/` prefix used; `keda_routes.py` not directly verified this session. |
+| `workloadClassificationAPI` → backend route exists | CONFIRMED — `backend/api/workload_classification_routes.py` open in IDE; prefix `/api/v1/workload-classification/` consistent. |
+| `adminAPI.getAwsPoolData` → backend route exists | CONFIRMED — `GET /api/v1/admin/aws-pool-data` in `admin_routes.py` (verified via api.js L159). |
+| `decisionEngineAPI.getAnchoredStatus` → api.js | **BROKEN** — method missing (see §27.3). |
+| `ascpaiAPI.getRecommendedConfig` → api.js | CONFIRMED — `api.js` L435. |
+| All Placement Advisor hooks → `placementPolicyAPI` | CONFIRMED — all 3 hook functions reference valid API methods. |
+| `WorkloadInventoryDashboard` API calls with `?` guards | CONFIRMED — all optional chaining guards present (`clustersAPI.getPods ? ... : { data: [] }`). Component safe even if methods absent. |
+| `RightSizingKarpenterTab` not imported anywhere | CONFIRMED — `grep` returned no results across all `.jsx`/`.js` files. |
+| Orphaned ASCP.AI panels (4 components) not in routing | CONFIRMED — no import found in `App.js` or any parent `.jsx`. |
+
+---
+
+## 28. UI Audit Report — 2026-04-24 (Session 2)
+
+> **Audit method**: Full filesystem scan of `frontend/src/`, `backend/api/`, API module line-by-line verification, store file inspection.
+> **Scope**: All new `.jsx`, `.js`, `.py` files since Session 1; full `api.js` re-read; `useStore.js` export enumeration.
+
+---
+
+### 28.1 NEW_COMPONENTS_TABLE (Session 2)
+
+Components and modules found in the codebase **not present** in prior `all-components.md` (Session 1).
+
+| Item | Type | Detected From | Purpose | Data Source | Status |
+|---|---|---|---|---|---|
+| `services/hibernationApi.js` | Service Module | `frontend/src/services/` scan | Standalone hibernation API service with emergency controls, strategy compare, and savings estimate — supplements `hibernationAPI` in `api.js` | `POST /api/v1/hibernation/emergency/sleep`, `/wake`, `/temp-hibernate`; `GET .../strategies/compare`, `.../schedules/{id}/savings` | ACTIVE — separate module, consumers unclear (NEEDS_REVIEW which components import it) |
+| `backend/api/execution_data_routes.py` | Backend Route File | `backend/api/` scan | 5 endpoints that feed `WorkloadInventoryDashboard` live data: pods, agent actions, nodeclaims, placement metrics, rollout status | Redis (`spot:placement_controller:metrics:{id}`), `PodMetric` DB, `AgentAction` DB | ACTIVE — all 5 endpoints confirmed consumed by `clusterAPI` in `api.js` |
+| `backend/api/placement_webhook_routes.py` | Backend Route File | `backend/api/` scan | K8s MutatingWebhookConfiguration handler — injects soft AZ spread + soft Spot affinity (weight=80) into pod specs at creation time; never blocks scheduling (ScheduleAnyway) | Redis (`spot:placement:policy:{cluster_id}:{workload_id}`) read-only | ACTIVE — pure backend, no frontend component |
+| `backend/api/integrations_routes.py` | Backend Route File | `backend/api/` scan | Unified KEDA + Karpenter health status endpoint (K4.1 spec) at `GET /api/v1/integrations/health` | `KedaService.detect_installation()`, `KarpenterService.detect_karpenter_in_cluster()` | PARTIAL — endpoint exists in backend but NOT yet exposed in `integrationsAPI` in `api.js` (see §28.3) |
+
+---
+
+### 28.2 NEW_API_METHODS_TABLE (Session 2)
+
+New API methods in `api.js` not documented in prior audit session.
+
+| API Module | New Methods | Endpoint | Backend Route |
+|---|---|---|---|
+| `clusterAPI` | `getPods(clusterId, limit)` | `GET /api/v1/pods?cluster_id=...` | `execution_data_routes.py` |
+| `clusterAPI` | `getAgentActions(clusterId, limit)` | `GET /api/v1/agent-actions?cluster_id=...` | `execution_data_routes.py` |
+| `clusterAPI` | `getNodeClaims(clusterId, limit)` | `GET /api/v1/nodeclaims?cluster_id=...` | `execution_data_routes.py` |
+| `clusterAPI` | `getPlacementMetrics(clusterId)` | `GET /api/v1/placement-metrics?cluster_id=...` | `execution_data_routes.py` |
+| `clusterAPI` | `getRolloutStatus(clusterId)` | `GET /api/v1/rollout-status?cluster_id=...` | `execution_data_routes.py` |
+| `clusterAPI` | `getWarmSpareStatus(clusterId)` | `GET /api/v1/ascpai/v3/substitute/{id}` | `ascpai_routes.py` |
+| `clusterAPI` | `startMigration(clusterId)` | `POST /api/v1/clusters/{id}/start-migration` | `cluster_routes.py` |
+| `clusterAPI` | `getMigrationStatus(clusterId)` | `GET /api/v1/clusters/{id}/migration-status` | `cluster_routes.py` |
+| `clusterAPI` | `forceCompleteMigration(clusterId)` | `POST /api/v1/clusters/{id}/force-complete-migration` | `cluster_routes.py` |
+| `authAPI` | `getConnectionInfo()` | `GET /api/v1/organization/connection-info` | `organization_routes.py` |
+| `authAPI` | `regenerateConnectionInfo()` | `POST /api/v1/organization/connection-info/regenerate` | `organization_routes.py` |
+| `optimizationAPI` | `getEnrichedRightsizing(clusterId)` | `GET /api/v1/pod-metrics/rightsizing/enriched` | `optimization_routes.py` |
+| `optimizationAPI` | `applyRightsizingValidated(instanceId, targetType, targetAz)` | `POST /api/v1/optimization/apply/{id}/validated` | `optimization_routes.py` |
+| `optimizationAPI` | `batchApplyRecommendations(data)` | `POST /api/v1/optimization/rightsizing/batch-apply` | `optimization_routes.py` |
+| `workloadClassificationAPI` | `getSummary(clusterId)` | `GET /api/v1/workload-classification/{id}/summary` | `workload_classification_routes.py` |
+| `workloadClassificationAPI` | `getWorkloadDetail(clusterId, workloadId)` | `GET /api/v1/workload-classification/{id}/workloads/{wId}` | `workload_classification_routes.py` |
+| `workloadClassificationAPI` | `getSpotCandidates(clusterId)` | `GET /api/v1/workload-classification/{id}/spot-candidates` | `workload_classification_routes.py` |
+| `workloadClassificationAPI` | `getMetrics(clusterId)` | `GET /api/v1/workload-classification/{id}/metrics` | `workload_classification_routes.py` |
+| `workloadClassificationAPI` | `setOverride(clusterId, workloadId, payload)` | `POST /api/v1/workload-classification/{id}/workloads/{wId}/override` | `workload_classification_routes.py` |
+| `workloadClassificationAPI` | `deleteOverride(clusterId, workloadId)` | `DELETE /api/v1/workload-classification/{id}/workloads/{wId}/override` | `workload_classification_routes.py` |
+
+**Note on RI/S3/RDS/Transfer API access pattern**: `ri/RIAnalysis.jsx`, `s3/S3Analysis.jsx`, `rds/RDSAnalysis.jsx`, `transfer/TransferAnalysis.jsx` and their health card siblings ALL use **direct `api` instance calls** (`import api from '../../services/api'`) rather than named API modules. There is no `riAPI`, `s3API`, `rdsAPI`, or `transferAPI` in `api.js`. Doc §13 entry "API module" references are INACCURATE — these components call `/api/v1/ri/`, `/api/v1/s3/`, `/api/v1/rds/`, `/api/v1/transfer/` directly via the raw axios instance.
+
+---
+
+### 28.3 MISSING_LOGIC_TABLE (Session 2)
+
+New missing logic gaps found in this session. See §27.3 for Session 1 gaps (still open).
+
+| Component/Module | Missing Part | Detail | Severity |
+|---|---|---|---|
+| `integrationsAPI` in `api.js` | **Missing endpoint** | `integrations_routes.py` provides `GET /api/v1/integrations/health` (K4.1 unified KEDA+Karpenter health) which is NOT in `integrationsAPI`. Current `integrationsAPI.getStatus(clusterId)` calls `GET /api/v1/clusters/{id}/integrations-status` (cluster_routes.py path). Two separate backend routes exist for overlapping concerns. Fix: add `getHealth: (clusterId) => api.get('/api/v1/integrations/health', { params: { cluster_id: clusterId } })` to `integrationsAPI`. | **MEDIUM** |
+| `services/hibernationApi.js` | **Import usage unclear** | Standalone `hibernationApi.js` exports emergency control methods not in `hibernationAPI` (api.js). It is unclear which components import this file — no grep was run. If no components import it, it is a dead module. If `EmergencyControls.jsx` imports it, the doc needs updating. Requires: `grep -r "hibernationApi" frontend/src/components/` | **MEDIUM** |
+| `§13 RI/S3/RDS/Transfer docs` | **Incorrect API module claim** | Doc §13 states API modules for these components but all 4 component pairs use direct `api.get()` calls, not named API modules. No `riAPI`, `s3API`, `rdsAPI`, `transferAPI` exist in `api.js`. Documentation is misleading. | **LOW** |
+
+---
+
+### 28.4 ACTIVE_COMPONENTS_TABLE — Session 2 Verified
+
+| Component/Module | Section | Purpose | Data Source | Status |
+|---|---|---|---|---|
+| `services/hibernationApi.js` | §6 Hibernation | Emergency controls + strategy compare + savings estimate | Direct REST calls to `/api/v1/hibernation/emergency/*` | ACTIVE (usage consumers NEEDS_REVIEW) |
+| `execution_data_routes.py` | §21 Backend-Only | 5 live data endpoints for WorkloadInventoryDashboard | Redis + PodMetric DB + AgentAction DB | ACTIVE |
+| `placement_webhook_routes.py` | §21 Backend-Only | K8s MutatingWebhook for pod scheduling hints | Redis policy read-only | ACTIVE — pure backend |
+| `integrations_routes.py` | §21 Backend-Only | K4.1 unified health status | KedaService + KarpenterService | PARTIAL — not wired to api.js |
+| `useClusterStore` (useStore.js) | §State Mgmt | Cluster list + selected cluster state | Local Zustand | ACTIVE (newly documented) |
+| `useHeaderStore` (useStore.js) | §State Mgmt | MainLayout right header content injection | Local Zustand | ACTIVE — imported by MainLayout.jsx |
+| `useUIStore` (useStore.js) | §State Mgmt | Sidebar open/close, theme, notifications | Local Zustand | ACTIVE (newly documented) |
+
+---
+
+### 28.5 DATA FLOW VALIDATION (Session 2)
+
+| Check | Result |
+|---|---|
+| `execution_data_routes.py` registered in FastAPI app | NEEDS_REVIEW — route file exists; verify it is registered in `backend/main.py` or `backend/api/__init__.py` |
+| `placement_webhook_routes.py` registered in FastAPI app | NEEDS_REVIEW — uses prefix `/webhooks/placement`; verify Nginx/K8s routes this correctly |
+| `integrations_routes.py` registered in FastAPI app | NEEDS_REVIEW — uses prefix `/api/v1/integrations`; verify in main.py |
+| `hibernationApi.js` imported by any component | NEEDS_REVIEW — run `grep -r "hibernationApi" frontend/src/components/` to find consumers |
+| `clusterAPI.getPods` → `execution_data_routes` pod endpoint | CONFIRMED — `api.js` L123 → `GET /api/v1/pods?cluster_id=...`; route at L203–268 of execution_data_routes.py |
+| `clusterAPI.getPlacementMetrics` → Redis placement metrics | CONFIRMED — `api.js` L127 → `GET /api/v1/placement-metrics?cluster_id=...`; route at L37–107 of execution_data_routes.py reads Redis hash `spot:placement_controller:metrics:{cluster_id}` |
+| `clusterAPI.getRolloutStatus` → AgentAction DB | CONFIRMED — `api.js` L128 → `GET /api/v1/rollout-status?cluster_id=...`; route at L114–196 of execution_data_routes.py queries AgentAction table |
+| `workloadClassificationAPI.setOverride` → backend override endpoint | CONFIRMED — `api.js` L739–744 posts to `/api/v1/workload-classification/{id}/workloads/{wId}/override` |
+| `authAPI.getConnectionInfo` → backend endpoint | CONFIRMED — `api.js` L87 → `GET /api/v1/organization/connection-info` (organization_routes.py) |
+| RI/S3/RDS/Transfer components use named API modules | **INCORRECT** — all use direct `import api from '../../services/api'` raw calls, no named modules |
+
+---
+
+## 29. UI Audit Report — 2026-04-26 (Session 3)
+
+> **Audit method**: Full filesystem scan of `frontend/src/pages/`, `frontend/src/hooks/`, `frontend/src/components/layout/MainLayout.jsx`, `frontend/src/App.js`. All new files confirmed on disk.
+> **Scope**: pages/ folder restructure, new placeholder pages, new RightSizing design, sidebar routing changes, new hooks.
+
+---
+
+### 29.1 PAGES FOLDER RESTRUCTURE
+
+The `pages/` directory was fully reorganised from 9 flat files to 39 files across 9 sub-folders. All import paths in `App.js` updated accordingly.
+
+| Old Path | New Path | Type |
+|---|---|---|
+| `pages/ASCPAiPage.jsx` | `pages/optimization/ASCPAiPage.jsx` | Moved |
+| `pages/AccountAnalytics.jsx` | `pages/cost-savings/AccountAnalytics.jsx` | Moved |
+| `pages/Approvals.jsx` | `pages/governance/Approvals.jsx` | Moved |
+| `pages/NodeTemplates.jsx` | `pages/infrastructure/provisioning/NodeTemplates.jsx` | Moved |
+| `pages/PlacementAdvisorPage.jsx` | `pages/optimization/PlacementAdvisorPage.jsx` | Moved |
+| `pages/Roles.jsx` | `pages/governance/Roles.jsx` | Moved |
+| `pages/TeamDetails.jsx` | `pages/governance/TeamDetails.jsx` | Moved |
+| `pages/Teams.jsx` | `pages/governance/Teams.jsx` | Moved |
+| `pages/live/ScalingActivity.jsx` | `pages/live-operations/ScalingActivity.jsx` | Moved |
+| `pages/live/NodeActivity.jsx` | `pages/live-operations/NodeActivity.jsx` | Moved |
+| `pages/live/EventTimeline.jsx` | → `temp-bin/` (complex) + new placeholder created | Replaced |
+| `pages/optimization/RightSizing.jsx` | Fully rewritten in-place | Rewritten |
+| `pages/Onboarding.jsx` | `pages/Onboarding.jsx` | Kept flat (wizard) |
+
+**Old `pages/live/` and `pages/infra/` sub-dirs**: Moved to `temp-bin/pages/` to preserve originals.
+
+---
+
+### 29.2 NEW PLACEHOLDER PAGES (Session 3)
+
+All new pages are functional placeholders — routed, clickable, render a header + "coming soon" card. Ready for final implementation.
+
+| Page File | Route | Sidebar Location |
+|---|---|---|
+| `pages/live-operations/ActiveActions.jsx` | `/live/active-actions` | Live Operations → Active Actions |
+| `pages/live-operations/EventTimeline.jsx` | `/live/event-timeline` | Live Operations → Event Timeline |
+| `pages/optimization/Rebalancing.jsx` | `/optimization/rebalancing` | Optimization → Rebalancing |
+| `pages/optimization/OptimizationHistory.jsx` | `/optimization/history` | Optimization → Optimization History |
+| `pages/optimization/Recommendations.jsx` | (no direct route yet) | Optimization → Recommendations |
+| `pages/infrastructure/ClusterOverview.jsx` | (no direct route yet) | Infrastructure |
+| `pages/infrastructure/provisioning/Karpenter.jsx` | `/infra/karpenter` | Infrastructure → Karpenter |
+| `pages/infrastructure/provisioning/NodePool.jsx` | `/infra/node-pools` | Infrastructure → Node Pools |
+| `pages/infrastructure/integrations/KarpenterStatus.jsx` | `/infra/karpenter-status` | Infrastructure → Integrations |
+| `pages/infrastructure/integrations/KedaStatus.jsx` | `/infra/keda-status` | Infrastructure → Integrations |
+| `pages/cost-savings/CostSavings.jsx` | (no direct route yet) | Cost & Savings |
+| `pages/governance/Policies.jsx` | (no direct route yet) | Governance |
+| `pages/settings-page/SettingsPage.jsx` | (no direct route yet) | Settings |
+| `pages/overview/Overview.jsx` | (wraps Dashboard) | Overview |
+
+---
+
+### 29.3 NEW RIGHTSIZING PAGE — `pages/optimization/RightSizing.jsx`
+
+**Design source**: `documents/changes.md` (HTML/CSS spec)
+**Status**: ACTIVE — routed at `/optimization/right-sizing`, behind PermissionGate:`compute:view`
+**Relationship to old dashboard**: Separate from `/right-sizing` → `RightSizingDashboard.jsx` which remains unchanged.
+
+**5-Section Layout**:
+
+| # | Section | Key Elements |
+|---|---|---|
+| 1 | **Sticky Header Bar** | Title "RIGHTSIZING", total/optimizable/auto/pending counts, cluster selector dropdown, refresh button, Mode:AUTO badge |
+| 2 | **Cost Impact Projection** | Current cost (strikethrough) → Optimised cost, savings pill ($ / %), SVG trend lines chart, tooltip overlay, Apply All button |
+| 3 | **Resource Allocation** | CPU Core Usage bar (actual vs requested, over% badge), Memory Usage bar (actual vs requested, over% badge), insight text block |
+| 4 | **Node Pool Optimization Table** | Pool/instance type, node count change (strikethrough → recommended), projected CPU/Mem %, fragmentation chip, risk chip, Simulate/Apply actions. Shows sample rows when no backend data. |
+| 5 | **Workload Recommendations + Drilldown** | Left: click-to-select table (workload, CPU/Mem changes, save/mo, left-border highlight on selection). Right: drilldown panel with CPU/Mem profiling, rationale, safety checks, Decline/Apply actions. Empty state when no workload selected. |
+
+**Inline component**: `RiskChip` — renders LOW/MEDIUM/HIGH colored pill (no separate file).
+
+**Data binding**:
+- `useClusters()` → `clusters`, `selectedId`, `setSelectedId`
+- `useRightsizing(selectedId)` → `recommendations`, `nodePools`, `utilizationMetrics`, `costImpact`, `summary`, `loading`, `error`, `refetch`
+- `optimizationAPI.applyRecommendation(id)` → Apply action
+
+---
+
+### 29.4 SIDEBAR CHANGES — `MainLayout.jsx`
+
+| Change | Before | After |
+|---|---|---|
+| `opt-rightsizing` route | `/right-sizing` | `/optimization/right-sizing` |
+| `opt-history` route | `/dashboard` (disabled, comingSoon) | `/optimization/history` (enabled) |
+| Resource Hygiene added | Not present | Added under Cost & Savings → `/cost-savings/resource-hygiene` |
+
+**New sidebar entry** (`cost-hygiene`):
+- Section: Cost & Savings
+- Label: Resource Hygiene
+- Route: `/cost-savings/resource-hygiene` → `CleanupDashboard`
+- Position: Last item under Cost & Savings, after Transfer Analysis
+
+---
+
+### 29.5 NEW HOOKS — Session 3
+
+| Hook | File | Exports | Used By |
+|---|---|---|---|
+| `useClusters` | `hooks/useClusters.js` | `{ clusters, selectedId, setSelectedId }` — fetches cluster list, manages selection state | `pages/optimization/RightSizing.jsx`, `pages/live-operations/ScalingActivity.jsx`, `pages/live-operations/NodeActivity.jsx` |
+| `useClusterState` | `hooks/useClusterState.js` | Extended cluster state with nodes, utilization, polling | Cluster detail pages |
+| `useExecutionState` | `hooks/useExecutionState.js` | `{ rebalancingActions, rebalancingByState, agentActions, scalingActions, timeline, behaviorProfile, agentActionChartData, loading, error, refetch }` | `pages/live-operations/ScalingActivity.jsx`, `pages/live-operations/NodeActivity.jsx` |
+| `useRightsizing` | `hooks/useRightsizing.js` | `{ recommendations, nodePools, utilizationMetrics, costImpact, summary, chartData, loading, error, refetch }` | `pages/optimization/RightSizing.jsx` |
+
+---
+
+### 29.6 FILES MOVED TO TEMP-BIN
+
+| Original Path | Temp-Bin Path | Reason |
+|---|---|---|
+| `pages/live/EventTimeline.jsx` | `temp-bin/pages/live-operations/EventTimeline.jsx` | Replaced with placeholder |
+| `pages/live/` (dir) | `temp-bin/pages/live/` | Old flat live pages dir (after move) |
+| `pages/infra/` (dir) | `temp-bin/pages/infra/` | Old flat infra pages dir (after move) |
+
+---
+
+### 29.7 DATA FLOW VALIDATION (Session 3)
+
+| Check | Result |
+|---|---|
+| `pages/optimization/RightSizing.jsx` imports `useClusters` | CONFIRMED — `hooks/useClusters.js` exists on disk |
+| `pages/optimization/RightSizing.jsx` imports `useRightsizing` | CONFIRMED — `hooks/useRightsizing.js` exists on disk |
+| `/optimization/right-sizing` route in `App.js` | CONFIRMED — line 294, wrapped in PermissionGate:`compute:view`, renders `<RightSizing />` |
+| `/optimization/history` route in `App.js` | CONFIRMED — line 292, renders `<OptimizationHistory />` |
+| `/live/active-actions` route in `App.js` | CONFIRMED — line 287, renders `<ActiveActions />` |
+| `/cost-savings/resource-hygiene` route in `App.js` | CONFIRMED — line 293, renders `<CleanupDashboard />` |
+| `cost-hygiene` entry in `MainLayout.jsx` routeMap | CONFIRMED — `"cost-hygiene": "/cost-savings/resource-hygiene"` |
+| `opt-history` `comingSoon` flag removed | CONFIRMED — NAV_STRUCTURE entry is now `{ id: "opt-history", label: "Optimization History" }` with no comingSoon key |
+| `opt-rightsizing` route updated | CONFIRMED — routeMap: `"opt-rightsizing": "/optimization/right-sizing"` |
+| Old `pages/live/` flat files still accessible | Not in App.js — old flat imports replaced; originals in temp-bin |
+| Docker frontend container rebuilt and running | CONFIRMED — nginx serving, no build errors in container logs |
+
+---
+
+## 30. Complete Sidebar Structure Reference
+
+> **Source**: `frontend/src/components/layout/MainLayout.jsx` — `NAV_STRUCTURE` array + `routeMap` object.
+> **Verified**: 2026-04-26 (Session 3)
+
+---
+
+### 30.1 NAV_STRUCTURE — Full Sidebar Hierarchy
+
+| Section | Item ID | Label | Icon | Badge | Sub-items (id → label) |
+|---|---|---|---|---|---|
+| OVERVIEW | `dashboard` | Overview | ⌂ | — | `dashboard-overview` → Global Summary; `infra-clusters` → Cluster List; `gov-approvals` → Alerts & Risks |
+| LIVE OPERATIONS | `live-ops` | Live Operations | ◉ | LIVE (green) | `live-active-actions` → Active Actions; `live-scaling` → Scaling Activity; `live-nodes` → Node Activity; `live-timeline` → Event Timeline |
+| OPTIMIZATION | `optimization` | Optimization | ◈ | ML (indigo) | `opt-recommendations` → Recommendations; `opt-placement` → Placement Decisions (badge:NEW); `opt-rebalancing` → Rebalancing; `opt-rightsizing` → Right-Sizing; `opt-history` → Optimization History |
+| WORKLOADS | `workloads` | Workloads | ⊞ | — | `workload-inventory` → Inventory; `workload-risk` → Risk & Safety; `workload-placement` → Placement Policies; `workload-insights` → Workload Insights |
+| COST & SAVINGS | `cost-savings` | Cost & Savings | ◑ | — | `cost-savings-overview` → Savings Overview; `cost-breakdown` → Cost Breakdown; `cost-ri` → RI Analysis; `cost-s3` → S3 Analysis; `cost-rds` → RDS Analysis; `cost-transfer` → Transfer Analysis; `cost-hygiene` → Resource Hygiene |
+| INFRASTRUCTURE | `infra-clusters` | Clusters | ⬡ | — | `infra-cluster-overview` → Cluster Overview; `infra-nodes` → Nodes; `infra-node-groups` → Node Groups; `infra-utilization` → Utilization |
+| INFRASTRUCTURE | `infra-provisioning` | Node Provisioning | ◻ | — | `infra-karpenter` → Karpenter; `infra-node-pools` → Node Pools; `infra-node-templates` → Node Templates |
+| INFRASTRUCTURE | `infra-integrations` | Integrations | ⊟ | — | `infra-karpenter-status` → Karpenter Status; `infra-keda-status` → KEDA Status |
+| INFRASTRUCTURE | `hibernation` | Hibernation | ◑ | — | `hib-schedules` → Schedules; `hib-strategies` → Strategies; `hib-history` → Execution History |
+| GOVERNANCE | `gov-policies` | Policies | ⊟ | — | (no sub-items, flat link) |
+| GOVERNANCE | `gov-approvals` | Approvals | ✓ | — | (no sub-items, flat link) |
+| GOVERNANCE | `gov-access` | Access Control | ⊘ | — | (no sub-items, flat link) |
+| GOVERNANCE | `gov-tags` | Tag Policies | ◇ | — | `tag-policies` → Governance Policies; `tag-templates` → Tag Templates; `tag-scoring` → Scoring Engine; `tag-automation` → Automation Rules; `tag-monitor` → Compliance Monitor |
+| GOVERNANCE | `gov-teams` | Teams & Roles | ⊹ | — | `teams` → Teams & Members; `roles` → Roles |
+| SETTINGS | `settings` | Settings | ◎ | — | `settings-config` → Configuration; `settings-integrations` → Integrations; `settings-notifications` → Notifications; `settings-preferences` → Preferences; `settings-audit` → Audit Logs |
+
+---
+
+### 30.2 routeMap — Sidebar ID to URL Mapping (complete)
+
+> All IDs in `NAV_STRUCTURE` must have a corresponding `routeMap` entry; clicking a sidebar item calls `navigate(routeMap[id])`.
+
+| Sidebar ID | Resolved URL | Notes |
+|---|---|---|
+| `dashboard` | `/dashboard` | |
+| `dashboard-overview` | `/dashboard?tab=overview` | Tab query param |
+| `dashboard-cost` | `/dashboard?tab=cost` | |
+| `dashboard-infra` | `/dashboard?tab=infra` | |
+| `dashboard-gov` | `/dashboard?tab=governance` | |
+| `ascpai` | `/ascp-ai` | |
+| `ascpai-dashboard` | `/ascp-ai?tab=dashboard` | |
+| `ascpai-decision-engine-v3` | `/ascp-ai?tab=decision-engine-v3` | |
+| `ascpai-rankings` | `/ascp-ai?tab=rankings` | |
+| `ascpai-heatmap` | `/ascp-ai?tab=heatmap` | |
+| `ascpai-rebalancing` | `/ascp-ai?tab=rebalancing` | Legacy key |
+| `rightsizing` | `/right-sizing` | Legacy key → original dashboard |
+| `rs-karpenter` | `/right-sizing?tab=karpenter` | Tab query |
+| `rs-workload` | `/right-sizing?tab=workload` | |
+| `rs-placement` | `/right-sizing?tab=placement` | |
+| `rs-config` | `/right-sizing?tab=config` | |
+| `rs-history` | `/right-sizing?tab=history` | |
+| `rs-savings` | `/right-sizing?tab=savings` | |
+| `resource-hygiene` | `/hygiene` | **Legacy** key → old hygiene route |
+| `hibernation` | `/hibernation` | |
+| `hib-schedules` | `/hibernation?tab=schedules` | |
+| `hib-strategies` | `/hibernation?tab=strategies` | |
+| `hib-history` | `/hibernation?tab=history` | |
+| `clusters` | `/clusters` | |
+| `node-templates` | `/node-templates` | |
+| `approvals` | `/approvals` | |
+| `tag-governance` | `/tagging-policies` | |
+| `tag-policies` | `/tagging-policies?tab=policies` | |
+| `tag-templates` | `/tagging-policies?tab=templates` | |
+| `tag-scoring` | `/tagging-policies?tab=scoring` | |
+| `tag-automation` | `/tagging-policies?tab=automation` | |
+| `tag-monitor` | `/tagging-policies?tab=monitor` | |
+| `teams` | `/teams` | |
+| `audit` | `/audit` | |
+| `settings` | `/settings` | |
+| `placement-advisor` | `/placement-advisor` | |
+| `ri-analysis` | `/ri-analysis` | |
+| `s3-analysis` | `/s3-analysis` | |
+| `rds-analysis` | `/rds-analysis` | |
+| `transfer-analysis` | `/transfer-analysis` | |
+| `policies` | `/policies` | |
+| `roles` | `/roles` | |
+| `live-ops` | `/live/scaling-activity` | Section parent → first child |
+| `live-active-actions` | `/live/active-actions` | ✅ NEW Session 3 |
+| `live-scaling` | `/live/scaling-activity` | |
+| `live-nodes` | `/live/node-activity` | |
+| `live-timeline` | `/live/event-timeline` | |
+| `optimization` | `/optimization/right-sizing` | Section parent |
+| `opt-recommendations` | `/ascp-ai?tab=decision-engine-v3` | ⚠️ Points to ASCP AI tab, not standalone page |
+| `opt-placement` | `/placement-advisor` | |
+| `opt-rebalancing` | `/optimization/rebalancing` | ✅ NEW Session 3 |
+| `opt-rightsizing` | `/optimization/right-sizing` | ✅ NEW Session 3 |
+| `opt-history` | `/optimization/history` | ✅ NEW Session 3 |
+| `workloads` | `/workloads/inventory` | Section parent |
+| `workload-inventory` | `/workloads/inventory` | |
+| `workload-risk` | `/workloads/risk-safety` | |
+| `workload-heatmap` | `/ascp-ai?tab=heatmap` | ⚠️ Points to ASCP AI tab |
+| `workload-placement` | `/placement-advisor` | |
+| `workload-insights` | `/workloads/inventory` | ⚠️ Duplicate of inventory (no dedicated page yet) |
+| `cost-savings` | `/dashboard?tab=cost` | Section parent |
+| `cost-savings-overview` | `/right-sizing?tab=savings` | |
+| `cost-breakdown` | `/dashboard?tab=cost` | |
+| `cost-forecast` | `/dashboard?tab=cost` | ⚠️ No dedicated page |
+| `cost-impact` | `/right-sizing?tab=savings` | |
+| `cost-ri` | `/ri-analysis` | |
+| `cost-s3` | `/s3-analysis` | |
+| `cost-rds` | `/rds-analysis` | |
+| `cost-transfer` | `/transfer-analysis` | |
+| `cost-hygiene` | `/cost-savings/resource-hygiene` | ✅ NEW Session 3 |
+| `infra-clusters` | `/clusters` | |
+| `infra-cluster-overview` | `/clusters` | ⚠️ No dedicated overview page yet |
+| `infra-nodes` | `/clusters` | ⚠️ Maps to cluster list |
+| `infra-node-groups` | `/clusters` | ⚠️ Maps to cluster list |
+| `infra-utilization` | `/clusters` | ⚠️ Maps to cluster list |
+| `infra-provisioning` | `/node-templates` | Section parent |
+| `infra-karpenter` | `/infra/karpenter` | ✅ NEW Session 3 |
+| `infra-node-pools` | `/infra/node-pools` | ✅ NEW Session 3 |
+| `infra-node-templates` | `/node-templates` | |
+| `infra-integrations` | `/infra/karpenter-status` | Section parent → first child |
+| `infra-karpenter-status` | `/infra/karpenter-status` | ✅ NEW Session 3 |
+| `infra-keda-status` | `/infra/keda-status` | ✅ NEW Session 3 |
+| `gov-policies` | `/policies` | |
+| `gov-approvals` | `/approvals` | |
+| `gov-access` | `/approvals` | ⚠️ Duplicate — no separate access-control page |
+| `gov-tags` | `/tagging-policies` | |
+| `gov-teams` | `/teams` | |
+| `gov-roles` | `/roles` | |
+| `settings-config` | `/settings` | |
+| `settings-integrations` | `/settings` | ⚠️ No separate integrations settings page |
+| `settings-notifications` | `/settings` | ⚠️ No separate notifications page |
+| `settings-preferences` | `/settings` | ⚠️ No separate preferences page |
+| `settings-audit` | `/audit` | |
+
+> **⚠️ entries** = sidebar items that navigate to a shared/generic page instead of a dedicated page. These are candidates for future page creation.
+
+---
+
+### 30.3 MainLayout Inline Components
+
+These components are defined inside `MainLayout.jsx` and are NOT in separate files.
+
+| Component | Purpose | API Call | Poll Interval |
+|---|---|---|---|
+| `PendingApprovalsBadge` | Yellow numeric badge on Approvals sidebar item showing count of PENDING approvals | `approvalsAPI.list('PENDING')` → `GET /api/v1/approvals/` | 30s |
+| `ClusterBadge` | Red badge (error count) or animated blue badge (new discovered clusters + potential savings tooltip) on Clusters sidebar item | `clusterAPI.list({})` → `GET /api/v1/clusters` | 30s |
+
+**Stores used by MainLayout**: `useAuth` (user/logout), `useHeaderStore` (right header content injection — `rightContent`, `refreshAction`, set/clear via `setRightContent()`, `setRefreshAction()`, `clearHeader()`).

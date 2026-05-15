@@ -3,7 +3,7 @@ FastAPI Application Gateway
 
 Main application configuration with middleware, error handlers, and route registration
 """
-from fastapi import FastAPI, Request, status
+from fastapi import FastAPI, Request, status, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
@@ -476,6 +476,10 @@ app.include_router(optimization_router, prefix="/api/v1")
 # Karpenter routes
 app.include_router(karpenter_router, prefix="/api/v1")
 
+# KEDA routes
+from backend.api.keda_routes import router as keda_router
+app.include_router(keda_router)
+
 # Hygiene routes
 app.include_router(hygiene_router, prefix="/api/v1")
 
@@ -521,6 +525,18 @@ app.include_router(pool_rotation_router, prefix="/api/v1")
 from backend.api.multi_cluster_routes import router as multi_cluster_router
 app.include_router(multi_cluster_router, prefix="/api/v1")
 
+# Placement Policy routes
+from backend.pipeline.stage3_ppe.policy_routes import router as placement_policy_router
+app.include_router(placement_policy_router, prefix="/api/v1/placement-policy")
+
+# Execution Data routes — /pods, /agent-actions, /nodeclaims for WorkloadInventoryDashboard
+from backend.pipeline.stage5_execution.routes import router as execution_data_router
+app.include_router(execution_data_router, prefix="/api/v1")
+
+# Optimize page routes (placement-state, gates, summaries, bin-packing, scaling)
+from backend.api.optimize_routes import router as optimize_router
+app.include_router(optimize_router, prefix="/api/v1")
+
 # Pod Metrics & Right-Sizing routes
 from backend.api.pod_metrics_routes import router as pod_metrics_router
 app.include_router(pod_metrics_router, prefix="/api/v1")
@@ -546,6 +562,10 @@ app.include_router(installer_router, prefix="/api")
 # Agent routes (used by Kubernetes agent for registration/heartbeat)
 from backend.api.agent_routes import router as agent_router
 app.include_router(agent_router, prefix="/api/v1")
+
+# Workload Identification Engine v4.3 classification routes
+from backend.pipeline.stage2_wie.routes import router as wie_router
+app.include_router(wie_router, prefix="/api/v1")
 
 # ── Pillar 6 — API v2 versioning ──────────────────────────────────────────────
 # /api/v2/* routes serve the same handlers as v1 but frontend can migrate
@@ -756,17 +776,59 @@ async def _handle_agent_message(cluster_id: str, raw: str):
 
 @app.websocket("/ws/cluster/{cluster_id}")
 async def websocket_cluster_endpoint(websocket: WebSocket, cluster_id: str,
+                                      api_key: str = Query(None),
                                       agent_id: str = None, cluster_id_param: str = None):
     """
     WebSocket endpoint for cluster agents.
     Bidirectional:
       - Agent → Backend: metrics, heartbeats, action results (JSON)
       - Backend → Agent: commands (cordon, drain, karpenter nodepool patch)
+
+    Auth: Requires valid api_key query parameter matching cluster record.
     """
     import asyncio as _asyncio
+
+    # ── AUTH GATE: Validate api_key before accepting connection ────────
+    # Accept api_key from query param or Authorization header (Bearer token)
+    _resolved_key = api_key
+    if not _resolved_key:
+        _auth_header = websocket.headers.get("authorization", "")
+        if _auth_header.lower().startswith("bearer "):
+            _resolved_key = _auth_header[7:].strip()
+    if not _resolved_key:
+        logger.warning(f"WebSocket rejected for cluster {cluster_id}: missing api_key")
+        await websocket.close(code=4001)
+        return
+
+    try:
+        from backend.models.base import SessionLocal
+        from backend.models.cluster import Cluster
+        _db = SessionLocal()
+        try:
+            cluster = _db.query(Cluster).filter(
+                Cluster.id == cluster_id,
+                Cluster.api_key == _resolved_key,
+            ).first()
+        finally:
+            _db.close()
+
+        if not cluster:
+            logger.warning(
+                f"WebSocket rejected for cluster {cluster_id}: "
+                f"invalid api_key (client={websocket.client.host if websocket.client else 'unknown'})"
+            )
+            await websocket.close(code=4001)
+            return
+
+    except Exception as _auth_err:
+        logger.error(f"WebSocket auth error for cluster {cluster_id}: {_auth_err}")
+        await websocket.close(code=4003)
+        return
+    # ── END AUTH GATE ──────────────────────────────────────────────────
+
     await websocket.accept()
     active_connections[cluster_id] = websocket
-    logger.info(f"Using Websocket connection for cluster {cluster_id}")
+    logger.info(f"WebSocket connection authenticated for cluster {cluster_id}")
 
     # On connect: immediately push any pending actions queued by auto_rebalancer
     await _push_pending_actions(websocket, cluster_id)

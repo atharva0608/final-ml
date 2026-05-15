@@ -388,3 +388,223 @@ def reset_circuit_breaker(
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── AWS Pool Intelligence ─────────────────────────────────────────────────────
+
+# All supported AWS regions shown in the UI
+_ALL_AWS_REGIONS = [
+    "ap-south-1",       # Mumbai
+    "ap-southeast-1",   # Singapore
+    "ap-southeast-2",   # Sydney
+    "ap-northeast-1",   # Tokyo
+    "ap-northeast-2",   # Seoul
+    "us-east-1",        # N. Virginia
+    "us-east-2",        # Ohio
+    "us-west-1",        # N. California
+    "us-west-2",        # Oregon
+    "eu-west-1",        # Ireland
+    "eu-west-2",        # London
+    "eu-central-1",     # Frankfurt
+    "eu-north-1",       # Stockholm
+    "ca-central-1",     # Canada
+    "sa-east-1",        # São Paulo
+]
+
+_REGION_DISPLAY_NAMES = {
+    "ap-south-1":    "Mumbai (ap-south-1)",
+    "ap-southeast-1": "Singapore (ap-southeast-1)",
+    "ap-southeast-2": "Sydney (ap-southeast-2)",
+    "ap-northeast-1": "Tokyo (ap-northeast-1)",
+    "ap-northeast-2": "Seoul (ap-northeast-2)",
+    "us-east-1":     "N. Virginia (us-east-1)",
+    "us-east-2":     "Ohio (us-east-2)",
+    "us-west-1":     "N. California (us-west-1)",
+    "us-west-2":     "Oregon (us-west-2)",
+    "eu-west-1":     "Ireland (eu-west-1)",
+    "eu-west-2":     "London (eu-west-2)",
+    "eu-central-1":  "Frankfurt (eu-central-1)",
+    "eu-north-1":    "Stockholm (eu-north-1)",
+    "ca-central-1":  "Canada (ca-central-1)",
+    "sa-east-1":     "São Paulo (sa-east-1)",
+}
+
+_AZ_SUFFIXES = ["a", "b", "c"]
+
+
+@router.get("/aws-pool-data", summary="AWS pool intelligence per region")
+def get_aws_pool_data(
+    regions: str = Query("ap-south-1", description="Comma-separated list of AWS regions to inspect"),
+    current_user: User = Depends(require_super_admin),
+):
+    """
+    Returns pool pipeline stats and health data for each requested region.
+
+    Per-region stats block:
+      • catalog_types      – distinct instance types in the instance catalog
+      • raw_candidates     – catalog_types × 3 AZs = total candidate pool universe
+      • after_spot_advisor – pools annotated (all pass, SA rank attached, no hard gate)
+      • after_blacklist    – pools surviving the hard-failure-count ≥ 3 pre-filter
+      • in_global_cache    – pools currently in the Redis global_pool_rankings cache
+      • cache_age_minutes  – how old the cache is (None = not cached)
+      • client_filters_applied – example: arch + vCPU + memory removes ~X pools
+      • blacklisted_pools  – pools in risky_pools:{region} set with active metadata
+      • risky_pools        – short-lived RISK:* flagged pools (GlobalRiskTracker)
+    """
+    import json as _json
+    from backend.core.redis_client import get_redis_client
+    from backend.services.blacklist_service import BlacklistService
+
+    redis = get_redis_client()
+    blacklist_svc = BlacklistService(redis)
+
+    requested_regions = [r.strip() for r in regions.split(",") if r.strip() in _ALL_AWS_REGIONS]
+    if not requested_regions:
+        raise HTTPException(status_code=400, detail="No valid regions requested")
+
+    # Load instance catalog to compute universe size
+    try:
+        from backend.services.dynamic_instance_helpers import load_instance_catalog_from_db
+        from backend.models.base import get_db as _get_db
+        _db = next(_get_db())
+        catalog = load_instance_catalog_from_db(_db)
+    except Exception:
+        catalog = {}
+    catalog_size = len(catalog)
+
+    results = []
+    for region in requested_regions:
+        region_azs = [f"{region}{s}" for s in _AZ_SUFFIXES]
+        raw_candidates = catalog_size * len(region_azs)
+
+        # ── Pool pipeline counts ────────────────────────────────────────────
+        # Step 3: Spot Advisor - all pools annotated, no hard gate
+        after_spot_advisor = raw_candidates  # annotation only, nothing filtered
+
+        # Step 4: Blacklist pre-filter — pools with failure_count >= 3 are skipped
+        hard_blacklisted_count = 0
+        try:
+            bl_set_key = f"risky_pools:{region}"
+            bl_members = redis.smembers(bl_set_key)
+            for member in bl_members:
+                member_str = member.decode("utf-8") if isinstance(member, bytes) else member
+                failures_raw = redis.get(f"blacklist_failures:{member_str}")
+                failures = int(failures_raw) if failures_raw else 0
+                if failures >= 3:
+                    hard_blacklisted_count += 1
+        except Exception:
+            pass
+        # Each hard-blacklisted pool appears in 1 AZ, so subtract directly
+        after_blacklist = max(0, after_spot_advisor - hard_blacklisted_count)
+
+        # ── Global cache stats ──────────────────────────────────────────────
+        cache_key = f"global_pool_rankings:{region}"
+        in_global_cache = 0
+        cache_age_minutes = None
+        try:
+            cached_raw = redis.get(cache_key)
+            if cached_raw:
+                pool_list = _json.loads(cached_raw)
+                in_global_cache = len(pool_list) if isinstance(pool_list, list) else 0
+                # Redis TTL remaining → compute age from GLOBAL_CACHE_TTL (65 min)
+                GLOBAL_CACHE_TTL = 65 * 60
+                ttl_remaining = redis.ttl(cache_key)
+                if ttl_remaining and ttl_remaining > 0:
+                    cache_age_minutes = round((GLOBAL_CACHE_TTL - ttl_remaining) / 60, 1)
+        except Exception:
+            pass
+
+        # ── Client filter example (typical reduction) ───────────────────────
+        # Representative: amd64 + 2-64 vCPU + 4-256 GB memory ≈ 60-70% of catalog
+        # We estimate by counting catalog entries matching that envelope
+        typical_client_filtered = 0
+        if catalog:
+            for itype, specs in catalog.items():
+                if (
+                    specs.get("architecture") in ("amd64", "x86_64")
+                    and 2 <= specs.get("vcpu", 0) <= 64
+                    and 4 <= specs.get("memory_gb", 0) <= 256
+                ):
+                    typical_client_filtered += len(region_azs)
+
+        # ── Blacklisted pools with health details ───────────────────────────
+        blacklisted_pools = []
+        try:
+            bl_details = blacklist_svc.get_blacklist_status(region)
+            for entry in bl_details:
+                failures_raw = redis.get(f"blacklist_failures:{entry['instance_type']}:{entry['az']}")
+                failures = int(failures_raw) if failures_raw else entry.get("failure_count", 0)
+                ttl_h = entry.get("ttl_hours", 0)
+                severity = (
+                    "critical" if failures >= 5
+                    else "high" if failures >= 3
+                    else "medium"
+                )
+                blacklisted_pools.append({
+                    "instance_type": entry.get("instance_type", ""),
+                    "az": entry.get("az", ""),
+                    "reason": entry.get("reason", "unknown"),
+                    "failure_count": failures,
+                    "ttl_hours": ttl_h,
+                    "ttl_remaining_seconds": entry.get("ttl_remaining_seconds", 0),
+                    "backoff": ttl_h >= 48,
+                    "severity": severity,
+                    "flagged_at": entry.get("flagged_at"),
+                    "expires_at": entry.get("expires_at"),
+                })
+        except Exception:
+            pass
+
+        # Sort: critical first
+        _sev_order = {"critical": 0, "high": 1, "medium": 2}
+        blacklisted_pools.sort(key=lambda x: (_sev_order.get(x["severity"], 3), -x["failure_count"]))
+
+        # ── RISK:* shortlived flags (GlobalRiskTracker) ─────────────────────
+        risky_pools = []
+        try:
+            for key in redis.scan_iter(match="RISK:*"):
+                key_str = key.decode("utf-8") if isinstance(key, bytes) else key
+                parts = key_str.split(":")
+                if len(parts) >= 3:
+                    az = parts[1]
+                    instance_type = ":".join(parts[2:])
+                    # Only include if the AZ belongs to this region
+                    if any(az.startswith(region) for _ in [1]):
+                        ttl = redis.ttl(key)
+                        risky_pools.append({
+                            "instance_type": instance_type,
+                            "az": az,
+                            "ttl_remaining_seconds": max(ttl, 0) if ttl > 0 else 0,
+                            "expires_in_minutes": round(max(ttl, 0) / 60, 1),
+                        })
+        except Exception:
+            pass
+
+        results.append({
+            "region": region,
+            "display_name": _REGION_DISPLAY_NAMES.get(region, region),
+            "pipeline": {
+                "catalog_types":         catalog_size,
+                "azs":                   len(region_azs),
+                "raw_candidates":        raw_candidates,
+                "after_spot_advisor":    after_spot_advisor,
+                "after_blacklist":       after_blacklist,
+                "after_blacklist_removed": hard_blacklisted_count,
+                "in_global_cache":       in_global_cache,
+                "cache_limit":           1500,
+                "cache_age_minutes":     cache_age_minutes,
+                "typical_after_client_filter": typical_client_filtered,
+                "client_filter_removed": max(0, raw_candidates - typical_client_filtered),
+            },
+            "blacklisted_pools": blacklisted_pools,
+            "risky_pools":        risky_pools,
+            "blacklisted_count":  len(blacklisted_pools),
+            "risky_count":        len(risky_pools),
+        })
+
+    return {
+        "regions": results,
+        "all_regions": _ALL_AWS_REGIONS,
+        "region_display_names": _REGION_DISPLAY_NAMES,
+        "fetched_at": datetime.utcnow().isoformat() + "Z",
+    }

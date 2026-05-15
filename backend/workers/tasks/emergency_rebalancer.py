@@ -72,7 +72,7 @@ def emergency_rebalancer(
         # Report termination to DE (blacklist the pool) and set 24h global blacklist
         pool_key = f"{interrupted.instance_type}:{interrupted.az}"
         try:
-            from backend.services.decision_engine_service import DecisionEngineService
+            from backend.pipeline.stage4_decision.engine import DecisionEngineService
             de = DecisionEngineService(db, redis)
             de.report_termination(pool_key=pool_key, region=cluster.region or "ap-south-1")
         except Exception as de_err:

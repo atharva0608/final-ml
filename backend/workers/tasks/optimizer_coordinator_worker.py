@@ -8,10 +8,11 @@ Implements phased optimization timing strategy from problems.md:
 - Combined evaluation: Event-driven (when proposals created)
 """
 
+import os
 from celery import shared_task
-from sqlalchemy.orm import Session
 from datetime import datetime
 import logging
+from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
 
@@ -34,12 +35,17 @@ def pool_optimization_worker(self):
     from backend.models.cluster import Cluster
     from backend.models.optimizer_state import OptimizationPhase
     from backend.core.redis_client import get_redis_client
+    from backend.services.pool_ranking_service import PoolRankingService
+    from backend.services.pool_rotation_service import PoolRotationService
+    from backend.models.node_template import ClusterTemplateMapping
 
     logger.info("[OPTIMIZER] Starting pool optimization worker")
 
     with get_db_contextmanager() as db:
         redis = get_redis_client()
         coordinator = OptimizerCoordinator(db, redis)
+        pool_ranking_svc = PoolRankingService(db, redis)
+        pool_rotation_svc = PoolRotationService(db, redis)
 
         # Get all active clusters
         clusters = db.query(Cluster).filter(
@@ -50,7 +56,7 @@ def pool_optimization_worker(self):
 
         for cluster in clusters:
             try:
-                # ── Toggle gate: only run if auto_rebalance_enabled ──────────
+                # ── Toggle gate: only run if auto_rebalance_enabled ────────────────
                 opt_settings = cluster.optimization_settings
                 auto_rebalance = getattr(opt_settings, 'auto_rebalance_enabled', False) if opt_settings else False
                 if not auto_rebalance:
@@ -66,9 +72,73 @@ def pool_optimization_worker(self):
 
                 logger.info(f"[OPTIMIZER] Running pool optimization for {cluster.name} (Mode: {'COMBINED' if getattr(opt_settings, 'auto_rightsizing_enabled', False) else 'REBALANCE_ONLY'})")
 
-                # TODO: Execute actual pool optimization
-                # This would call: pool_ranking_service.rank_pools() and apply best pool
-                # For now, just record that optimization ran
+                # 1. Get node template via cluster mapping
+                mapping = db.query(ClusterTemplateMapping).filter(
+                    ClusterTemplateMapping.cluster_id == cluster.id,
+                    ClusterTemplateMapping.is_default == True,
+                ).first()
+                if not mapping or not mapping.template:
+                    logger.warning("pool_optimization_skipped cluster=%s reason=no_node_template", cluster.id)
+                    continue
+
+                node_template = mapping.template
+                region = getattr(cluster, 'region', None) or "us-east-1"
+
+                # 2. Rank pools
+                ranked_pools = pool_ranking_svc.rank_pools(node_template, region)
+                logger.info("pool_optimization_ranked cluster=%s pools=%d", cluster.id, len(ranked_pools))
+
+                # 3. Identify high-risk pools
+                threshold = float(os.getenv("POOL_RISK_THRESHOLD", "0.20"))
+                high_risk = [
+                    p for p in ranked_pools
+                    if getattr(getattr(p, 'pool', None), 'interruption_risk_score', 0.0) > threshold
+                ]
+
+                # 4. Always persist assessment so consumers see real data even when
+                #    rotation is disabled (FEATURE_POOL_OPTIMIZATION_ACTIVE=False).
+                import json as _json
+                _assessment = {
+                    "ranked_count": len(ranked_pools),
+                    "high_risk_count": len(high_risk),
+                    "high_risk_pools": [
+                        {
+                            "instance_type": getattr(getattr(p, 'pool', None), 'instance_type', ''),
+                            "az": getattr(getattr(p, 'pool', None), 'az', ''),
+                            "risk_score": getattr(getattr(p, 'pool', None), 'interruption_risk_score', 0.0),
+                        }
+                        for p in high_risk
+                    ],
+                    "top_pools": [
+                        {
+                            "instance_type": getattr(getattr(p, 'pool', None), 'instance_type', ''),
+                            "az": getattr(getattr(p, 'pool', None), 'az', ''),
+                            "risk_score": getattr(getattr(p, 'pool', None), 'interruption_risk_score', 0.0),
+                        }
+                        for p in ranked_pools[:10]
+                    ],
+                    "assessed_at": datetime.utcnow().isoformat(),
+                    "rotation_active": bool(getattr(settings, 'FEATURE_POOL_OPTIMIZATION_ACTIVE', False)),
+                }
+                redis.setex(
+                    f"spot:pool_optimization:assessment:{cluster.id}",
+                    3600,
+                    _json.dumps(_assessment),
+                )
+                logger.info(
+                    "pool_optimization_assessment_written cluster=%s ranked=%d high_risk=%d",
+                    cluster.id, len(ranked_pools), len(high_risk),
+                )
+
+                # 5. Request rotation for high-risk pools (gated behind feature flag)
+                if high_risk and getattr(settings, 'FEATURE_POOL_OPTIMIZATION_ACTIVE', False):
+                    result = pool_rotation_svc.check_and_rotate(cluster.id, region)
+                    logger.info("pool_rotation_checked cluster=%s result=%s", cluster.id, result.get("status"))
+
+                # 6. Write last-run timestamp to Redis
+                redis.setex(f"spot:pool_optimization:last_run:{cluster.id}", 3600, datetime.utcnow().isoformat())
+
+                # 7. Record timestamp in DB
                 coordinator.record_pool_optimization(cluster.id)
 
                 logger.info(f"[OPTIMIZER] Completed pool optimization for {cluster.name}")
@@ -126,6 +196,13 @@ def rightsizing_evaluation_worker(self):
                     logger.debug(f"[OPTIMIZER] Rightsizing skipped for {cluster.name}: auto_rightsizing_enabled=False")
                     continue
 
+                # W4.1 — Read stateful rightsizing toggle.  When False (default),
+                # TIER_0 and TIER_1 workloads are excluded from proposals so we
+                # don't touch anchored/stateful controllers without explicit opt-in.
+                auto_stateful_rightsizing = getattr(
+                    opt_settings, 'auto_stateful_rightsizing_enabled', False
+                ) if opt_settings else False
+
                 # Also block if rebalance is running (pool-first in Mode 1)
                 auto_rebalance = getattr(opt_settings, 'auto_rebalance_enabled', False) if opt_settings else False
                 if auto_rebalance:
@@ -149,7 +226,8 @@ def rightsizing_evaluation_worker(self):
                 proposal_ids = rightsizing_svc.create_rightsizing_proposals(
                     cluster_id=cluster.id,
                     min_savings_pct=10.0,  # Minimum 10% savings required
-                    stability_window_hours=24  # Require 24-hour metrics
+                    stability_window_hours=24,  # Require 24-hour metrics
+                    include_stateful=auto_stateful_rightsizing,  # W4.1
                 )
 
                 if proposal_ids:

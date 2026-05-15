@@ -40,10 +40,38 @@ app = Celery(
         'backend.workers.tasks.cache_builder',               # Global pool rankings cache builder
         'backend.workers.tasks.global_ema_tasks',            # Global EMA: persist + decay
         'backend.workers.tasks.cleanup_tasks',               # Migration: managed node group cleanup
+        'backend.workers.tasks.adaptive_itn_tasks',          # Adaptive ITN: hourly decay + Postgres flush
+        'backend.workers.tasks.keda_installer',              # K2: KEDA install/uninstall lifecycle monitor
+        'backend.workers.tasks.placement_advisor_task',      # Placement Advisor: core execution cycle
+        'backend.workers.tasks.placement_controller_task',     # Placement Controller: pod-level eviction + shadow mode
+        'backend.workers.tasks.workload_cv_task',               # T-07: 14-day CPU CV computation
+        'backend.workers.tasks.hpa_recommendation_task',          # T-16: HPA recommended replicas
+        'backend.workers.tasks.consolidation_analysis_task',       # T-18: Consolidation candidates
+        'backend.workers.tasks.validate_actions_task',              # Real-time EVICT_POD convergence validator
     ]
 )
 
 app.conf.beat_schedule = {
+    # Real-time EVICT_POD convergence validator — every 15 seconds
+    'validate-eviction-actions-every-15s': {
+        'task': 'validate_eviction_actions',  # registered name in validate_actions_task.py
+        'schedule': 15.0,
+    },
+    # T-07: Workload CPU CV computation — every 10 minutes
+    'workload-cv-every-10-mins': {
+        'task': 'backend.workers.tasks.workload_cv_task.compute_workload_cv',
+        'schedule': 600.0,
+    },
+    # T-16: HPA recommended replicas computation — every 30 minutes
+    'hpa-recommendation-every-30-mins': {
+        'task': 'backend.workers.tasks.hpa_recommendation_task.compute_hpa_recommendations',
+        'schedule': 1800.0,
+    },
+    # T-18: Consolidation candidate analysis — every 10 minutes
+    'consolidation-analysis-every-10-mins': {
+        'task': 'backend.workers.tasks.consolidation_analysis_task.run_consolidation_analysis',
+        'schedule': 600.0,
+    },
     # Existing discovery task
     'discovery-every-5-mins': {
         'task': 'workers.discovery.scan_all_accounts',
@@ -147,10 +175,11 @@ app.conf.beat_schedule = {
         'task': 'workers.termination_monitor',
         'schedule': 30.0,  # 30 seconds
     },
-    # Auto-Rebalancer (Every 15 seconds) - Executes auto-rebalancing actions for flagged pools
-    'auto-rebalancer-every-15-secs': {
+    # Auto-Rebalancer (Every 60 seconds) - Executes auto-rebalancing actions for flagged pools
+    # Increased from 15s: task is CPU-heavy (spawns cache_builder inline), 15s caused 180%+ CPU
+    'auto-rebalancer-every-60-secs': {
         'task': 'workers.auto_rebalancer',
-        'schedule': 15.0,  # 15 seconds
+        'schedule': 60.0,  # 60 seconds (was 15s)
     },
     # Fix 16: Rebalancer Reconciliation (Every 5 minutes) - Detects and resolves stuck actions
     'rebalancer-reconciliation-every-5-min': {
@@ -188,6 +217,17 @@ app.conf.beat_schedule = {
     'pool-cache-refresh-every-15-mins': {
         'task': 'pool_rotation.refresh_all_caches',
         'schedule': 900.0,  # 15 minutes
+    },
+    # PLACEMENT CONTROLLER: Per-cluster pod-level spot eviction + stateful rollout (every 5 minutes)
+    # Only executes when FEATURE_PLACEMENT_CONTROLLER_ENABLED=True in settings
+    'placement-controller-every-5-mins': {
+        'task': 'dispatch_placement_controller_cycles',
+        'schedule': 300.0,  # 5 minutes
+    },
+    # PLACEMENT CONTROLLER RECOVERY: Stale migration + pending completion revalidation (hourly)
+    'placement-controller-recovery-hourly': {
+        'task': 'dispatch_placement_controller_recovery',
+        'schedule': 3600.0,  # 1 hour
     },
     # CONTROL PLANE: Full 8-step decision cycle (every 5 minutes)
     'control-plane-all-clusters-every-5-mins': {
@@ -259,16 +299,47 @@ app.conf.beat_schedule = {
         'task': 'global_ema.decay',
         'schedule': crontab(minute=0, hour=2),
     },
+    # Adaptive ITN ledger decay — hourly: increment node-hours, decay raw scores, flush to Postgres
+    'adaptive-itn-decay-hourly': {
+        'task': 'adaptive_itn.decay_scores',
+        'schedule': 3600.0,  # 1 hour
+    },
+    # C6: Accumulate global node-hours (runs 5 min before decay so accumulator is ready)
+    'adaptive-itn-accumulate-node-hours': {
+        'task': 'adaptive_itn.accumulate_node_hours',
+        'schedule': crontab(minute=55),  # :55 of every hour
+    },
     # Spot advisor scrape — every 12h (Bug 3: was daily/4h; 12h keeps data under 6h stale gate)
     # Re-writes all Redis keys each run to refresh 12h TTLs.
     'spot-advisor-scrape-12h': {
         'task': 'scrapers.spot_advisor.scrape',
         'schedule': 43200.0,  # 12 hours
     },
-    # Instance catalog refresh (daily at 3 AM UTC)
+    # Instance catalog refresh — us-east-1 (daily at 3:00 AM UTC)
     'instance-catalog-refresh-daily-3am': {
         'task': 'workers.instance_catalog.refresh_catalog',
         'schedule': crontab(minute=0, hour=3),
+        'args': ['us-east-1'],
+    },
+    # Instance catalog refresh — ap-south-1 (daily at 3:05 AM UTC)
+    # Required: bin-pack + pool ranking falls back to 30-type hardcoded dict
+    # without a live catalog for the cluster's actual region.
+    'instance-catalog-refresh-ap-south-1': {
+        'task': 'workers.instance_catalog.refresh_catalog',
+        'schedule': crontab(minute=5, hour=3),
+        'args': ['ap-south-1'],
+    },
+    # Instance catalog refresh — us-west-2 (daily at 3:10 AM UTC)
+    'instance-catalog-refresh-us-west-2': {
+        'task': 'workers.instance_catalog.refresh_catalog',
+        'schedule': crontab(minute=10, hour=3),
+        'args': ['us-west-2'],
+    },
+    # Instance catalog refresh — ap-southeast-1 (daily at 3:15 AM UTC)
+    'instance-catalog-refresh-ap-southeast-1-catalog': {
+        'task': 'workers.instance_catalog.refresh_catalog',
+        'schedule': crontab(minute=15, hour=3),
+        'args': ['ap-southeast-1'],
     },
     # On-demand price refresh (every 12 hours)
     'ondemand-price-refresh-12h': {
@@ -305,9 +376,45 @@ app.conf.beat_schedule = {
         'task': 'workers.cleanup_terminated_instances',
         'schedule': crontab(minute=30, hour=3),
     },
+    # §10: Migration Event Cleanup (nightly at 3:45 AM UTC) — purge migration_event rows >30 days
+    'cleanup-migration-events-nightly': {
+        'task': 'workers.cleanup_old_migration_events',
+        'schedule': crontab(minute=45, hour=3),
+    },
+    # W3.0e: NodePool type reconciliation (every 6 hours) — remove orphaned injected instance types
+    'reconcile-nodepool-types-every-6h': {
+        'task': 'workers.karpenter.reconcile_nodepool_types',
+        'schedule': crontab(minute=0, hour='*/6'),
+    },
+    # Placement Controller: dispatcher enumerates all clusters and dispatches per-cluster tasks (every 5 minutes)
+    # Shadow mode: SET spot:placement_controller:shadow_mode:{cluster_id} 1  → metrics only
+    # Live mode:   DEL spot:placement_controller:shadow_mode:{cluster_id}    → evictions enabled
+    'placement-controller-dispatch-every-5-mins': {
+        'task': 'dispatch_placement_controller_cycles',  # registered name in placement_controller_task.py
+        'schedule': 300.0,  # 5 minutes
+    },
+    # Placement Controller: stale migration recovery dispatcher (hourly) — §9 Risk 1
+    'placement-controller-recovery-dispatch-hourly': {
+        'task': 'dispatch_placement_controller_recovery',  # registered name in placement_controller_task.py
+        'schedule': 3600.0,  # 1 hour
+    },
+    # K2.5: KEDA install/uninstall lifecycle monitor (every 30 seconds)
+    'keda-install-monitor-every-30-secs': {
+        'task': 'workers.keda.monitor_install_actions',
+        'schedule': 30.0,
+    },
+    # W7.8: Stale autoscaler freeze cleanup (every 5 minutes)
+    'stale-autoscaler-freeze-cleanup-every-5-mins': {
+        'task': 'workers.keda.cleanup_stale_autoscaler_freezes',
+        'schedule': 300.0,
+    },
 }
 
 app.conf.task_routes = {
+    # ── Agent installation queue (user-triggered, must not wait in backlog) ───
+    'workers.agent.inject_agent': {'queue': 'agent'},
+    'backend.workers.tasks.agent_tasks.inject_agent_task': {'queue': 'agent'},
+
     # ── High-priority emergency queue ─────────────────────────────────────────
     # Emergency tasks MUST run within milliseconds of dispatch.
     # They must NEVER share a queue with heavy batch jobs (pricing ingest,

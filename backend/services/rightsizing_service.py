@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func
 from typing import List, Optional, Dict, Tuple
 from datetime import datetime, timedelta
+import json
 import statistics
 import math
 
@@ -165,6 +166,24 @@ class RightSizingService:
                 )
 
                 if recommendation:
+                    # v4.3 WIE confidence gate — skip DRAFT workloads (insufficient data)
+                    # Only applies when WIE engine has run (Redis key exists). Missing = no gate (backward compatible).
+                    if self.redis:
+                        _wie_key = (
+                            f"spot:wie:classification:{cluster_id}:"
+                            f"{controller_info['namespace']}/{controller_info['controller_name']}"
+                        )
+                        _wie_raw = self.redis.get(_wie_key)
+                        if _wie_raw:
+                            import json as _wie_json
+                            _wie = _wie_json.loads(_wie_raw)
+                            if _wie.get("confidence_state") == "DRAFT":
+                                logger.info(
+                                    f"Skipping {controller_info['controller_name']}: "
+                                    f"WIE confidence=DRAFT (insufficient observation data)"
+                                )
+                                continue
+
                     # Instance-aware filtering: check if a better spot pool exists
                     if instance_aware:
                         pool_exists, pool_info = self._check_better_pool_exists(
@@ -637,7 +656,8 @@ class RightSizingService:
         self,
         cluster_id: str,
         min_savings_pct: float = 10.0,
-        stability_window_hours: int = 24
+        stability_window_hours: int = 24,
+        include_stateful: bool = True,
     ) -> List[str]:
         """
         Create rightsizing proposals instead of immediate recommendations.
@@ -666,6 +686,40 @@ class RightSizingService:
             analysis_window_hours=stability_window_hours,  # Use stability window for analysis
             min_data_points=100
         )
+
+        # W4.2/W4.3 — Tier-based filtering.
+        # TIER_0 (DaemonSet / system) is ALWAYS excluded — never rightsize
+        # workloads that must never migrate.
+        # TIER_1 (ANCHORED_MANUAL / stateful databases) excluded unless
+        # include_stateful=True (i.e. auto_stateful_rightsizing_enabled toggle).
+        if self.redis:
+            tier_filtered = []
+            for rec in recommendations:
+                try:
+                    tier_key = (
+                        f"spot:workload_tier:{cluster_id}:"
+                        f"{rec.namespace}/{rec.controller_name}"
+                    )
+                    tier_raw = self.redis.get(tier_key)
+                    tier_data = json.loads(tier_raw) if tier_raw else {}
+                    tier = tier_data.get("tier", 4)  # default TIER_4 (permissive)
+                    if tier == 0:
+                        logger.debug(
+                            f"[RightSizing] Skipping TIER_0 controller "
+                            f"{rec.namespace}/{rec.controller_name} (NEVER_MIGRATE)"
+                        )
+                        continue
+                    if tier == 1 and not include_stateful:
+                        logger.debug(
+                            f"[RightSizing] Skipping TIER_1 controller "
+                            f"{rec.namespace}/{rec.controller_name} "
+                            f"(auto_stateful_rightsizing disabled)"
+                        )
+                        continue
+                    tier_filtered.append(rec)
+                except Exception:
+                    tier_filtered.append(rec)  # fail-open: include on any error
+            recommendations = tier_filtered
 
         # Filter by minimum savings percentage
         filtered_recs = [

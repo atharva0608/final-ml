@@ -32,6 +32,7 @@ class ProposalStatus(str, enum.Enum):
     REJECTED = "REJECTED"
     EXECUTED = "EXECUTED"
     FAILED = "FAILED"
+    ROLLED_BACK = "ROLLED_BACK"
 
 
 class RightsizingProposal(Base):
