@@ -963,6 +963,7 @@ def update_cluster_optimization_settings(
         # Primary: DB column (set by formal install flow)
         _karpenter_installed = getattr(cluster, 'karpenter_mode', None) is not None
         # Secondary: Redis authoritative keys (set by agent heartbeat / live K8s detection)
+        _redis_confirmed = False
         if not _karpenter_installed:
             try:
                 from backend.core.redis_client import get_redis_client as _grc_karp_gate
@@ -973,8 +974,18 @@ def update_cluster_optimization_settings(
                     or _kr_gate.exists(f"karpenter:detected:{cluster_id}")
                 ):
                     _karpenter_installed = True
+                    _redis_confirmed = True
             except Exception:
                 pass
+        # RISK 1 fix: Redis confirmed Karpenter but DB column is stale → write-back so DB
+        # converges to truth.  Redis is the acceleration cache; DB is the durable record.
+        if _redis_confirmed and getattr(cluster, 'karpenter_mode', None) is None:
+            try:
+                from backend.models.cluster import KarpenterMode as _KM
+                cluster.karpenter_mode = _KM.AUTO
+                db.flush()  # persist within this transaction; commit happens at end of handler
+            except Exception:
+                pass  # Non-fatal — DB write-back is best-effort; Redis detection still valid
         if not _karpenter_installed:
             # Current values in DB (None means not yet configured → treat as False)
             _prev_opt = cluster.optimization_settings
@@ -991,6 +1002,16 @@ def update_cluster_optimization_settings(
                     status_code=400,
                     detail="Karpenter must be installed before enabling auto-rightsizing. Install Karpenter from the cluster setup page first."
                 )
+        # RISK 2 fix: auto_rightsizing is a modifier on top of auto_rebalance — not standalone.
+        # Reject configs where rightsizing is on but rebalancing is off; this prevents silent
+        # invalid state where the bin-pack path is requested but no rebalancing actions exist.
+        _eff_rebalance = _ac.get('auto_rebalance_enabled', False)
+        _eff_rightsizing = _ac.get('auto_rightsizing_enabled', False)
+        if _eff_rightsizing and not _eff_rebalance:
+            raise HTTPException(
+                status_code=422,
+                detail="Auto Right-Sizing requires Auto Rebalance to be enabled. Enable Auto Rebalance first."
+            )
 
     # Automation Controls (partial update — only applied when section is present)
     _diversify_just_enabled = False

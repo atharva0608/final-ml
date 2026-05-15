@@ -539,7 +539,21 @@ const ClusterDetails = ({ clusterId, onClose }) => {
   useEffect(() => {
     if (!showKarpenterRequiredModal || !clusterId) return;
     const t = setInterval(async () => {
-      try { const r = await karpenterAPI.getInstallStatus(clusterId); if (r?.data) { setKarpenterInstallStatus(r.data); if (r.data.karpenter_installed && karpenterRequiredTrigger) { setShowKarpenterRequiredModal(false); setKarpenterModalInstalling(false); setOptSettings(p => ({ ...p, automation_controls: { ...p?.automation_controls, [karpenterRequiredTrigger]: true } })); toast.success('Karpenter detected — toggle enabled!'); } } } catch (_) {}
+      try {
+        const r = await karpenterAPI.getInstallStatus(clusterId);
+        if (r?.data) {
+          setKarpenterInstallStatus(r.data);
+          if (r.data.karpenter_installed && karpenterRequiredTrigger) {
+            setShowKarpenterRequiredModal(false);
+            setKarpenterModalInstalling(false);
+            // RISK 3 fix: full cluster refresh so DB-backed toggle state and
+            // karpenter_mode column reflect the confirmed install immediately.
+            await fetchClusterDetails();
+            setOptSettings(p => ({ ...p, automation_controls: { ...p?.automation_controls, [karpenterRequiredTrigger]: true } }));
+            toast.success('Karpenter detected — toggle is now available!');
+          }
+        }
+      } catch (_) {}
     }, 5000);
     return () => clearInterval(t);
   }, [showKarpenterRequiredModal, clusterId, karpenterRequiredTrigger]);
@@ -592,16 +606,19 @@ const ClusterDetails = ({ clusterId, onClose }) => {
       await clusterAPI.updateOptimizationSettings(clusterId, optSettings);
       toast.success("Optimization settings saved!");
       if (_prevRebalance) {
-        toast('Auto-Rebalancer active — ML engine will evaluate nodes within ~60 seconds', { icon: '⚡', duration: 5000 });
+        toast('Auto-Rebalancer active — evaluation cycle will begin shortly', { icon: '⚡', duration: 5000 });
       }
     } catch (err) {
+      const _status = err?.response?.status;
       const _detail = err?.response?.data?.detail || err?.message || '';
-      if (err?.response?.status === 400 && _detail.toLowerCase().includes('karpenter')) {
+      if (_status === 400 && _detail.toLowerCase().includes('karpenter')) {
         toast.error(_detail, { duration: 6000 });
         setShowKarpenterRequiredModal(true);
         setKarpenterRequiredTrigger(
           _detail.includes('rebalancing') ? 'auto_rebalance_enabled' : 'auto_rightsizing_enabled'
         );
+      } else if (_status === 422) {
+        toast.error(_detail || 'Invalid configuration — check toggle dependencies', { duration: 6000 });
       } else {
         toast.error('Failed to save settings');
       }
@@ -613,7 +630,14 @@ const ClusterDetails = ({ clusterId, onClose }) => {
     if (section === 'automation_controls' && (key === 'auto_rebalance_enabled' || key === 'auto_rightsizing_enabled') && value === true && !karpenterInstallStatus?.karpenter_installed) {
       setKarpenterRequiredTrigger(key); setKarpenterModalInstalling(false); setShowKarpenterRequiredModal(true); return;
     }
-    setOptSettings(p => ({ ...p, [section]: { ...p[section], [key]: value } }));
+    setOptSettings(p => {
+      const updated = { ...p, [section]: { ...p[section], [key]: value } };
+      // RISK 2: auto_rightsizing depends on auto_rebalance — cascade-off when rebalance is disabled
+      if (section === 'automation_controls' && key === 'auto_rebalance_enabled' && !value) {
+        updated.automation_controls = { ...updated.automation_controls, auto_rightsizing_enabled: false };
+      }
+      return updated;
+    });
   };
 
   if (!clusterId) return null;
