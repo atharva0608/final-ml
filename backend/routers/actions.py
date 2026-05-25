@@ -85,7 +85,8 @@ async def get_active_actions(
     Frontend polls this at /api/v1/actions/active?cluster_id=...
     """
     from backend.models.rebalancing_action import RebalancingAction
-    from sqlalchemy import or_
+    from sqlalchemy import or_, and_
+    from datetime import timedelta
 
     in_flight = (
         db.query(AgentAction)
@@ -98,11 +99,13 @@ async def get_active_actions(
         .all()
     )
 
+    _agent_terminal_cutoff = datetime.utcnow() - timedelta(hours=4)
     recent_terminal = (
         db.query(AgentAction)
         .filter(
             AgentAction.cluster_id == cluster_id,
             AgentAction.status.in_([AgentActionStatus.COMPLETED, AgentActionStatus.FAILED]),
+            AgentAction.created_at >= _agent_terminal_cutoff,
         )
         .order_by(AgentAction.created_at.desc())
         .limit(20)
@@ -126,11 +129,21 @@ async def get_active_actions(
             "failure_reason": result.get("failure_reason"),
         }
 
+    # Active statuses are always returned.
+    # Terminal statuses (failed/completed) stay visible for 24 h so the UI
+    # can render a FAILED/COMPLETED badge instead of silently dropping nodes.
+    _ra_cutoff = datetime.utcnow() - timedelta(hours=24)
     rebalancing_actions = (
         db.query(RebalancingAction)
         .filter(
             RebalancingAction.cluster_id == cluster_id,
-            RebalancingAction.status == "in_progress",
+            or_(
+                RebalancingAction.status.in_(["in_progress", "waiting_agent", "pending"]),
+                and_(
+                    RebalancingAction.status.in_(["failed", "completed"]),
+                    RebalancingAction.created_at >= _ra_cutoff,
+                ),
+            ),
         )
         .order_by(RebalancingAction.created_at.desc())
         .limit(20)
@@ -138,22 +151,76 @@ async def get_active_actions(
     )
 
     def _serialize_ra(ra: RebalancingAction) -> dict:
+        _meta = ra.action_metadata or {}
+        _engine_source = (
+            "consolidation"
+            if getattr(ra, "source", "auto_rebalancer") == "placement_controller"
+            else (_meta.get("provisioner_type") or "karpenter")
+        )
         return {
             "id": str(ra.id),
             "trigger": ra.trigger,
             "source_pool": ra.source_pool,
             "target_pool": ra.target_pool,
+            "source_node_name": _meta.get("source_node_name") or _meta.get("node_name"),
             "current_state": ra.current_state or ra.status,
             "status": ra.status,
+            "action_step": ra.action_step,
+            "migration_type": getattr(ra, "migration_type", None),
+            "engine_source": _engine_source,
             "started_at": ra.started_at.isoformat() if ra.started_at else None,
+            "completed_at": ra.completed_at.isoformat() if ra.completed_at else None,
+            "error_message": ra.error_message,
+            "nodes_affected": ra.nodes_affected,
+            "pods_migrated": ra.pods_migrated,
+            "node_name": (
+                _meta.get("node_name")
+                or _meta.get("source_node_name")
+                or _meta.get("instance_id")
+            ),
         }
 
     all_agent_actions = [_serialize_action(a) for a in in_flight + recent_terminal]
     active_count = len(in_flight)
 
+    # Fetch pending/approved rightsizing proposals so the UI can show scheduled actions
+    scheduled_actions = []
+    try:
+        from backend.models.rightsizing_proposal import RightsizingProposal, ProposalStatus
+        proposals = (
+            db.query(RightsizingProposal)
+            .filter(
+                RightsizingProposal.cluster_id == cluster_id,
+                RightsizingProposal.status.in_([ProposalStatus.PENDING, ProposalStatus.APPROVED]),
+            )
+            .order_by(RightsizingProposal.id.desc())
+            .limit(20)
+            .all()
+        )
+        for p in proposals:
+            scheduled_actions.append({
+                "id": str(p.id),
+                "action_type": "PATCH_CONTAINER_RESOURCES",
+                "status": "SCHEDULED",
+                "proposal_status": p.status.value,
+                "payload": {
+                    "is_rightsizing": True,
+                    "workload_name": getattr(p, "workload_name", None) or getattr(p, "workload_id", None),
+                    "current_resources": f"{p.current_vcpu}vCPU / {p.current_memory_gb}GB",
+                    "target_resources": f"{p.proposed_vcpu}vCPU / {p.proposed_memory_gb}GB",
+                    "estimated_savings": round(p.estimated_monthly_savings, 2),
+                    "current_instance_type": p.current_instance_type,
+                    "proposed_instance_type": p.proposed_instance_type,
+                },
+                "created_at": p.id,
+            })
+    except Exception:
+        pass
+
     return {
         "agent_actions": all_agent_actions,
         "rebalancing_actions": [_serialize_ra(ra) for ra in rebalancing_actions],
+        "scheduled_actions": scheduled_actions,
         "cluster_state": {
             "active_count": active_count,
             "batch_limit": 10,
@@ -276,6 +343,137 @@ async def create_action(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to create action: {str(e)}"
         )
+
+
+@router.get("/timeline")
+async def get_actions_timeline(
+    cluster_id: str = Query(..., description="Cluster ID"),
+    limit: int = Query(100, le=200),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Returns a unified, time-sorted event feed of agent_actions + rebalancing_actions
+    for use by EventTimeline.jsx. All statuses included (in-flight + recent terminal).
+    """
+    from backend.models.rebalancing_action import RebalancingAction
+
+    agent_actions = (
+        db.query(AgentAction)
+        .filter(AgentAction.cluster_id == cluster_id)
+        .order_by(AgentAction.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+
+    rebalancing_actions = (
+        db.query(RebalancingAction)
+        .filter(RebalancingAction.cluster_id == cluster_id)
+        .order_by(RebalancingAction.created_at.desc())
+        .limit(50)
+        .all()
+    )
+
+    _STATE_PROGRESS = {
+        "CREATED": 5, "POOL_SELECTED": 15, "SOURCE_CORDONED": 30,
+        "SOURCE_DRAINED": 50, "REPLACEMENT_LAUNCHING": 65,
+        "REPLACEMENT_READY": 80, "SOURCE_TERMINATING": 90,
+        "COMPLETED": 100, "FAILED": 100,
+    }
+
+    def _severity(status: str) -> str:
+        if status in ("FAILED", "failed"):      return "error"
+        if status in ("COMPLETED", "completed"): return "success"
+        if status in ("PENDING",):               return "info"
+        return "warning"
+
+    def _ra_progress(ra) -> int:
+        return _STATE_PROGRESS.get(ra.current_state or "", 33)
+
+    def _duration(started, ended=None):
+        if not started: return None
+        end = ended or datetime.utcnow()
+        if isinstance(started, str):
+            from datetime import datetime as _dt
+            try: started = _dt.fromisoformat(started)
+            except: return None
+        return int((end - started).total_seconds())
+
+    events = []
+
+    for a in agent_actions:
+        result = a.result or {}
+        payload = a.payload or {}
+        node = payload.get("node_name") or payload.get("node")
+        workload = payload.get("workload_name") or payload.get("workload_id") or payload.get("deployment_name")
+        # Derive granular lifecycle phase from ActionTracker Redis for EVICT_POD actions
+        _phase = None
+        try:
+            from backend.core.redis_client import get_redis_client as _tl_redis
+            _r = _tl_redis()
+            if _r and a.action_type.value in ("EVICT_POD", "PATCH_AFFINITY"):
+                _pod = payload.get("pod_name") or node or ""
+                # Scan recent execution keys for this pod
+                _pattern = f"spot:ee:action:{cluster_id}:*:{_pod}"
+                _keys = _r.keys(_pattern)
+                if _keys:
+                    _raw = _r.hgetall(_keys[0])
+                    _phase = (_raw.get(b"phase") or _raw.get("phase") or b"").decode() if isinstance(_raw.get(b"phase") or _raw.get("phase") or b"", bytes) else (_raw.get(b"phase") or _raw.get("phase") or "")
+        except Exception:
+            pass
+        events.append({
+            "id": f"aa-{a.id}",
+            "event_type": "agent_action",
+            "action_type": a.action_type.value,
+            "status": a.status.value,
+            "severity": _severity(a.status.value),
+            "priority": getattr(a, "priority", 0),
+            "title": a.action_type.value.replace("_", " ").title(),
+            "node": node,
+            "workload": workload,
+            "payload": a.payload or {},
+            "retry_count": getattr(a, "retry_count", 0),
+            "error_message": a.error_message,
+            "observed": result.get("observed", False),
+            "failure_reason": result.get("failure_reason"),
+            "phase": _phase or None,
+            "timestamp": a.created_at.isoformat() if a.created_at else None,
+            "completed_at": a.completed_at.isoformat() if a.completed_at else None,
+            "duration_seconds": _duration(a.created_at, a.completed_at),
+        })
+
+    for ra in rebalancing_actions:
+        dur = _duration(ra.started_at, ra.completed_at)
+        events.append({
+            "id": f"ra-{ra.id}",
+            "event_type": "rebalancing",
+            "action_type": "NODE_REBALANCE",
+            "status": ra.status,
+            "severity": _severity(ra.status),
+            "priority": 10 if ra.trigger == "emergency" else 0,
+            "title": f"{'Emergency' if ra.trigger == 'emergency' else 'Graceful'} Rebalance",
+            "node": ra.source_pool,
+            "workload": None,
+            "payload": {
+                "source_pool": ra.source_pool,
+                "target_pool": ra.target_pool,
+                "trigger": ra.trigger,
+                "nodes_affected": ra.nodes_affected,
+                "pods_migrated": ra.pods_migrated,
+                "estimated_savings_mo": ra.estimated_savings_mo,
+            },
+            "retry_count": 0,
+            "error_message": ra.error_message,
+            "current_state": ra.current_state,
+            "action_step": getattr(ra, "action_step", None),
+            "progress": _ra_progress(ra),
+            "timestamp": ra.started_at.isoformat() if ra.started_at else (ra.created_at.isoformat() if ra.created_at else None),
+            "completed_at": ra.completed_at.isoformat() if ra.completed_at else None,
+            "duration_seconds": dur,
+        })
+
+    events.sort(key=lambda e: e["timestamp"] or "", reverse=True)
+    return {"cluster_id": cluster_id, "events": events[:limit]}
 
 
 @router.get("/{action_id}")

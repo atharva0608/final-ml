@@ -48,6 +48,7 @@ app = Celery(
         'backend.workers.tasks.hpa_recommendation_task',          # T-16: HPA recommended replicas
         'backend.workers.tasks.consolidation_analysis_task',       # T-18: Consolidation candidates
         'backend.workers.tasks.validate_actions_task',              # Real-time EVICT_POD convergence validator
+        'backend.workers.tasks.optimize_worker',                    # Pre-computes heavy optimization metrics
     ]
 )
 
@@ -71,6 +72,11 @@ app.conf.beat_schedule = {
     'consolidation-analysis-every-10-mins': {
         'task': 'backend.workers.tasks.consolidation_analysis_task.run_consolidation_analysis',
         'schedule': 600.0,
+    },
+    # Optimizer pre-compute — every 5 minutes
+    'compute-node-bin-packing-every-5-mins': {
+        'task': 'workers.compute_node_bin_packing_metrics',
+        'schedule': 300.0,
     },
     # Existing discovery task
     'discovery-every-5-mins': {

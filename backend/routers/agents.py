@@ -422,6 +422,63 @@ async def agent_heartbeat(
 
             db.commit()
 
+            # Cache Phase 2e metrics in Redis (Task 5.3)
+            try:
+                from backend.core.redis_client import get_redis_client
+                import json as _hb_json
+                from backend.redis_keys import (
+                    agent_data_pod_metrics_key,
+                    agent_data_cluster_spot_summary_key,
+                    agent_data_hpa_pdb_key
+                )
+                
+                _r = get_redis_client()
+                if _r:
+                    # 1. Store heartbeat raw (Task 1.14 legacy)
+                    # Merge health metrics into payload so advisor sees node/pod counts
+                    _extended_payload = {**payload}
+                    if "health" in payload:
+                        _extended_payload.update(payload["health"])
+                    
+                    _r.setex(f"spot:agent:heartbeat:{cluster_id}", 300, _hb_json.dumps(_extended_payload))
+                    
+                    # 2. Store structured metrics (PlacementAdvisor consumed)
+                    _pod_metrics = payload.get("pod_metrics_per_workload")
+                    _spot_summary = payload.get("cluster_spot_summary")
+                    _hpa_pdb = payload.get("hpa_pdb_data")
+
+                    if _pod_metrics is not None:
+                        _r.setex(agent_data_pod_metrics_key(cluster_id), 120, _hb_json.dumps(_pod_metrics))
+                    if _spot_summary is not None:
+                        _r.setex(agent_data_cluster_spot_summary_key(cluster_id), 120, _hb_json.dumps(_spot_summary))
+                        _pending = int((_spot_summary or {}).get("unhealthy_pending_pods", 0))
+                        _r.setex(f"spot:cluster:pending_pods:{cluster_id}", 120, str(_pending))
+                    if _hpa_pdb is not None:
+                        _r.setex(agent_data_hpa_pdb_key(cluster_id), 300, _hb_json.dumps(_hpa_pdb))
+                        
+                        import time as _t
+                        _now = _t.time()
+                        _pmw = _pod_metrics or {}
+                        for _wid, _wls in (_hpa_pdb or {}).items():
+                            if not isinstance(_wls, dict): continue
+                            _wpm = _pmw.get(_wid, {})
+                            _ready = int(_wpm.get("spot_pods", 0)) + int(_wpm.get("od_pods", 0))
+                            _state_payload = {
+                                "pdb_min_available":       _wls.get("pdb_min_available"),
+                                "hpa_min_replicas":        _wls.get("hpa_min"),
+                                "hpa_max_replicas":        _wls.get("hpa_max"),
+                                "ready_replicas":          _ready,
+                                "updated_at":              _now,
+                                "current_spot_pods":       int(_wpm.get("spot_pods", 0)),
+                                "current_ondemand_pods":   int(_wpm.get("od_pods", 0)),
+                                "has_pdb":                 bool(_wls.get("has_pdb", False)),
+                                "has_topology_spread":     bool(_wls.get("has_topology_spread", False)),
+                                "has_pod_anti_affinity":   bool(_wls.get("has_pod_anti_affinity", False)),
+                            }
+                            _r.setex(f"spot:workload:state:{cluster_id}:{_wid}", 300, _hb_json.dumps(_state_payload))
+            except Exception as e:
+                logger.error(f"Failed to cache heartbeat metrics for {cluster_id}: {e}")
+
         return {
             "success": True,
             "timestamp": datetime.utcnow().isoformat()

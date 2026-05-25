@@ -158,7 +158,9 @@ class NodePoolReconcilerService:
         is_memory = "memory" in np_class
         
         for pool in scored_pools:
-            family = pool.instance_type.split('.')[0]
+            instance_type = pool.pool.instance_type
+            az = pool.pool.az
+            family = instance_type.split('.')[0]
             
             if is_compute and not family.startswith('c'):
                 continue
@@ -176,5 +178,5 @@ class NodePoolReconcilerService:
             filtered = scored_pools[:10]
             
         return [
-            {"instance_type": p.instance_type, "az": p.az} for p in filtered
+            {"instance_type": p.pool.instance_type, "az": p.pool.az} for p in filtered
         ]

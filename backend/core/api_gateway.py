@@ -99,13 +99,21 @@ async def add_cors_headers(request: Request, call_next):
     # own internal URL, and rate-limited to once per 60s to avoid Redis spam.
     try:
         _host = request.headers.get("x-forwarded-host") or request.headers.get("host") or ""
-        if _host and "localhost" not in _host and "127.0.0.1" not in _host:
+        if (
+            _host
+            and "localhost" not in _host
+            and "127.0.0.1" not in _host
+            and "." in _host  # must be a proper FQDN — excludes Docker-internal names like 'backend:8000'
+        ):
             _scheme = request.headers.get("x-forwarded-proto") or request.url.scheme or "https"
-            _live_url = f"{_scheme}://{_host}"
+            _live_url = f"{_scheme}://{_host.split(':')[0]}" if ":" in _host else f"{_scheme}://{_host}"
             from backend.core.redis_client import get_redis_client as _grc
             _r = _grc()
-            # SET with EX=86400 (1 day TTL as safety) — refreshed on every request
-            _r.set("platform:backend_public_url", _live_url, ex=86400)
+            # Rate-limited to once per 60s to avoid Redis spam on every request
+            _rl_key = "platform:backend_url_updated"
+            if not _r.exists(_rl_key):
+                _r.set("platform:backend_public_url", _live_url, ex=86400)
+                _r.set(_rl_key, "1", ex=60)
     except Exception:
         pass  # Non-critical — best effort
     # ─────────────────────────────────────────────────────────────────────
@@ -550,7 +558,7 @@ app.include_router(tag_scoring_router, prefix="/api/v1")
 # app.include_router(tag_template_router, prefix="/api/v1")  # TODO: Create tag_template_routes.py
 
 # Agent Communication routes (used by Kubernetes agents)
-app.include_router(agents_router)  # Prefix already defined in router
+# app.include_router(agents_router)  # Prefix already defined in router
 app.include_router(actions_router)  # Prefix already defined in router
 app.include_router(agent_metrics_router)  # Prefix already defined in router
 

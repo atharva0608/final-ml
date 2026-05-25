@@ -211,24 +211,51 @@ class ClusterService:
 
         discovered = []
         try:
-            # Assume Role
-            sts = boto3.client('sts')
-            assumed = sts.assume_role(
-                RoleArn=account.role_arn,
-                RoleSessionName="Discovery",
-                ExternalId=account.external_id
-            )
-            creds = assumed['Credentials']
+            # ── Credential resolution ─────────────────────────────────────────
+            # Prefer cross-account role assumption; fall back to platform
+            # IAM user credentials when role_arn is absent or assumption fails.
+            from backend.models.system_config import SystemConfig as _SC
+            _ak = self.db.query(_SC).filter(_SC.key == "PLATFORM_AWS_ACCESS_KEY").first()
+            _sk = self.db.query(_SC).filter(_SC.key == "PLATFORM_AWS_SECRET").first()
+            _platform_creds_kwargs = {}
+            if _ak and _sk and _ak.value and _sk.value:
+                _platform_creds_kwargs = {
+                    "aws_access_key_id": _ak.value,
+                    "aws_secret_access_key": _sk.value,
+                }
+
+            creds = None  # will hold {AccessKeyId, SecretAccessKey, SessionToken} or None
+            if account.role_arn:
+                try:
+                    sts = boto3.client('sts', **_platform_creds_kwargs)
+                    assumed = sts.assume_role(
+                        RoleArn=account.role_arn,
+                        RoleSessionName="Discovery",
+                        **({"ExternalId": account.external_id} if account.external_id else {})
+                    )
+                    creds = assumed['Credentials']
+                    logger.info(f"[discover_clusters] Assumed role {account.role_arn}")
+                except Exception as _assume_err:
+                    logger.warning(
+                        f"[discover_clusters] assume_role failed ({_assume_err}); "
+                        "falling back to platform credentials"
+                    )
+
+            if creds is None:
+                logger.info("[discover_clusters] Using platform IAM credentials directly")
 
             for region in regions_to_scan:
                 try:
-                    eks = boto3.client(
-                        'eks',
-                        aws_access_key_id=creds['AccessKeyId'],
-                        aws_secret_access_key=creds['SecretAccessKey'],
-                        aws_session_token=creds['SessionToken'],
-                        region_name=region
-                    )
+                    _eks_kwargs = {"region_name": region}
+                    if creds:
+                        _eks_kwargs.update({
+                            "aws_access_key_id": creds['AccessKeyId'],
+                            "aws_secret_access_key": creds['SecretAccessKey'],
+                            "aws_session_token": creds['SessionToken'],
+                        })
+                    elif _platform_creds_kwargs:
+                        _eks_kwargs.update(_platform_creds_kwargs)
+                    eks = boto3.client('eks', **_eks_kwargs)
                     cluster_names = []
                     paginator = eks.get_paginator('list_clusters')
                     for page in paginator.paginate():
@@ -245,7 +272,6 @@ class ClusterService:
                     cluster = self.db.query(Cluster).filter(
                         Cluster.name == cluster_name,
                         Cluster.account_id == account.id,
-                        Cluster.is_dismissed == False,
                     ).first()
 
                     new_arn = details.get('arn', '')
@@ -260,6 +286,8 @@ class ClusterService:
                             status=ClusterStatus.DISCOVERED,
                             version=details.get('version'),
                             endpoint=details.get('endpoint'),
+                            ca_data=details.get('certificateAuthority', {}).get('data'),
+                            onboarding_phase='managed',  # Explicitly set — never rely on DB default
                             created_at=datetime.utcnow(),
                             updated_at=datetime.utcnow()
                         )
@@ -314,9 +342,11 @@ class ClusterService:
                             cluster.arn = new_arn
 
                         cluster.status = ClusterStatus.DISCOVERED
+                        cluster.is_dismissed = False  # Un-dismiss if it was previously removed but found again in AWS
                         if not is_recreated:
                             cluster.version = details.get('version')
                         cluster.endpoint = details.get('endpoint')
+                        cluster.ca_data = details.get('certificateAuthority', {}).get('data')
                         cluster.region = region  # Update region in case it changed
                         cluster.updated_at = datetime.utcnow()
 
@@ -413,6 +443,7 @@ class ClusterService:
             endpoint=cluster_data.endpoint,
             status=ClusterStatus.DISCOVERED,
             tags=cluster_data.tags or {},
+            onboarding_phase='managed',  # Explicitly set — never rely on DB default
             created_at=datetime.utcnow(),
             updated_at=datetime.utcnow()
         )
@@ -497,6 +528,7 @@ class ClusterService:
             is_agentless="Y",
             aws_role_arn=connect_data.role_arn,
             aws_external_id=connect_data.external_id,
+            onboarding_phase='managed',  # Explicitly set — never rely on DB default
             created_at=datetime.utcnow(),
             updated_at=datetime.utcnow()
         )

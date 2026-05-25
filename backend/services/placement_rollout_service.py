@@ -81,52 +81,70 @@ class PlacementRolloutService:
 
     def execute_single_pod_rollout_step(self, cluster_id: str, policy: dict) -> bool:
         """
-        §9.2: The main pipeline for migrating exactly one pod.
-        Returns True if successful, False if skipped or failed.
+        DEPRECATED — direct-eviction path removed (Bug 3 fix).
+
+        This method previously evicted the On-Demand pod IMMEDIATELY (step 3),
+        BEFORE confirming a new pod was Ready. That means the old pod could be
+        killed while zero replacement pods were running — violating the
+        "create-before-delete" contract.
+
+        All pod migration MUST go through execute_stateful_rollout() which:
+          1. Scales up (+1 replica)
+          2. Waits for new pod to become Ready
+          3. Validates new pod landed on Spot
+          4. Only then evicts the original OD pod
+
+        Callers should supply a `workload` dict and a `pod_to_replace` object.
         """
         nodepool_class = policy.get("assigned_nodepool_class", "spot-general")
         workload_id = policy.get("workload_id")
-        
-        # 1. Wait for provisioning to settle
-        wait_time = self.compute_adaptive_provision_wait(nodepool_class)
-        settled = self.wait_for_provisioning_to_settle(cluster_id, nodepool_class, wait_time)
-        if not settled:
-            return False
-            
-        # Log state
-        logger.info(f"Initiating single pod rollout step for {workload_id} -> {nodepool_class}")
-        
-        # 2. Get initial ready state
-        state_key = f"spot:workload:state:{cluster_id}:{workload_id}"
-        state_raw = self.redis.get(state_key)
-        initial_ready = 0
-        if state_raw:
-            try:
-                state = json.loads(state_raw)
-                initial_ready = state.get("ready_replicas", 0)
-            except:
-                pass
+        logger.warning(
+            "execute_single_pod_rollout_step_deprecated",
+            extra={
+                "cluster_id": cluster_id,
+                "workload_id": workload_id,
+                "nodepool_class": nodepool_class,
+                "reason": (
+                    "Direct eviction path was removed. "
+                    "Caller must use execute_stateful_rollout() to ensure "
+                    "create-before-delete ordering. Old pod must NOT be killed "
+                    "before new pod is Ready and accepting requests."
+                ),
+            },
+        )
+        # Emit a metric so ops dashboards can alert on stale callers.
+        self._emit_metric("single_pod_rollout_deprecated_call", cluster_id)
+        # Return False — do NOT proceed with eviction.
+        return False
 
-        # 3. Trigger pod deletion (Evict 1 Pod currently on OnDemand node)
-        # In a real environment, we call K8s Eviction API on a targeted pod.
-        self._trigger_pod_eviction(cluster_id, workload_id)
-        
-        # 4. Health Check
-        health_ok = self.rollout_pod_health_check(cluster_id, workload_id, initial_ready)
-        
-        if health_ok:
-            logger.info(f"Rollout step successful for {workload_id}")
-            self.redis.setex(f"spot:placement:last_rollout_ok:{cluster_id}:{workload_id}", 3600, "1")
-            return True
-        else:
-            logger.error(f"Rollout step failed health check for {workload_id}")
-            # Pause rollout by setting a block flag
-            self.redis.setex(f"spot:placement:rollout_blocked:{cluster_id}:{workload_id}", 14400, "health_check_failed")
-            return False
 
-    def _trigger_pod_eviction(self, cluster_id: str, workload_id: str):
-        """Mock eviction API for single pod replacement."""
-        pass
+    def _trigger_pod_eviction(self, cluster_id: str, workload_id: str) -> None:
+        """
+        Evict one On-Demand pod for this workload.
+        Looks up the OD pod from Redis pod-list state; falls back to a
+        namespace/name hint so the in-cluster agent can select the pod itself.
+        """
+        namespace, name = workload_id.split("/", 1) if "/" in workload_id else ("default", workload_id)
+        pod_name: Optional[str] = None
+        try:
+            raw = self.redis.get(f"spot:workload:pods:{cluster_id}:{workload_id}")
+            if raw:
+                pods: List[Dict] = json.loads(raw)
+                for p in pods:
+                    cap = (p.get("capacity_type") or "").lower()
+                    if cap not in ("spot",):
+                        pod_name = p.get("pod_name") or p.get("name")
+                        namespace = p.get("namespace", namespace)
+                        break
+        except Exception:
+            pass
+        if not pod_name:
+            logger.warning(
+                "trigger_pod_eviction_pod_not_found_in_redis",
+                extra={"cluster_id": cluster_id, "workload_id": workload_id},
+            )
+            return
+        self._evict_pod(cluster_id, pod_name, namespace)
 
     def _emit_metric(self, metric_name: str, cluster_id: str, **labels):
         """Emit rollout metrics."""
@@ -199,7 +217,25 @@ class PlacementRolloutService:
             # stateful_rollout_failed so metrics stay meaningful.
             return False
 
-        # 1. Capacity pre-check — do nothing if there is no room for +1
+        # 1a. PVC check — EBS volumes are ReadWriteOnce: a +1 replica cannot mount
+        # the existing PVC while the old pod is still running.  Route to node-level
+        # drain instead (caller must use _dispatch_stateful_rollout).
+        if self._workload_has_pvc(cluster_id, workload_id):
+            logger.warning(
+                "stateful_rollout_blocked_pvc",
+                extra={
+                    "cluster_id": cluster_id,
+                    "workload_id": workload_id,
+                    "reason": (
+                        "Workload has PVC (ReadWriteOnce). "
+                        "+1 scaling would leave the old pod holding the volume mount. "
+                        "Caller must route to node-level drain strategy."
+                    ),
+                },
+            )
+            return False
+
+        # 1b. Capacity pre-check — do nothing if there is no room for +1
         if not self._has_capacity_for_new_replica(cluster_id, workload_id):
             logger.warning(
                 "stateful_rollout_no_capacity",
@@ -210,7 +246,7 @@ class PlacementRolloutService:
             return False
 
         # 2. Protect the source node during migration
-        self._annotate_node(pod_node, "karpenter.sh/do-not-disrupt", "true")
+        self._annotate_node(cluster_id, pod_node, "karpenter.sh/do-not-disrupt", "true")
 
         # 3. Scale up
         self._scale_workload(cluster_id, workload_id, original_replicas + 1)
@@ -242,7 +278,7 @@ class PlacementRolloutService:
                     "stateful_rollout_rollback_skipped_zero_availability",
                     extra={"cluster_id": cluster_id, "pod": pod_name},
                 )
-            self._annotate_node(pod_node, "karpenter.sh/do-not-disrupt", "false")
+            self._annotate_node(cluster_id, pod_node, "karpenter.sh/do-not-disrupt", "false")
             metrics["stateful_rollout_timeout"] = metrics.get("stateful_rollout_timeout", 0) + 1
             self._apply_migration_cooldown(cluster_id, workload_id, MIGRATION_FAILED_COOLDOWN_MINUTES)
             return False
@@ -260,7 +296,7 @@ class PlacementRolloutService:
             )
             # Scale back — we added a replica that didn't improve placement
             self._scale_workload(cluster_id, workload_id, original_replicas)
-            self._annotate_node(pod_node, "karpenter.sh/do-not-disrupt", "false")
+            self._annotate_node(cluster_id, pod_node, "karpenter.sh/do-not-disrupt", "false")
             metrics["stateful_rollout_failed"] = metrics.get("stateful_rollout_failed", 0) + 1
             self._apply_migration_cooldown(cluster_id, workload_id, MIGRATION_FAILED_COOLDOWN_MINUTES)
             return False
@@ -274,7 +310,7 @@ class PlacementRolloutService:
         )
 
         # 7. Release do-not-disrupt — Karpenter may now consolidate the vacated node
-        self._annotate_node(pod_node, "karpenter.sh/do-not-disrupt", "false")
+        self._annotate_node(cluster_id, pod_node, "karpenter.sh/do-not-disrupt", "false")
         return True
 
     # ------------------------------------------------------------------
@@ -385,15 +421,80 @@ class PlacementRolloutService:
             extra={"cluster_id": cluster_id, "workload_id": workload_id, "replicas": replicas},
         )
 
-    def _annotate_node(self, node_name: str, key: str, value: str) -> None:
-        """Queue node annotation action for agent."""
-        logger.debug("annotate_node", extra={"node": node_name, "key": key, "value": value})
+    def _annotate_node(self, cluster_id: str, node_name: str, key: str, value: str) -> None:
+        """
+        Dispatch a LABEL_NODE AgentAction that instructs the in-cluster agent
+        to apply the given annotation (e.g. karpenter.sh/do-not-disrupt) on the node.
+        The agent interprets the 'annotations' payload field alongside 'labels'.
+        """
+        if not node_name:
+            logger.warning("annotate_node_skipped_no_name", extra={"cluster_id": cluster_id, "key": key})
+            return
+        from backend.models.agent_action import AgentAction, AgentActionType, AgentActionStatus
+        action = AgentAction(
+            cluster_id=cluster_id,
+            action_type=AgentActionType.LABEL_NODE,
+            status=AgentActionStatus.PENDING,
+            payload={
+                "node_name": node_name,
+                "annotations": {key: value},
+                "labels": {},
+                "reason": "placement_controller:karpenter_do_not_disrupt",
+            },
+        )
+        self.db.add(action)
+        self.db.commit()
+        logger.info(
+            "annotate_node_dispatched",
+            extra={"cluster_id": cluster_id, "node": node_name, "key": key, "value": value},
+        )
+
+    def _workload_has_pvc(self, cluster_id: str, workload_id: str) -> bool:
+        """
+        Return True if this workload has a PVC attached.
+        Primary source: Redis key spot:workload:pvc:{cluster_id}:{workload_id}
+        pushed by the in-cluster agent's workload discovery loop.
+        Falls back to False when data is absent (conservative — allows rollout
+        with the expectation that agent data will arrive before production use).
+        """
+        try:
+            raw = self.redis.get(f"spot:workload:pvc:{cluster_id}:{workload_id}")
+            if raw:
+                data = json.loads(raw)
+                return bool(data) if isinstance(data, list) else bool(data.get("has_pvc"))
+        except Exception:
+            pass
+        return False
+
+    def _pdb_allows_eviction(self, cluster_id: str, workload_id: str) -> bool:
+        """
+        Return True when the workload's PodDisruptionBudget allows at least
+        one more disruption.  Redis key: spot:workload:pdb:{cluster_id}:{workload_id}
+        Shape: {"disruptions_allowed": <int>, "min_available": <int>, "ready_replicas": <int>}
+        Defaults to True when no PDB data is available.
+        """
+        try:
+            raw = self.redis.get(f"spot:workload:pdb:{cluster_id}:{workload_id}")
+            if raw:
+                pdb = json.loads(raw)
+                return int(pdb.get("disruptions_allowed", 1)) > 0
+        except Exception:
+            pass
+        return True
 
     def _evict_pod(
         self, cluster_id: str, pod_name: str, namespace: str
     ) -> None:
         """Write EVICT_POD AgentAction to DB. Actual K8s eviction by agent."""
         from backend.models.agent_action import AgentAction, AgentActionType, AgentActionStatus
+        # PDB gate — block eviction if PDB does not allow a disruption
+        workload_id = f"{namespace}/{pod_name.rsplit('-', 2)[0]}"
+        if not self._pdb_allows_eviction(cluster_id, workload_id):
+            logger.warning(
+                "evict_pod_blocked_by_pdb",
+                extra={"cluster_id": cluster_id, "pod_name": pod_name, "namespace": namespace},
+            )
+            return
         action = AgentAction(
             cluster_id=cluster_id,
             action_type=AgentActionType.EVICT_POD,
@@ -416,3 +517,178 @@ class PlacementRolloutService:
     ) -> None:
         key = f"spot:placement_controller:cooldown:{cluster_id}:{workload_id}"
         self.redis.setex(key, minutes * 60, "migration_failed")
+
+
+class ActionRealTimeValidator:
+    """
+    Real-time post-action verifier.
+
+    After the in-cluster agent marks an AgentAction as COMPLETED, this
+    validator cross-checks that the observable cluster state actually
+    reflects the expected outcome.  Results are stored in Redis for the
+    UI to display and for the rebalancer to gate subsequent actions.
+
+    Redis key schema:
+        spot:validation:{cluster_id}:{action_id}  →  JSON validation report
+    """
+
+    VALIDATION_TTL_SECONDS = 3600  # keep reports for 1 h
+
+    def __init__(self, db, redis_client):
+        self.db = db
+        self.redis = redis_client
+
+    # ------------------------------------------------------------------
+    # Public entry point
+    # ------------------------------------------------------------------
+
+    def validate(self, cluster_id: str, action_id: str) -> Dict[str, Any]:
+        """
+        Load the completed AgentAction by ID and run the appropriate
+        validator.  Returns a report dict and caches it in Redis.
+        """
+        from backend.models.agent_action import AgentAction, AgentActionType
+        action = self.db.query(AgentAction).filter(AgentAction.id == action_id).first()
+        if not action:
+            return {"ok": False, "reason": "action_not_found", "action_id": action_id}
+
+        atype = action.action_type
+        payload = action.payload or {}
+        node_name = payload.get("node_name")
+
+        if atype == AgentActionType.CORDON_NODE:
+            report = self._validate_node_cordoned(cluster_id, node_name)
+        elif atype == AgentActionType.DRAIN_NODE:
+            report = self._validate_node_drained(cluster_id, node_name)
+        elif atype == AgentActionType.TERMINATE_NODE:
+            report = self._validate_node_terminated(cluster_id, node_name)
+        elif atype == AgentActionType.EVICT_POD:
+            report = self._validate_pod_evicted(cluster_id, payload.get("pod_name"), payload.get("namespace", "default"))
+        else:
+            report = {"ok": True, "reason": "no_validation_for_action_type", "action_type": atype.value}
+
+        report.update({"action_id": action_id, "action_type": atype.value, "node_name": node_name})
+        self._cache_report(cluster_id, action_id, report)
+        return report
+
+    # ------------------------------------------------------------------
+    # Per-action validators
+    # ------------------------------------------------------------------
+
+    def _validate_node_cordoned(self, cluster_id: str, node_name: Optional[str]) -> Dict[str, Any]:
+        """
+        Verify the node is now unschedulable.
+        The agent should have set NodeMetadata.is_ready = False after cordoning.
+        """
+        if not node_name:
+            return {"ok": False, "reason": "missing_node_name"}
+        from backend.models.node_metadata import NodeMetadata
+        meta = (
+            self.db.query(NodeMetadata)
+            .filter(NodeMetadata.cluster_id == cluster_id, NodeMetadata.node_name == node_name)
+            .first()
+        )
+        if meta is None:
+            return {"ok": False, "reason": "node_metadata_not_found", "node": node_name}
+        if not meta.is_ready:
+            return {"ok": True, "reason": "node_is_unschedulable", "node": node_name}
+        return {
+            "ok": False,
+            "reason": "node_still_schedulable_after_cordon",
+            "node": node_name,
+            "is_ready": meta.is_ready,
+        }
+
+    def _validate_node_drained(self, cluster_id: str, node_name: Optional[str]) -> Dict[str, Any]:
+        """
+        Verify the node has no user (non-DaemonSet, non-system) pods remaining.
+        Reads the last 5-minute window of PodMetric data.
+        """
+        if not node_name:
+            return {"ok": False, "reason": "missing_node_name"}
+        from backend.models.pod_metric import PodMetric
+        from datetime import datetime, timedelta
+        _SYSTEM_NS = frozenset(["kube-system", "kube-public", "kube-node-lease"])
+        cutoff = datetime.utcnow() - timedelta(minutes=5)
+        remaining = (
+            self.db.query(PodMetric.pod_name)
+            .filter(
+                PodMetric.cluster_id == cluster_id,
+                PodMetric.node_name == node_name,
+                PodMetric.controller_kind != "DaemonSet",
+                ~PodMetric.namespace.in_(list(_SYSTEM_NS)),
+                PodMetric.timestamp > cutoff,
+            )
+            .distinct()
+            .count()
+        )
+        if remaining == 0:
+            return {"ok": True, "reason": "node_has_no_user_pods", "node": node_name}
+        return {
+            "ok": False,
+            "reason": "user_pods_still_on_node",
+            "node": node_name,
+            "remaining_user_pods": remaining,
+        }
+
+    def _validate_node_terminated(self, cluster_id: str, node_name: Optional[str]) -> Dict[str, Any]:
+        """
+        Verify the EC2 instance is now terminated/terminating.
+        Reads the instances table which the metrics agent keeps in sync.
+        """
+        if not node_name:
+            return {"ok": False, "reason": "missing_node_name"}
+        from backend.models.instance import Instance
+        inst = (
+            self.db.query(Instance.state)
+            .filter(Instance.cluster_id == cluster_id, Instance.node_name == node_name)
+            .first()
+        )
+        if inst is None:
+            return {"ok": True, "reason": "instance_row_gone_presumed_terminated", "node": node_name}
+        if inst.state in ("terminated", "terminating", "stopped"):
+            return {"ok": True, "reason": f"instance_state_{inst.state}", "node": node_name}
+        return {
+            "ok": False,
+            "reason": "instance_still_running_after_terminate",
+            "node": node_name,
+            "instance_state": inst.state,
+        }
+
+    def _validate_pod_evicted(self, cluster_id: str, pod_name: Optional[str], namespace: str) -> Dict[str, Any]:
+        """
+        Verify the evicted pod is no longer reporting Running metrics.
+        """
+        if not pod_name:
+            return {"ok": False, "reason": "missing_pod_name"}
+        from backend.models.pod_metric import PodMetric
+        from datetime import datetime, timedelta
+        cutoff = datetime.utcnow() - timedelta(minutes=3)
+        still_running = (
+            self.db.query(PodMetric.pod_name)
+            .filter(
+                PodMetric.cluster_id == cluster_id,
+                PodMetric.pod_name == pod_name,
+                PodMetric.namespace == namespace,
+                (PodMetric.phase == "Running") | (PodMetric.phase.is_(None)),
+                PodMetric.timestamp > cutoff,
+            )
+            .first()
+        )
+        if not still_running:
+            return {"ok": True, "reason": "pod_no_longer_running", "pod": pod_name}
+        return {"ok": False, "reason": "pod_still_running_after_eviction", "pod": pod_name}
+
+    # ------------------------------------------------------------------
+    # Cache helper
+    # ------------------------------------------------------------------
+
+    def _cache_report(self, cluster_id: str, action_id: str, report: Dict[str, Any]) -> None:
+        try:
+            self.redis.setex(
+                f"spot:validation:{cluster_id}:{action_id}",
+                self.VALIDATION_TTL_SECONDS,
+                json.dumps(report),
+            )
+        except Exception:
+            pass

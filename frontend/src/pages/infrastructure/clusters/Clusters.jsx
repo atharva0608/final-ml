@@ -801,6 +801,20 @@ const ClusterDetails = ({ clusterId, onClose }) => {
                     <div><div className="text-xs font-semibold text-gray-800">Manual Approval Required <span className="text-[10px] font-normal text-gray-400">(RBAC)</span></div><div className="text-[11px] text-gray-500 mt-0.5">Route proposed changes to Team Lead / Org Admin before execution</div></div>
                     <Toggle checked={!!optSettings?.automation_controls?.manual_approval_required} onChange={e => handleOptConfigChange("automation_controls", "manual_approval_required", e.target.checked)} color="gray" />
                   </div>
+                  {/* Plan All Classified Workloads */}
+                  <div className="flex items-center justify-between py-2.5">
+                    <div>
+                      <div className="text-xs font-semibold text-gray-800 flex items-center gap-1.5">
+                        Plan All Classified Workloads
+                        <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 border border-blue-200">Node Plan</span>
+                      </div>
+                      <div className="text-[11px] text-gray-500 mt-0.5">
+                        Include every WIE-classified workload in the Node Selection plan with an explicit pod destination — even workloads already at the desired OD/Spot distribution.
+                        When OFF, compliant workloads are left to Kubernetes drain reschedule (lighter plan).
+                      </div>
+                    </div>
+                    <Toggle checked={!!optSettings?.automation_controls?.plan_all_classified_workloads} onChange={e => handleOptConfigChange("automation_controls", "plan_all_classified_workloads", e.target.checked)} color="indigo" />
+                  </div>
                   {/* Rebalance Batch Size */}
                   <div className="pt-3 mt-1 border-t border-gray-100">
                     <div className="text-xs font-semibold text-gray-800 mb-3">Rebalance Batch Size</div>

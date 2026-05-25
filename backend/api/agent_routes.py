@@ -216,6 +216,12 @@ async def agent_heartbeat(
         
         _r = get_redis_client()
         if _r:
+            # 1. Store heartbeat raw (Task 1.14 legacy)
+            _extended_payload = request.dict()
+            if request.health:
+                _extended_payload.update(request.health)
+            _r.setex(f"spot:agent:heartbeat:{cluster.id}", 300, json.dumps(_extended_payload))
+
             if request.pod_metrics_per_workload is not None:
                 _r.setex(agent_data_pod_metrics_key(cluster.id), 120, json.dumps(request.pod_metrics_per_workload))
             if request.cluster_spot_summary is not None:

@@ -132,6 +132,47 @@ async def submit_pod_metrics_batch(
         # Commit all metrics in batch
         db.commit()
 
+        # ── SPIKE DETECTION (Phase 2B) ────────────────────────────────────
+        # After inserting, check each unique workload for active CPU spikes.
+        # spike_ratio = latest_cpu / rolling_avg_60min. If > 3.0 → set Redis key.
+        try:
+            from backend.core.redis_client import get_redis_client as _get_redis
+            _redis = _get_redis()
+            if _redis:
+                from sqlalchemy import func as _func
+                _seen_workloads = {
+                    (m.namespace, m.controller_name)
+                    for m in batch.metrics
+                    if m.controller_name
+                }
+                _cutoff_60m = datetime.utcnow() - timedelta(minutes=60)
+                _cutoff_15m = datetime.utcnow() - timedelta(minutes=15)
+                for (_ns, _wl) in _seen_workloads:
+                    try:
+                        _avg_60m = db.query(
+                            _func.avg(PodMetric.cpu_usage_millicores)
+                        ).filter(
+                            PodMetric.cluster_id == batch.cluster_id,
+                            PodMetric.namespace == _ns,
+                            PodMetric.controller_name == _wl,
+                            PodMetric.timestamp >= _cutoff_60m,
+                        ).scalar() or 0
+                        _latest = db.query(
+                            _func.avg(PodMetric.cpu_usage_millicores)
+                        ).filter(
+                            PodMetric.cluster_id == batch.cluster_id,
+                            PodMetric.namespace == _ns,
+                            PodMetric.controller_name == _wl,
+                            PodMetric.timestamp >= _cutoff_15m,
+                        ).scalar() or 0
+                        if _avg_60m > 0 and (_latest / _avg_60m) > 3.0:
+                            _spike_key = f"spike:active:{batch.cluster_id}:{_ns}/{_wl}"
+                            _redis.setex(_spike_key, 900, "1")
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
         logger.info(f"Inserted {metrics_inserted} pod metrics for cluster {batch.cluster_id} from node {batch.node_name}")
 
         return PodMetricBatchResponse(

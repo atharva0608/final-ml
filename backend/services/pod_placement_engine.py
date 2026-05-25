@@ -63,7 +63,7 @@ MAX_MOVES_PER_CYCLE = 10
 
 # Pod/node data older than this (seconds) is considered stale — engine returns a no-op
 # rather than acting on ghost-node data.
-DATA_FRESHNESS_THRESHOLD_SECONDS = 30
+DATA_FRESHNESS_THRESHOLD_SECONDS = 300  # agent reports every ~60-90s; 30s was too strict
 
 
 class NodeOverheadProfiler:
@@ -515,6 +515,11 @@ class AnchorPlanner:
             s = 0.0
             s += len([p for p in critical_pods_list if p.get("node_name") == name]) * 10.0
             s -= util  # lower utilisation is better
+            # Bug 4 fix: strongly prefer nodes that currently host pods over empty nodes.
+            # An empty node has pod_count=0 → no bonus. A busy node gets +2 minimum.
+            # This prevents a zero-pod node from tying with or beating occupied nodes.
+            pod_count = int(n.get("pod_count") or 0)
+            s += min(pod_count, 20) * 0.2  # cap contribution at 20 pods (score +4 max)
             return s
 
         all_candidates = [n for n in nodes if n.get("node_name")]
@@ -562,6 +567,33 @@ class AnchorPlanner:
                 f"could only select {len(anchor_nodes)} anchor nodes (requested {anchor_count})"
             )
 
+        # Bug 4 fix: Post-selection purge — remove anchors that have zero current pods
+        # and whose AZ is already covered by another anchor with actual pods.
+        # This prevents empty nodes (like ip-192-168-34-200) from being permanently
+        # anchored just because they have low utilisation.
+        _anchor_node_map = {n["node_name"]: n for n in nodes if n.get("node_name") in anchor_nodes}
+        _az_covered_by_nonempty: set = set()
+        _empty_anchors: List[str] = []
+        for _aname in list(anchor_nodes):
+            _anode = _anchor_node_map.get(_aname, {})
+            _apods = int(_anode.get("pod_count") or 0)
+            _aaz = _anode.get("az") or "unknown"
+            _has_critical = any(p.get("node_name") == _aname for p in critical_pods_list)
+            if _apods > 0 or _has_critical:
+                _az_covered_by_nonempty.add(_aaz)
+            else:
+                _empty_anchors.append(_aname)
+        for _aname in _empty_anchors:
+            _anode = _anchor_node_map.get(_aname, {})
+            _aaz = _anode.get("az") or "unknown"
+            if _aaz in _az_covered_by_nonempty:
+                # AZ is already covered by a non-empty anchor — safe to drop this one
+                anchor_nodes.discard(_aname)
+                warnings.append(
+                    f"anchor_pruned_empty_node: {_aname} removed from anchor set "
+                    f"(0 pods, AZ {_aaz} already covered by another anchor)"
+                )
+
         # Step 5 — Assign critical pods to anchor nodes (build anchor_map)
         anchor_map: Dict[str, str] = {}
         anchor_node_objects = [n for n in nodes if n.get("node_name") in anchor_nodes]
@@ -603,6 +635,8 @@ class AnchorPlanner:
             "warnings": warnings,
         }
 
+
+from backend.services.stateful_intelligence import StatefulIntelligence
 
 # ---------------------------------------------------------------------------
 # Submodule A — PodSelector
@@ -765,6 +799,13 @@ class PodSelector:
         # Database-like apps carry data flush risk
         if any(t in app_type for t in DB_RISK_APP_TYPES):
             cost += 0.2
+            # Use specialized plugin to check priority
+            _si = StatefulIntelligence(cluster_id="") # cluster_id not available here easily, use empty
+            _matched_type = next((t for t in DB_RISK_APP_TYPES if t in app_type), None)
+            if _matched_type:
+                priority = _si.get_movement_priority(_matched_type)
+                if priority == 1: # High risk
+                    cost += 0.5
         # Stateful WIE classification raises cost too
         if (wie.get("data_safety") or "").upper() == "STATEFUL":
             cost += 0.3
@@ -1008,6 +1049,7 @@ class CapacityPlanner:
         nodes: List[Dict[str, Any]],
         anchor_nodes: Optional[set] = None,
         node_pod_counts: Optional[Dict[str, int]] = None,
+        consolidation_mode: bool = False,
     ) -> Tuple[List[Dict[str, Any]], List[str]]:
         """
         Returns (node_plan, warnings).
@@ -1136,10 +1178,36 @@ class CapacityPlanner:
                     kept_nodes.add(name)
 
         # 2. Provision new nodes for leftover pods in each bucket
+        # Bug 2 fix: in consolidation_mode (spot_target=0, no new spot nodes allowed),
+        # do NOT emit provision entries for spot-capacity buckets. Instead, redistribute
+        # leftover spot-bucket pods onto existing on-demand keep nodes.
+        # Provisioning a new spot node while consolidating OD nodes is contradictory:
+        # the plan says "reduce OD nodes" while Karpenter would add spot nodes.
         for key, bucket in buckets.items():
             leftover = bucket["pods"]
             if not leftover:
                 continue
+
+            # Consolidation mode: redirect spot-bucket leftovers to OD keep-nodes
+            if consolidation_mode and key[1] == "spot":
+                _od_keeps = [e for e in node_plan if e.get("action") == "keep" and e.get("capacity_type") == "on-demand"]
+                if _od_keeps:
+                    # Distribute pods evenly across OD keep-nodes
+                    for i, _p in enumerate(leftover):
+                        _target = _od_keeps[i % len(_od_keeps)]
+                        _target["pod_count"] = _target.get("pod_count", 0) + 1
+                        _target["required_cpu_millicores"] = _target.get("required_cpu_millicores", 0) + float(_p.get("cpu_request_millicores") or 0)
+                        _target["required_memory_bytes"] = _target.get("required_memory_bytes", 0) + float(_p.get("memory_request_bytes") or 0)
+                    warnings.append(
+                        f"consolidation_mode: {len(leftover)} pod(s) from spot bucket "
+                        f"({key[0]}, spot) redistributed to OD keep-nodes — no new spot provision."
+                    )
+                else:
+                    warnings.append(
+                        f"consolidation_mode: no OD keep-nodes available to absorb "
+                        f"{len(leftover)} spot-bucket pods in {key[0]}."
+                    )
+                continue  # skip the provision block below for this bucket
             # Pick representative instance from existing nodes in this bucket; else fallback
             rep = nodes_by_bucket.get(key, [])
             if rep:
@@ -1250,12 +1318,22 @@ class BinPacker:
 
     Four resource dimensions tracked in cursors:
         cpu_remaining, mem_remaining, pod_remaining, ip_remaining
+    
+    Enterprise Hardening (Part 2):
+        ebs_slots_remaining - AWS EC2 EBS volume attachment limit
+        network_bandwidth_available - simulated/measured bandwidth pressure
+        conntrack_remaining - conntrack table utilization
+        storage_remaining - nodefs/imagefs pressure
     """
 
     HOTSPOT_THRESHOLD = 0.80
     HOTSPOT_PENALTY = 150.0
     ANCHOR_PENALTY = 500.0
     CRITICAL_CONCENTRATION_PENALTY = 300.0
+    
+    # EBS attachment limit per instance (conservative default)
+    # Some instances support up to 28, others more.
+    DEFAULT_EBS_LIMIT = 25
 
     @staticmethod
     def pack(
@@ -1335,6 +1413,9 @@ class BinPacker:
                 "mem_remaining": alloc_mem - used_mem,
                 "pod_remaining": max(0, max_pods - cur_pods - ds_pods),
                 "ip_remaining": ip_avail,
+                "ebs_slots_remaining": int(real.get("ebs_limit") or BinPacker.DEFAULT_EBS_LIMIT) - int(real.get("ebs_volume_count") or 0),
+                "conntrack_utilization": float(real.get("conntrack_utilization") or 0.0),
+                "storage_pressure": bool(real.get("storage_pressure")),
                 "critical_pod_count": 0,
             }
 
@@ -1351,6 +1432,7 @@ class BinPacker:
             target_cap = p.get("target_capacity_type")
             pcpu = float(p.get("cpu_request_millicores") or 0)
             pmem = float(p.get("memory_request_bytes") or 0)
+            needs_ebs = bool(p.get("has_ebs_volume"))
             is_critical = pod_name in anchor_map
             preferred_anchor = anchor_map.get(pod_name)
 
@@ -1364,6 +1446,10 @@ class BinPacker:
                     and cur["mem_remaining"] >= pmem
                     and cur["pod_remaining"] > 0
                     and cur["ip_remaining"] > 0
+                    # Hard Enterprise Constraints
+                    and (not needs_ebs or cur["ebs_slots_remaining"] > 0)
+                    and cur["conntrack_utilization"] < 0.85 # Conntrack safety margin
+                    and not cur["storage_pressure"]         # Kubelet eviction safety
                 )
             ]
 
@@ -1404,6 +1490,8 @@ class BinPacker:
             cur["mem_remaining"] -= pmem
             cur["pod_remaining"] -= 1
             cur["ip_remaining"]  -= 1
+            if needs_ebs:
+                cur["ebs_slots_remaining"] -= 1
             if is_critical:
                 cur["critical_pod_count"] += 1
             p["target_node"] = chosen
@@ -2039,6 +2127,7 @@ class PodPlacementEngine:
                     "required_cpu_millicores": _used_cpu,
                     "required_memory_bytes":  sum(float(_pp.get("memory_request_bytes") or 0) for _pp in _node_pods),
                     "pod_count":              len(_node_pods),
+                    "reason":                 "already_optimal",
                 })
 
                 _is_spot = _cap.lower() == "spot"
@@ -2159,10 +2248,15 @@ class PodPlacementEngine:
                 _node_pod_counts[_pnode] = _node_pod_counts.get(_pnode, 0) + 1
 
         # CapacityPlanner
+        # Bug 2 fix: detect consolidation mode — when spot_target==0, the engine
+        # is consolidating OD nodes and must NOT provision new spot nodes.
+        # Passing consolidation_mode=True suppresses spot `provision` plan entries.
+        _is_consolidation_mode = int(targets.get("spot_target") or 0) == 0
         node_plan, d_warnings = CapacityPlanner.plan(
             filtered, nodes,
             anchor_nodes=anchor_nodes,
             node_pod_counts=_node_pod_counts,
+            consolidation_mode=_is_consolidation_mode,
         )
         feasibility_warnings.extend(d_warnings)
 
@@ -2436,6 +2530,8 @@ class PodPlacementEngine:
             return "confidence_provisional_conservative_od_preferred"
         if sel_spot_cnt > 0 and filt_spot_cnt == 0:
             return "disruption_safety_blocked_all_spot_pods"
+        if spot_target > 0 and sel_spot_cnt == 0 and confidence_upper == "CONFIRMED":
+            return "existing_od_capacity_absorbed_spot_pods"
         return "spot_migration_not_needed"
 
     @staticmethod

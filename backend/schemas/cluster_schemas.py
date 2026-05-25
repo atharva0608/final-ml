@@ -397,6 +397,7 @@ class AutomationControlsSchema(BaseModel):
     rebalance_batch_percent: Optional[int] = None  # None = auto (PDB-safe or 15%)
     karpenter_only_mode: bool = False  # When True, rebalancer skips all ASG code paths
     min_topology_spread: int = 1  # Min nodes across AZs during rightsizing consolidation (1-5)
+    plan_all_classified_workloads: bool = False  # Include all WIE-classified workloads in plan regardless of action_required gate
 
 class OptimizationStrategySchema(BaseModel):
     strategy_type: str = "BALANCED"

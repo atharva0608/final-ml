@@ -241,7 +241,7 @@ def reconciliation_worker():
         sts_client = _get_platform_sts_client(db)
 
         # Get all active clusters
-        clusters = db.query(Cluster).filter(Cluster.status == 'active').all()
+        clusters = db.query(Cluster).filter(Cluster.status == 'ACTIVE').all()
         logger.info(f"[reconcile] Checking {len(clusters)} active cluster(s)")
 
         for cluster in clusters:
@@ -442,7 +442,7 @@ def reconcile_nodepool_classes_task():
         from backend.models.cluster import Cluster
         from backend.services.nodepool_reconciler_service import NodePoolReconcilerService
         
-        clusters = db.query(Cluster).filter(Cluster.status == 'active').all()
+        clusters = db.query(Cluster).filter(Cluster.status == 'ACTIVE').all()
         reconciler = NodePoolReconcilerService(redis)
         
         for cluster in clusters:

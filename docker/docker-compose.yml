@@ -61,6 +61,7 @@ services:
       BACKEND_PUBLIC_URL: ${BACKEND_PUBLIC_URL}
       AGENT_API_KEY: ${AGENT_API_KEY}
       FEATURE_PLACEMENT_ADVISOR_ENABLED: "true"
+      FEATURE_PLACEMENT_CONTROLLER_ENABLED: "true"
       PYTHONPATH: /app
     ports:
       - "8000:8000"
@@ -94,7 +95,7 @@ services:
     cap_add:
       - SYS_TIME
     command: >-
-      sh -c "hwclock -s 2>/dev/null || true; celery -A backend.workers worker -l info --concurrency=4 -Q celery,pricing,agent"
+      sh -c "hwclock -s 2>/dev/null || true; celery -A backend.workers worker -l info --concurrency=8 --prefetch-multiplier=1 -Ofair -Q celery,pricing,agent,placement,emergency,monitoring"
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-password}@postgres:5432/${POSTGRES_DB:-spot_optimizer}
       REDIS_URL: redis://redis:6379/0
@@ -107,6 +108,7 @@ services:
       BACKEND_PUBLIC_URL: ${BACKEND_PUBLIC_URL}
       AGENT_API_KEY: ${AGENT_API_KEY}
       FEATURE_PLACEMENT_ADVISOR_ENABLED: "true"
+      FEATURE_PLACEMENT_CONTROLLER_ENABLED: "true"
       PYTHONPATH: /app
     depends_on:
       postgres:
@@ -151,6 +153,7 @@ services:
       AWS_REGION: ${AWS_REGION:-us-east-1}
       ENVIRONMENT: ${ENVIRONMENT:-development}
       FEATURE_PLACEMENT_ADVISOR_ENABLED: "true"
+      FEATURE_PLACEMENT_CONTROLLER_ENABLED: "true"
       PYTHONPATH: /app
     depends_on:
       postgres:

@@ -119,6 +119,46 @@ class AgentInjectorService:
         try:
             logger.info(f"Starting agent injection for cluster {cluster_name}")
 
+            # Step 0: Auto-populate endpoint + ca_data if missing from cluster record.
+            # This handles the case where discover_clusters ran before the ca_data fix,
+            # or where a cluster was seeded without full EKS details.
+            if not cluster_endpoint or not cluster_ca_data:
+                logger.info(
+                    f"[inject_agent] endpoint/ca_data missing for {cluster_name} "
+                    f"— fetching from EKS API automatically"
+                )
+                try:
+                    from backend.models.system_config import SystemConfig as _SC0
+                    _ak0 = self.db.query(_SC0).filter(_SC0.key == "PLATFORM_AWS_ACCESS_KEY").first()
+                    _sk0 = self.db.query(_SC0).filter(_SC0.key == "PLATFORM_AWS_SECRET").first()
+                    _eks0_kwargs = {"region_name": region}
+                    if _ak0 and _sk0 and _ak0.value and _sk0.value:
+                        _eks0_kwargs.update({
+                            "aws_access_key_id": _ak0.value,
+                            "aws_secret_access_key": _sk0.value,
+                        })
+                    import boto3 as _b3_0
+                    _eks0 = _b3_0.client("eks", **_eks0_kwargs)
+                    _desc0 = _eks0.describe_cluster(name=cluster_name)["cluster"]
+                    cluster_endpoint = _desc0.get("endpoint") or cluster_endpoint
+                    cluster_ca_data = _desc0.get("certificateAuthority", {}).get("data") or cluster_ca_data
+                    # Persist back to DB so future calls are instant
+                    from backend.models.cluster import Cluster as _Cl0
+                    _cl0 = self.db.query(_Cl0).filter(_Cl0.id == cluster_id).first()
+                    if _cl0:
+                        _cl0.endpoint = cluster_endpoint
+                        _cl0.ca_data = cluster_ca_data
+                        self.db.commit()
+                    logger.info(
+                        f"[inject_agent] Auto-populated endpoint={cluster_endpoint[:40]} "
+                        f"ca_data={'SET' if cluster_ca_data else 'MISSING'} for {cluster_name}"
+                    )
+                except Exception as _fetch_err:
+                    logger.warning(
+                        f"[inject_agent] Could not auto-fetch EKS details for {cluster_name}: "
+                        f"{_fetch_err} — proceeding with whatever is available"
+                    )
+
             # Step 1: Assume customer's cross-account role
             logger.info(f"Step 1: Assuming cross-account role (Region: {region})...")
             assumed_credentials = self._assume_role(role_arn, external_id, region)
@@ -272,6 +312,20 @@ class AgentInjectorService:
             logger.warning(f"Platform credentials not found, using env/instance profile in {target_region}")
             sts_client = boto3.client('sts', region_name=target_region)
         
+        # Guard: if role_arn is empty/None there is nothing to assume — return
+        # platform credentials directly so callers use the IAM user's own access.
+        if not role_arn:
+            logger.info(
+                "_assume_role: no role_arn provided — returning platform credentials directly"
+            )
+            if access_key and secret_key and access_key.value and secret_key.value:
+                return {
+                    'access_key': access_key.value,
+                    'secret_key': secret_key.value,
+                    'session_token': None,
+                }
+            return {}
+
         assume_kwargs = {
             'RoleArn': role_arn,
             'RoleSessionName': 'SpotOptimizerAgentInjector',
@@ -1055,7 +1109,7 @@ class AgentInjectorService:
         url = signer.generate_presigned_url(
             params,
             region_name=region,
-            expires_in=60,
+            expires_in=900,
             operation_name=''
         )
         

@@ -440,7 +440,7 @@ def sync_cluster_pools_task():
     synced = 0
 
     try:
-        clusters = db.query(Cluster).filter(Cluster.status == 'active').all()
+        clusters = db.query(Cluster).filter(Cluster.status == 'ACTIVE').all()
 
         for cluster in clusters:
             try:

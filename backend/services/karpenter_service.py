@@ -726,7 +726,7 @@ class KarpenterService:
             'context': {}
         }
 
-        url = signer.generate_presigned_url(params, region_name=region, expires_in=60, operation_name='')
+        url = signer.generate_presigned_url(params, region_name=region, expires_in=900, operation_name='')
         token = 'k8s-aws-v1.' + base64.urlsafe_b64encode(url.encode('utf-8')).decode('utf-8').rstrip('=')
         return token
 
@@ -1423,15 +1423,25 @@ class KarpenterService:
             result = self.add_allowed_instance_type(cluster_id, instance_type)
             return result, ["default"]
 
-    def add_allowed_instance_type(self, cluster_id: str, instance_type: str, nodepool_name: str = "default") -> bool:
+    def set_exact_instance_type_for_plan(self, cluster_id: str, instance_type: str, nodepool_name: str = "default") -> bool:
+        return self.add_allowed_instance_type(
+            cluster_id=cluster_id,
+            instance_type=instance_type,
+            nodepool_name=nodepool_name,
+            exact=True,
+        )
+
+    def add_allowed_instance_type(self, cluster_id: str, instance_type: str, nodepool_name: str = "default", exact: bool = False) -> bool:
         """
         Inject an instance type into a NodePool using full-replace semantics.
 
         On the first call for a given (cluster, nodepool) pair, the current types are
         snapshotted as the **baseline** in Redis (key:
         ``karpenter:nodepool_baseline:{cluster_id}:{nodepool_name}``).  Every subsequent
-        call PATCHes the NodePool to exactly (baseline ∪ {instance_type}), so the list
-        never grows beyond one injected type beyond what was there originally.
+        non-exact call PATCHes the NodePool to exactly (baseline ∪ {instance_type}), so the
+        list never grows beyond one injected type beyond what was there originally.
+        When exact=True, PATCHes the NodePool to exactly [instance_type]. This is the
+        execution-plan path and prevents Karpenter from choosing any baseline/fallback type.
 
         Returns True on success, False if NodePool not found or update fails.
         Idempotent: if the type is already present in the effective set, returns True.
@@ -1484,8 +1494,8 @@ class KarpenterService:
                         f"cluster {cluster_id}: {_baseline_types}"
                     )
 
-            # ── Build effective set: baseline ∪ {instance_type} ─────────────────────
-            _effective_types = sorted(set(_baseline_types) | {instance_type})
+            # ── Build effective set ─────────────────────────────────────────────────
+            _effective_types = [instance_type] if exact else sorted(set(_baseline_types) | {instance_type})
 
             # Idempotent check — skip patch if nothing changes
             _current_types: list[str] = []

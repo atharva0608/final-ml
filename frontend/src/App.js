@@ -43,6 +43,7 @@ import WorkloadProfiling from './pages/optimize/workloads/WorkloadProfiling';
 import WorkloadPlacement from './pages/optimize/workloads/WorkloadPlacement';
 import WorkloadScaling from './pages/optimize/workloads/WorkloadScaling';
 import WorkloadMigration from './pages/optimize/workloads/WorkloadMigration';
+import OptimizerPipeline from './pages/optimize/OptimizerPipeline';
 import Karpenter from './pages/infrastructure/provisioning/Karpenter';
 import NodePool from './pages/infrastructure/provisioning/NodePool';
 import KarpenterStatus from './pages/infrastructure/integrations/KarpenterStatus';
@@ -261,6 +262,7 @@ function App() {
             <Route path="overview" element={<Overview />} />
 
             {/* Optimize -> Nodes */}
+            <Route path="optimize/pipeline" element={<OptimizerPipeline />} />
             <Route path="optimize/nodes/selection" element={<NodeSelector />} />
             <Route path="optimize/nodes/bin-packing" element={<NodeBinPacking />} />
 

@@ -459,7 +459,7 @@ class RightSizingService:
             min_data_points=min_data_points
         )
 
-        # ── CONFIDENCE GATE (ENH 2) ──────────────────────────────────
+        # ── CONFIDENCE GATE (ENH 2) ──────────────────────────────────────
         # Block proposals from low-confidence evaluations
         if confidence == "LOW":
             logger.info(f"Skipping {controller_name}: LOW confidence ({len(metrics)} samples)")
@@ -468,9 +468,56 @@ class RightSizingService:
         # Volatility check — skip only extreme spike workloads (P50 < 5% of P99)
         if cpu_stats.get('p99', 0) > 0:
             cpu_volatility = (cpu_stats['p99'] - cpu_stats['p50']) / cpu_stats['p99']
-            if cpu_volatility > 0.95:  # Only skip extreme spikes (P50 is near zero vs P99)
+            if cpu_volatility > 0.95:
                 logger.warning(f"Skipping {controller_name}: extreme CPU spike workload ({cpu_volatility:.2f})")
                 return None
+
+        # ── BURST RATIO & JVM DETECTION (Phase 2B) ───────────────────────
+        burst_ratio = cpu_stats['p99'] / max(cpu_stats['avg'], 1.0)
+
+        _jvm_name_signals = ['java', 'spring', 'jvm', 'tomcat', 'quarkus', 'micronaut',
+                             'openjdk', 'amazoncorretto', 'adoptopenjdk']
+        is_jvm = any(s in controller_name.lower() for s in _jvm_name_signals)
+        if not is_jvm and current_cpu_request and current_memory_request_bytes:
+            _mem_mb = current_memory_request_bytes / (1024.0 * 1024.0)
+            _cpu_cores = current_cpu_request / 1000.0
+            if _cpu_cores > 0 and (_mem_mb / _cpu_cores) > 4:
+                is_jvm = True
+        if not is_jvm:
+            _mem_growth = memory_stats['p99'] / max(memory_stats['avg'], 1.0)
+            if _mem_growth > 1.8:
+                is_jvm = True
+
+        workload_hint = "JVM" if is_jvm else "NORMAL"
+        _burst_threshold = 3.0 if is_jvm else 5.0
+        throttle_risk = burst_ratio > _burst_threshold
+
+        if is_jvm:
+            _p99_jvm_floor = int(cpu_stats['p99'] * 1.6)
+            recommended_cpu = max(recommended_cpu, _p99_jvm_floor)
+            _rec_mem_bytes = int(memory_stats['p95'] * (1 + safety_buffer / 100))
+            recommended_memory_mb = math.ceil(_rec_mem_bytes / (1024 * 1024))
+            recommended_cost = self._estimate_cost(recommended_cpu, recommended_memory_mb, replica_count)
+            savings_monthly = max(0, current_cost - recommended_cost)
+            savings_pct = (savings_monthly / current_cost * 100) if current_cost > 0 else 0
+
+        if throttle_risk and recommendation_action == "REDUCE":
+            recommendation_action = "OBSERVE"
+            savings_monthly = 0.0
+            savings_pct = 0.0
+            logger.info(
+                f"[rightsizing] {controller_name}: REDUCE→OBSERVE "
+                f"burst_ratio={burst_ratio:.1f} threshold={_burst_threshold} jvm={is_jvm}"
+            )
+
+        # ── ACTIVE SPIKE DETECTION (Phase 2B) ────────────────────────────
+        currently_spiking = False
+        if self.redis:
+            try:
+                _spike_key = f"spike:active:{cluster_id}:{namespace}/{controller_name}"
+                currently_spiking = bool(self.redis.exists(_spike_key))
+            except Exception:
+                pass
 
         return RightSizingRecommendation(
             cluster_id=cluster_id,
@@ -497,7 +544,11 @@ class RightSizingService:
             confidence=confidence,
             is_oversized=is_oversized,
             is_undersized=is_undersized,
-            recommendation_action=recommendation_action
+            recommendation_action=recommendation_action,
+            burst_ratio=round(burst_ratio, 2),
+            throttle_risk=throttle_risk,
+            workload_hint=workload_hint,
+            currently_spiking=currently_spiking,
         )
 
     def _calculate_statistics(self, values: List[float]) -> Dict[str, float]:

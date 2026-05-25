@@ -773,6 +773,7 @@ class ActionTracker:
             "pod_name":        pod_name,
             "action":          action,
             "status":          "IN_PROGRESS",
+            "phase":           "PATCHING_AFFINITY",
             "from_node":       from_node or "",
             "to_node":         to_node or "",
             "started_at":      _utc_now_iso(),
@@ -781,6 +782,17 @@ class ActionTracker:
             "agent_action_ids": "[]",
         })
         r.expire(key, ActionTracker.TTL)
+
+    @staticmethod
+    def set_phase(
+        cluster_id: str, execution_id: str, pod_name: str, phase: str,
+    ) -> None:
+        """Update the granular lifecycle phase for timeline visibility."""
+        r = _get_redis()
+        if not r:
+            return
+        key = f"{ActionTracker.KEY_PREFIX}:{cluster_id}:{execution_id}:{pod_name}"
+        r.hset(key, "phase", phase)
 
     @staticmethod
     def complete(cluster_id: str, execution_id: str, pod_name: str) -> None:
@@ -1286,33 +1298,39 @@ class StatefulExecutor:
 
         try:
             if not dry_run:
-                # PROVISIONING_NEW — patch affinity to target node
+                # ── Phase 1: PROVISIONING_NEW — patch affinity to target node ─────
+                ActionTracker.set_phase(cluster_id, execution_id, pod_name, "PATCHING_AFFINITY")
                 affinity_id = _patch_affinity(cluster_id, pod_name, namespace, target_node, db)
                 ActionTracker.add_agent_action(cluster_id, execution_id, pod_name, affinity_id)
 
-                # WAITING_READY — wait for new pod on target
+                # ── Phase 2: WAITING_READY — wait for new pod on target ───────────
+                ActionTracker.set_phase(cluster_id, execution_id, pod_name, "WAITING_NEW_POD")
                 if not _wait_pod_running(cluster_id, pod_name, target_node, timeout=180):
                     _execute_rollback(cluster_id, rollback_map, pod_name, namespace, db)
                     ActionTracker.fail(cluster_id, execution_id, pod_name, "new_pod_not_ready_timeout")
                     return "ABORTED"
 
-                # SHIFTING_TRAFFIC
+                # ── Phase 3: SHIFTING_TRAFFIC ─────────────────────────────────────
+                ActionTracker.set_phase(cluster_id, execution_id, pod_name, "SHIFTING_TRAFFIC")
                 if not _shift_traffic(cluster_id, pod_name, namespace, traffic_mechanism, step, db):
                     _execute_rollback(cluster_id, rollback_map, pod_name, namespace, db)
                     ActionTracker.fail(cluster_id, execution_id, pod_name, "traffic_shift_failed")
                     return "ABORTED"
 
-                # OBSERVING — stability window
+                # ── Phase 4: OBSERVING — stability window ─────────────────────────
+                ActionTracker.set_phase(cluster_id, execution_id, pod_name, "OBSERVING_STABILITY")
                 time.sleep(min(stability_window, 120))  # cap at 2 min to avoid task starvation
                 if not _pod_still_healthy(cluster_id, pod_name, target_node):
                     _execute_rollback(cluster_id, rollback_map, pod_name, namespace, db)
                     ActionTracker.fail(cluster_id, execution_id, pod_name, "stability_check_failed")
                     return "ABORTED"
 
-                # DELETING_OLD — evict the old pod only after OBSERVING passes
+                # ── Phase 5: EVICTING_OLD — only after stability window passes ────
+                ActionTracker.set_phase(cluster_id, execution_id, pod_name, "EVICTING_OLD_POD")
                 evict_id = _evict_pod_action(cluster_id, pod_name, namespace, from_node, db)
                 ActionTracker.add_agent_action(cluster_id, execution_id, pod_name, evict_id)
 
+            ActionTracker.set_phase(cluster_id, execution_id, pod_name, "COMPLETED")
             ActionTracker.complete(cluster_id, execution_id, pod_name)
             return "COMPLETED"
 
@@ -1410,17 +1428,26 @@ class StatelessExecutor:
             ActionTracker.start(cluster_id, execution_id, pod_name, "BATCH", from_node, target_node)
             try:
                 if not dry_run:
+                    # ── Phase 1: Patch node affinity so scheduler targets the new node ──
+                    ActionTracker.set_phase(cluster_id, execution_id, pod_name, "PATCHING_AFFINITY")
                     affinity_id = _patch_affinity(cluster_id, pod_name, namespace, target_node, db)
                     ActionTracker.add_agent_action(cluster_id, execution_id, pod_name, affinity_id)
 
-                    evict_id = _evict_pod_action(cluster_id, pod_name, namespace, from_node, db)
-                    ActionTracker.add_agent_action(cluster_id, execution_id, pod_name, evict_id)
-
-                    if not _wait_pod_running(cluster_id, pod_name, target_node, timeout=60):
-                        ActionTracker.fail(cluster_id, execution_id, pod_name, "pod_not_ready_timeout")
+                    # ── Phase 2: Wait for the new pod to be Running on target ────────
+                    # We must NOT evict the old pod until the new one is up and
+                    # accepting traffic — otherwise we have a downtime window.
+                    ActionTracker.set_phase(cluster_id, execution_id, pod_name, "WAITING_NEW_POD")
+                    if not _wait_pod_running(cluster_id, pod_name, target_node, timeout=120):
+                        ActionTracker.fail(cluster_id, execution_id, pod_name, "new_pod_not_ready_timeout")
                         failed += 1
                         continue
 
+                    # ── Phase 3: New pod is running — now evict the old pod ──────────
+                    ActionTracker.set_phase(cluster_id, execution_id, pod_name, "EVICTING_OLD_POD")
+                    evict_id = _evict_pod_action(cluster_id, pod_name, namespace, from_node, db)
+                    ActionTracker.add_agent_action(cluster_id, execution_id, pod_name, evict_id)
+
+                ActionTracker.set_phase(cluster_id, execution_id, pod_name, "COMPLETED")
                 ActionTracker.complete(cluster_id, execution_id, pod_name)
 
             except Exception as exc:

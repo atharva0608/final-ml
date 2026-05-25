@@ -177,7 +177,13 @@ class RightSizingRecommendation(BaseModel):
     # Safety flags
     is_oversized: bool = Field(False, description="Current requests significantly exceed usage")
     is_undersized: bool = Field(False, description="Current requests below P99 usage (risky)")
-    recommendation_action: str = Field(..., description="REDUCE, INCREASE, NO_CHANGE")
+    recommendation_action: str = Field(..., description="REDUCE, INCREASE, OBSERVE, NO_CHANGE")
+
+    # Burst / throttle risk fields (Phase 2B)
+    burst_ratio: float = Field(0.0, description="P99 / avg CPU — proxy for burst pattern")
+    throttle_risk: bool = Field(False, description="True if burst ratio indicates CFS throttle risk")
+    workload_hint: str = Field("NORMAL", description="Workload type: JVM, BATCH, NORMAL")
+    currently_spiking: bool = Field(False, description="Active CPU spike detected in Redis")
 
     # Instance-aware fields (populated post-construction by caller)
     is_actionable: bool = Field(True, description="Whether a better spot pool exists for this recommendation")

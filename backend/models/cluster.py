@@ -125,11 +125,10 @@ class Cluster(Base):
     managed_node_group_deleted = Column(Boolean, default=False, nullable=False, server_default="false")
 
     # Onboarding lifecycle phase: shadow | takeover | managed
-    # shadow   — observation only, all mutation engines gated
+    # shadow   — observation only, all mutation engines gated (legacy; not used as default)
     # takeover — MNG → Karpenter OD migration in progress, normal optimization gated
     # managed  — fully managed by our system, all engines active
-    # Existing clusters must be backfilled to 'managed' via DB migration.
-    onboarding_phase = Column(String(32), nullable=False, default="shadow", server_default="shadow")
+    onboarding_phase = Column(String(32), nullable=False, default="managed", server_default="managed")
 
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -222,7 +221,14 @@ class ClusterOptimizationSettings(Base):
 
     # Minimum topology spread (number of AZs / distinct nodes) the simulation
     # must maintain when consolidating.  Default 1 = no spread constraint.
-    min_topology_spread = Column(Integer, default=1, nullable=False, server_default="1")
+    min_topology_spread = Column(Integer, default=1, nullable=False, server_default='1')
+
+    # When True, the cluster execution plan includes ALL WIE-classified workloads
+    # in the routing table regardless of whether they are already at the desired
+    # OD/spot distribution (i.e. skips the Target Builder action_required=False gate).
+    # Useful when operators want full visibility into every pod's planned destination
+    # instead of relying on Kubernetes to reschedule compliant workloads during drain.
+    plan_all_classified_workloads = Column(Boolean, default=False, nullable=False, server_default='false')
 
     # attach_to_asg_enabled removed — Karpenter manages all nodes, ASG handling no longer relevant
 

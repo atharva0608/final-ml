@@ -90,7 +90,7 @@ const useClusters = () => {
 
   // Prefer backend-authoritative plan_status; fall back to client-side derivation
   // so the field works with older backend versions too.
-  const planCompleteness = clusterPlanLoading ? 'loading'
+  const planCompleteness = (clusterPlanLoading && !clusterPlan) ? 'loading'
     : clusterPlan === null                           ? 'none'
     : clusterPlan.plan_status                        ? clusterPlan.plan_status
     : provisionList.length === 0                     ? 'no_action'

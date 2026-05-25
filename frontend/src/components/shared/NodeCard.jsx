@@ -21,17 +21,16 @@ const STEP_LABELS = {
   step_6_optimization_complete: 'Complete',
 };
 
-/** Returns completion percentage for a rebalancing action based on its step flags. */
+/** Returns completion percentage for a rebalancing action based on its step flags.
+ *  Step values are ISO timestamp strings (truthy = done) on the action object directly. */
 export const getRebalancingProgress = (action) => {
-  const steps = action.steps || {};
-  const done  = STEP_ORDER.filter(k => steps[k] === true).length;
+  const done = STEP_ORDER.filter(k => Boolean(action[k])).length;
   return Math.round((done / STEP_ORDER.length) * 100);
 };
 
 /** Returns the label of the current (first incomplete) rebalancing step. */
 export const getCurrentRebalancingStep = (action) => {
-  const steps   = action.steps || {};
-  const pending = STEP_ORDER.find(k => !steps[k]);
+  const pending = STEP_ORDER.find(k => !action[k]);
   return pending ? (STEP_LABELS[pending] || pending.replace(/_/g, ' ')) : 'Complete';
 };
 

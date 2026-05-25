@@ -1,9 +1,23 @@
-import React, { useState, useEffect } from 'react';
-import { FiSearch, FiCpu, FiServer, FiArrowRight, FiZap, FiCheckCircle, FiRefreshCw, FiAlertCircle, FiTrendingDown, FiAlertTriangle } from 'react-icons/fi';
+import React, { useState, useEffect, useRef } from 'react';
+import { FiSearch, FiCpu, FiServer, FiArrowRight, FiZap, FiCheckCircle, FiRefreshCw, FiAlertCircle, FiTrendingDown, FiAlertTriangle, FiShield } from 'react-icons/fi';
 import useClusters from '../../../hooks/useClusters';
-import { optimizeAPI } from '../../../services/api';
+import { optimizeAPI, ascpaiAPI } from '../../../services/api';
+
+const STEP_FLOW = [
+  { key: 'step_1_spot_provisioning',     label: 'Provisioning Spot',  vKey: 'step_1_verified' },
+  { key: 'step_4_new_node_joined',       label: 'Node Joined',        vKey: 'step_4_verified' },
+  { key: 'step_2_cordon',                label: 'Cordoning',          vKey: 'step_2_verified' },
+  { key: 'step_3_draining_pods',         label: 'Pods Transferring',  vKey: 'step_3_verified' },
+  { key: 'step_7_pods_rescheduled',      label: 'Pods Ready',         vKey: 'step_7_verified' },
+  { key: 'step_5_old_node_terminated',   label: 'Termination',        vKey: 'step_5_verified' },
+  { key: 'step_6_optimization_complete', label: 'Complete',           vKey: null },
+];
 
 const LIFECYCLE_LABEL = {
+  ACTIVE:    { label: 'Running',   cls: 'bg-emerald-50 text-emerald-700 border-emerald-200' },
+  DRAINING:  { label: 'Draining',  cls: 'bg-red-50    text-red-700    border-red-200' },
+  TERMINATING: { label: 'Terminating', cls: 'bg-red-50 text-red-700 border-red-200' },
+  NOT_READY: { label: 'Not Ready', cls: 'bg-amber-50 text-amber-700 border-amber-200' },
   running:   { label: 'Running',   cls: 'bg-emerald-50 text-emerald-700 border-emerald-200' },
   cordoned:  { label: 'Cordoned', cls: 'bg-amber-50  text-amber-700  border-amber-200' },
   draining:  { label: 'Draining', cls: 'bg-red-50    text-red-700    border-red-200' },
@@ -14,15 +28,26 @@ function lcMeta(lc) {
 }
 
 function deriveOptTarget(node, engineIntent, keepReason) {
-  // engineIntent: 'keep' | 'drain' | 'replace' | null
+  // engineIntent: 'keep' | 'drain' | 'replace' | 'rebalancing' | null
   // The engine's plan always takes precedence — never suggest spot migration
   // for a node the engine is keeping (it runs OD-required workloads like
   // Redis, Postgres, anchors, or is the minimum OD baseline).
 
-  if (node.lifecycle_state === 'draining') {
+  const lifecycle = (node.lifecycle_state || '').toUpperCase();
+
+  // Actively-managed nodes are mid-flight — show a stable in-progress state and
+  // never let heuristics override it with misleading labels.
+  if (engineIntent === 'rebalancing') {
+    return { action: 'Rebalancing in Progress', color: 'text-blue-700', bg: 'bg-blue-50 border-blue-300', detail: 'This node is currently under an active rebalancing operation. The optimizer excluded it from the planning cycle to prevent state collisions. It will re-appear in the next plan once the operation completes.' };
+  }
+
+  if (node.pending_rebalance) {
+    return { action: 'Replacement Pending', color: 'text-blue-700', bg: 'bg-blue-50 border-blue-200', detail: `Rebalancer is waiting for replacement capacity${node.rebalancing_target_pool ? ` (${node.rebalancing_target_pool})` : ''} before drain/terminate.` };
+  }
+  if (lifecycle === 'DRAINING' || lifecycle === 'TERMINATING') {
     return { action: 'Terminating', color: 'text-red-700', bg: 'bg-red-50 border-red-200', detail: 'Drain in progress — pods migrating away.' };
   }
-  if (node.lifecycle_state === 'cordoned') {
+  if (lifecycle === 'CORDONED') {
     return { action: 'Cordoned', color: 'text-amber-700', bg: 'bg-amber-50 border-amber-200', detail: 'Node marked unschedulable — no new pods will land here.' };
   }
 
@@ -93,8 +118,48 @@ export default function NodeSelector() {
   const [nodePlans, setNodePlans] = useState({});
   const [planLoading, setPlanLoading] = useState({});
   const [viewMode, setViewMode] = useState('desired'); // 'desired' | 'current'
+  const [rebalancingActions, setRebalancingActions] = useState([]);
+  const [nodeCompletedAt, setNodeCompletedAt] = useState({});
+  const [nowMs, setNowMs] = useState(Date.now());
 
   useEffect(() => { setExpandedRows({}); setNodePlans({}); }, [clusterId]);
+
+  // Poll rebalancing step data every 8s
+  useEffect(() => {
+    if (!clusterId) return;
+    let cancelled = false;
+    const fetchActions = () => {
+      ascpaiAPI.getRebalancingStatus(clusterId, 30)
+        .then(res => {
+          if (cancelled) return;
+          const actions = res.data?.actions ?? (Array.isArray(res.data) ? res.data : []);
+          setRebalancingActions(actions);
+          // Track first time we see a completed action for 5s fade-out
+          setNodeCompletedAt(prev => {
+            const next = { ...prev };
+            let changed = false;
+            actions.forEach(a => {
+              const key = a.node_name || a.instance_id || String(a.id);
+              if (a.status === 'completed' && a.completed_at && !next[key]) {
+                next[key] = new Date(a.completed_at).getTime();
+                changed = true;
+              }
+            });
+            return changed ? next : prev;
+          });
+        })
+        .catch(() => {});
+    };
+    fetchActions();
+    const id = setInterval(fetchActions, 8000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [clusterId]);
+
+  // 1-second tick to drive 5s countdown
+  useEffect(() => {
+    const id = setInterval(() => setNowMs(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
 
   const toggleRow = (id) => {
     setExpandedRows(prev => {
@@ -146,6 +211,30 @@ export default function NodeSelector() {
   const provisionList = clusterPlan?.provision_nodes ?? [];
   const planSummary = clusterPlan?.summary ?? null;
 
+  // ── Active lifecycle sets — nodes excluded from plan due to in-flight operations ──
+  // Backend surfaces draining_nodes (AgentAction DRAIN_NODE in-flight) and
+  // rebalancing_nodes (RebalancingAction pending/in_progress) so the UI can
+  // render an explicit "Rebalancing in Progress" badge instead of silently
+  // hiding nodes or showing conflicting KEEP+TERMINATE states.
+  const activeRebalancingSet = new Set(clusterPlan?.rebalancing_nodes ?? []);
+  const activeDrainingSet    = new Set(clusterPlan?.draining_nodes ?? []);
+  // A node is "actively managed" if it's under an in-flight lifecycle operation.
+  const isActivelyManaged = (nodeName) => activeRebalancingSet.has(nodeName) || activeDrainingSet.has(nodeName);
+  // pods_staying per keep node — for expansion detail
+  const podsStayingMap = Object.fromEntries(
+    _keepNodeRaw
+      .filter(k => typeof k !== 'string' && k.pods_staying)
+      .map(k => [k.node_name, k.pods_staying])
+  );
+  // pods_incoming per keep node — pods moving FROM drain nodes TO this keep node
+  const podsIncomingMap = Object.fromEntries(
+    _keepNodeRaw
+      .filter(k => typeof k !== 'string' && k.pods_incoming)
+      .map(k => [k.node_name, k.pods_incoming])
+  );
+  // Flat routing table totals (null-safe)
+  const _rt = clusterPlan?.pod_routing_table ?? [];
+
   // Reverse-lookup: any alias a pod.to_node might use → canonical prov_node_name.
   // Backend may write pod.to_node = existing IP (e.g. ip-192-168-xx) instead of
   // the synthetic prov_node_name. This map resolves both forms to one canonical key.
@@ -164,15 +253,19 @@ export default function NodeSelector() {
   const spotNodes    = rawNodes.filter(n => (n.capacity_type || '').toLowerCase() === 'spot');
   const odNodes      = rawNodes.filter(n => { const c = (n.capacity_type || '').toLowerCase(); return c === 'on_demand' || c === 'on-demand' || c === 'ondemand'; });
   const spotPct      = rawNodes.length ? Math.round(spotNodes.length / rawNodes.length * 100) : 0;
-  const drainingCnt  = rawNodes.filter(n => n.lifecycle_state === 'draining').length;
-  const cordonedCnt  = rawNodes.filter(n => n.lifecycle_state === 'cordoned').length;
+  const drainingCnt  = rawNodes.filter(n => ['DRAINING', 'TERMINATING', 'draining'].includes(n.lifecycle_state)).length;
+  const cordonedCnt  = rawNodes.filter(n => ['CORDONED', 'cordoned'].includes(n.lifecycle_state)).length;
   const overloadCnt  = rawNodes.filter(n => n.is_overloaded).length;
-  const terminatingNodes = rawNodes.filter(n => n.lifecycle_state === 'draining' || n.lifecycle_state === 'cordoned');
+  // Nodes genuinely in a terminal lifecycle state (Kubernetes has cordoned/draining them)
+  const terminatingNodes = rawNodes.filter(n => ['DRAINING', 'TERMINATING', 'draining', 'CORDONED', 'cordoned'].includes(n.lifecycle_state));
+  // Nodes with an active rebalancing action but NOT yet in a terminal lifecycle — show progress, not "Terminating"
+  const rebalancingNodes = rawNodes.filter(n => n.pending_rebalance && !['DRAINING', 'TERMINATING', 'draining', 'CORDONED', 'cordoned'].includes(n.lifecycle_state));
 
   const engineDrainCnt = drainSet.size;
   const engineReplaceCnt = (clusterPlan?.drain_nodes ?? []).filter(d => d.transition_type === 'REPLACE').length;
   const engineTerminateCnt = (clusterPlan?.drain_nodes ?? []).filter(d => d.transition_type === 'TERMINATE').length;
-  const filterCounts = { all: rawNodes.length, draining: drainingCnt, cordoned: cordonedCnt, overloaded: overloadCnt };
+  const activelyManagedCnt = rawNodes.filter(n => isActivelyManaged(n.node_name)).length;
+  const filterCounts = { all: rawNodes.length, draining: drainingCnt, cordoned: cordonedCnt, overloaded: overloadCnt, rebalancing: activelyManagedCnt };
 
   const filtered = rawNodes.filter(n => {
     const matchText = !searchTerm ||
@@ -180,16 +273,17 @@ export default function NodeSelector() {
       (n.instance_type || '').toLowerCase().includes(searchTerm.toLowerCase());
     const matchStatus =
       statusFilter === 'all'        ? true :
-      statusFilter === 'draining'   ? n.lifecycle_state === 'draining' :
-      statusFilter === 'cordoned'   ? n.lifecycle_state === 'cordoned' :
+      statusFilter === 'draining'   ? ['DRAINING', 'TERMINATING', 'draining'].includes(n.lifecycle_state) :
+      statusFilter === 'cordoned'   ? ['CORDONED', 'cordoned'].includes(n.lifecycle_state) :
       statusFilter === 'overloaded' ? n.is_overloaded : true;
     const nn = n.node_name;
     const matchPlan =
-      planActionFilter === 'all'       ? true :
-      planActionFilter === 'replace'   ? transitionType[nn] === 'REPLACE' :
-      planActionFilter === 'terminate' ? transitionType[nn] === 'TERMINATE' :
-      planActionFilter === 'keep'      ? keepSet.has(nn) :
-      planActionFilter === 'no_plan'   ? (!drainSet.has(nn) && !keepSet.has(nn)) : true;
+      planActionFilter === 'all'          ? true :
+      planActionFilter === 'replace'      ? transitionType[nn] === 'REPLACE' :
+      planActionFilter === 'terminate'    ? transitionType[nn] === 'TERMINATE' :
+      planActionFilter === 'keep'         ? keepSet.has(nn) :
+      planActionFilter === 'rebalancing'  ? isActivelyManaged(nn) :
+      planActionFilter === 'no_plan'      ? (!drainSet.has(nn) && !keepSet.has(nn) && !isActivelyManaged(nn)) : true;
     return matchText && matchStatus && matchPlan;
   });
 
@@ -259,10 +353,9 @@ export default function NodeSelector() {
                     + provisionList.filter(p => _isODCap(p.capacity_type)).length;
   const afterSpotCnt = [...keepSet].filter(name => _isSpotCap(keepNodeMap[name]?.capacity_type)).length
                      + provisionList.filter(p => _isSpotCap(p.capacity_type)).length;
-  const afterTotalPods = [...keepSet].reduce((s, name) => {
-    const km = keepNodeMap[name]; const rn = rawNodes.find(r => r.node_name === name);
-    return s + (km?.pod_count || rn?.pod_count || 0) + (incomingPodsMap[name] || []).length;
-  }, 0) + provisionList.reduce((s, p) => s + (p.pod_count || (p.pods || []).length || 0), 0);
+  // A drain/replace plan MOVES pods to different nodes — it does not create or destroy them.
+  // Total pod count is preserved until KEDA/HPA actually changes replica counts.
+  const afterTotalPods = beforeTotalPods;
 
   return (
     <div className="min-h-full bg-gray-50 p-6 text-gray-900">
@@ -345,6 +438,15 @@ export default function NodeSelector() {
               <p className="text-2xl font-bold text-gray-700 tracking-tight">{engineTerminateCnt}</p>
             </div>
             )}
+            {activelyManagedCnt > 0 && (
+            <div>
+              <p className="text-[10px] text-gray-500 mb-1 uppercase tracking-wider font-bold flex items-center gap-1">
+                <FiRefreshCw className="w-2.5 h-2.5 text-blue-500 animate-spin" />
+                Rebalancing
+              </p>
+              <p className="text-2xl font-bold text-blue-600 tracking-tight">{activelyManagedCnt}</p>
+            </div>
+            )}
             {provisionList.length > 0 && (
             <div>
               <p className="text-[10px] text-gray-500 mb-1 uppercase tracking-wider font-bold">New Nodes</p>
@@ -366,35 +468,183 @@ export default function NodeSelector() {
           </div>
         </div>
 
-        {/* Termination Queue — only shown when nodes are draining/cordoned */}
-        {terminatingNodes.length > 0 && (
-          <div className="bg-red-50 border border-red-200 rounded-lg p-4">
-            <div className="flex items-center gap-2 mb-3">
-              <FiAlertTriangle className="text-red-600 w-4 h-4 flex-shrink-0" />
-              <h3 className="text-sm font-bold text-red-800">Termination Queue ({terminatingNodes.length} node{terminatingNodes.length !== 1 ? 's' : ''})</h3>
-            </div>
-            <div className="flex flex-wrap gap-3">
-              {terminatingNodes.map(n => {
-                const lc = lcMeta(n.lifecycle_state);
-                return (
-                  <div key={n.node_name} className="bg-white border border-red-200 rounded-lg px-4 py-3 shadow-sm min-w-[220px]">
-                    <div className="flex items-center justify-between mb-1">
-                      <span className="font-mono text-[12px] font-bold text-gray-900 truncate max-w-[140px]">{n.node_name}</span>
-                      <span className={`px-2 py-0.5 text-[9px] font-bold border rounded uppercase ${lc.cls}`}>{lc.label}</span>
-                    </div>
-                    <div className="text-[11px] text-gray-500 space-y-0.5">
-                      <div>{n.instance_type || '—'} · <span className="font-semibold">{n.capacity_type || '—'}</span></div>
-                      <div>{n.az || '—'} · {n.pod_count ?? '?'} pods remaining</div>
-                      <div className="text-red-600 font-medium">
-                        {n.lifecycle_state === 'draining' ? 'Drain in progress — pods migrating away' : 'Cordoned — no new scheduling'}
-                      </div>
-                    </div>
+        {/* ── Active Rebalancing & Termination — step-by-step indicators ── */}
+        {(() => {
+          // Build lookup: node_name or instance_id → action
+          const actionByKey = {};
+          rebalancingActions.forEach(a => {
+            if (a.node_name)    actionByKey[a.node_name]    = a;
+            if (a.instance_id)  actionByKey[a.instance_id]  = a;
+          });
+
+          // Visible actions: in-progress + terminating nodes + completed (5s window)
+          const liveActionKeys = new Set();
+          const visibleActions = [];
+
+          // 1. In-flight rebalancing actions from API
+          rebalancingActions.forEach(a => {
+            const key = a.node_name || a.instance_id || String(a.id);
+            if (['in_progress', 'waiting_agent', 'pending'].includes(a.status)) {
+              liveActionKeys.add(key);
+              visibleActions.push({ action: a, rawNode: rawNodes.find(n => n.node_name === a.node_name || n.instance_id === a.instance_id) || {} });
+            } else if (a.status === 'completed' && a.completed_at) {
+              const age = nowMs - new Date(a.completed_at).getTime();
+              if (age < 5000) {
+                liveActionKeys.add(key);
+                visibleActions.push({ action: a, rawNode: rawNodes.find(n => n.node_name === a.node_name || n.instance_id === a.instance_id) || {}, justCompleted: true });
+              }
+            }
+          });
+
+          // 2. Terminating/cordoned nodes from rawNodes that have no linked action
+          const orphanTerminating = terminatingNodes.filter(n => {
+            const a = actionByKey[n.node_name] || actionByKey[n.instance_id];
+            return !a;
+          });
+
+          if (visibleActions.length === 0 && rebalancingNodes.length === 0 && orphanTerminating.length === 0) return null;
+
+          return (
+            <>
+              {/* Step-based cards for API-backed actions */}
+              {(visibleActions.length > 0 || rebalancingNodes.length > 0) && (
+                <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                  <div className="flex items-center gap-2 mb-3">
+                    <FiRefreshCw className="text-blue-600 w-4 h-4 flex-shrink-0 animate-spin" />
+                    <h3 className="text-sm font-bold text-blue-800">
+                      Active Rebalancing ({Math.max(visibleActions.length, rebalancingNodes.length)} node{Math.max(visibleActions.length, rebalancingNodes.length) !== 1 ? 's' : ''})
+                    </h3>
                   </div>
-                );
-              })}
-            </div>
-          </div>
-        )}
+                  <div className="flex flex-col gap-3">
+                    {/* Render API-backed action cards with step indicators */}
+                    {visibleActions.map(({ action: a, rawNode: rn, justCompleted }) => {
+                      const nodeName = a.node_name || rn.node_name || a.instance_id || String(a.id);
+                      const isFailed = a.status === 'failed';
+                      const doneCount = STEP_FLOW.filter(s => Boolean(a[s.key])).length;
+                      const activeIdx = justCompleted ? STEP_FLOW.length : doneCount;
+                      return (
+                        <div key={String(a.id)} className={`bg-white border rounded-lg px-4 py-3 shadow-sm transition-opacity duration-500 ${
+                          justCompleted ? 'border-green-200 opacity-80' : isFailed ? 'border-red-300' : 'border-blue-200'
+                        }`}>
+                          {/* Header */}
+                          <div className="flex items-center justify-between mb-2">
+                            <span className="font-mono text-[12px] font-bold text-gray-900 truncate max-w-[200px]">{nodeName}</span>
+                            {justCompleted ? (
+                              <span className="flex items-center gap-1 px-2 py-0.5 text-[9px] font-bold bg-green-50 text-green-700 border border-green-200 rounded uppercase">
+                                <FiCheckCircle className="w-3 h-3" /> Complete
+                              </span>
+                            ) : isFailed ? (
+                              <span className="px-2 py-0.5 text-[9px] font-bold bg-red-50 text-red-700 border border-red-200 rounded uppercase">Failed</span>
+                            ) : (
+                              <span className="px-2 py-0.5 text-[9px] font-bold bg-blue-50 text-blue-700 border border-blue-200 rounded uppercase animate-pulse">In Progress</span>
+                            )}
+                          </div>
+                          {/* Meta */}
+                          <div className="text-[11px] text-gray-400 mb-3">
+                            {rn.instance_type || a.source_pool || '—'} · {rn.capacity_type || '—'} · {rn.az || '—'}
+                            {a.target_pool && <span className="ml-2 text-blue-600 font-semibold">→ {a.target_pool}</span>}
+                          </div>
+                          {/* Step indicators */}
+                          <div className="flex items-center gap-1 flex-wrap">
+                            {STEP_FLOW.map((step, i) => {
+                              const isDone     = Boolean(a[step.key]);
+                              const isVerified = step.vKey && Boolean(a[step.vKey]);
+                              const isActive   = !isDone && i === activeIdx && !justCompleted && !isFailed;
+                              return (
+                                <React.Fragment key={step.key}>
+                                  <div className="flex flex-col items-center gap-0.5">
+                                    {isDone ? (
+                                      <span className={`flex items-center justify-center w-5 h-5 rounded-full ${isVerified ? 'bg-green-500' : 'bg-green-400'}`}>
+                                        <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 10 10">
+                                          <path d="M2 5l2.5 2.5L8 3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                                        </svg>
+                                        {isVerified && <FiShield className="absolute w-2 h-2 text-white" style={{display:'none'}} />}
+                                      </span>
+                                    ) : isActive ? (
+                                      <span className="w-5 h-5 rounded-full border-2 border-blue-500 border-t-transparent animate-spin inline-block" />
+                                    ) : (
+                                      <span className="w-5 h-5 rounded-full border border-gray-300 bg-white inline-block" />
+                                    )}
+                                    <span className={`text-[9px] font-medium text-center leading-tight max-w-[52px] ${
+                                      isDone ? (isVerified ? 'text-green-700' : 'text-green-600') :
+                                      isActive ? 'text-blue-700 font-bold' : 'text-gray-400'
+                                    }`}>{step.label}</span>
+                                  </div>
+                                  {i < STEP_FLOW.length - 1 && (
+                                    <span className="text-gray-300 text-[10px] mb-4">→</span>
+                                  )}
+                                </React.Fragment>
+                              );
+                            })}
+                          </div>
+                          {/* Pod count */}
+                          {rn.pod_count != null && !justCompleted && (
+                            <div className="text-[10px] text-gray-400 mt-2">{rn.pod_count} pods remaining on this node</div>
+                          )}
+                        </div>
+                      );
+                    })}
+                    {/* Fallback: rawNode-only rebalancing entries without a matched action */}
+                    {rebalancingNodes
+                      .filter(n => !visibleActions.some(v => (v.action.node_name === n.node_name || v.action.instance_id === n.instance_id)))
+                      .map(n => (
+                        <div key={n.node_name} className="bg-white border border-blue-200 rounded-lg px-4 py-3 shadow-sm">
+                          <div className="flex items-center justify-between mb-1">
+                            <span className="font-mono text-[12px] font-bold text-gray-900 truncate max-w-[220px]">{n.node_name}</span>
+                            <span className="px-2 py-0.5 text-[9px] font-bold bg-blue-50 text-blue-700 border border-blue-200 rounded uppercase animate-pulse">In Progress</span>
+                          </div>
+                          <div className="text-[11px] text-gray-500">
+                            {n.instance_type || '—'} · <span className="font-semibold">{n.capacity_type || '—'}</span> · {n.az || '—'}
+                            {n.rebalancing_target_pool && <span className="ml-2">→ <span className="font-semibold text-blue-700">{n.rebalancing_target_pool}</span></span>}
+                          </div>
+                          <div className="flex items-center gap-1.5 mt-2">
+                            <span className="w-4 h-4 rounded-full border-2 border-blue-500 border-t-transparent animate-spin inline-block" />
+                            <span className="text-[11px] text-blue-700 font-semibold">{n.rebalancing_state || 'Migrating…'}</span>
+                          </div>
+                        </div>
+                      ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Orphan terminating nodes (draining/cordoned without a linked rebalancing action) */}
+              {orphanTerminating.length > 0 && (
+                <div className="bg-red-50 border border-red-200 rounded-lg p-4">
+                  <div className="flex items-center gap-2 mb-3">
+                    <FiAlertTriangle className="text-red-600 w-4 h-4 flex-shrink-0" />
+                    <h3 className="text-sm font-bold text-red-800">Termination Queue ({orphanTerminating.length} node{orphanTerminating.length !== 1 ? 's' : ''})</h3>
+                  </div>
+                  <div className="flex flex-wrap gap-3">
+                    {orphanTerminating.map(n => {
+                      const lc = lcMeta(n.lifecycle_state);
+                      const isDraining = ['DRAINING', 'draining'].includes(n.lifecycle_state);
+                      return (
+                        <div key={n.node_name} className="bg-white border border-red-200 rounded-lg px-4 py-3 shadow-sm min-w-[220px]">
+                          <div className="flex items-center justify-between mb-1">
+                            <span className="font-mono text-[12px] font-bold text-gray-900 truncate max-w-[140px]">{n.node_name}</span>
+                            <span className={`px-2 py-0.5 text-[9px] font-bold border rounded uppercase ${lc.cls}`}>{lc.label}</span>
+                          </div>
+                          <div className="text-[11px] text-gray-500 space-y-0.5">
+                            <div>{n.instance_type || '—'} · <span className="font-semibold">{n.capacity_type || '—'}</span></div>
+                            <div>{n.az || '—'} · {n.pod_count ?? '?'} pods remaining</div>
+                          </div>
+                          <div className="flex items-center gap-1.5 mt-2">
+                            {isDraining
+                              ? <span className="w-4 h-4 rounded-full border-2 border-red-500 border-t-transparent animate-spin inline-block" />
+                              : <span className="w-4 h-4 rounded-full border border-amber-400 bg-amber-50 inline-block" />}
+                            <span className={`text-[10px] font-semibold ${isDraining ? 'text-red-600' : 'text-amber-700'}`}>
+                              {isDraining ? 'Pods Transferring' : 'Cordoned — no new scheduling'}
+                            </span>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </>
+          );
+        })()}
 
         {/* Error banner */}
         {clusterListError && (
@@ -439,11 +689,12 @@ export default function NodeSelector() {
                     <>
                       <span className="text-[10px] text-gray-400 font-bold uppercase tracking-wider mx-1">Plan:</span>
                       {[
-                        ['all',       'All',       null],
-                        ['replace',   'Replace',   'bg-orange-50 text-orange-700 border-orange-200'],
-                        ['terminate', 'Terminate', 'bg-gray-100 text-gray-700 border-gray-300'],
-                        ['keep',      'Keep',      'bg-amber-50 text-amber-700 border-amber-200'],
-                        ['no_plan',   'No Plan',   null],
+                        ['all',          'All',         null],
+                        ['replace',      'Replace',     'bg-orange-50 text-orange-700 border-orange-200'],
+                        ['terminate',    'Terminate',   'bg-gray-100 text-gray-700 border-gray-300'],
+                        ['keep',         'Keep',        'bg-amber-50 text-amber-700 border-amber-200'],
+                        ...(activelyManagedCnt > 0 ? [['rebalancing', `Rebalancing (${activelyManagedCnt})`, 'bg-blue-50 text-blue-700 border-blue-300']] : []),
+                        ['no_plan',      'No Plan',     null],
                       ].map(([key, label, activeCls]) => (
                         <button key={key}
                           onClick={() => setPlanActionFilter(key)}
@@ -494,6 +745,20 @@ export default function NodeSelector() {
           {/* Plan View — three sections */}
           {viewMode === 'desired' && (
             <div className="flex-1 overflow-auto p-6 space-y-8">
+              
+              {/* GLOBAL ORCHESTRATION LOCK BANNER (Blocker 2 Mitigation) */}
+              {clusterPlan?.karpenter_lock_active && (
+                <div className="bg-indigo-600 border border-indigo-400 rounded-xl px-5 py-4 shadow-lg animate-pulse flex items-center gap-4 text-white">
+                  <div className="bg-white/20 p-2 rounded-lg">
+                    <FiShield className="w-5 h-5" />
+                  </div>
+                  <div className="flex-1">
+                    <p className="text-sm font-bold">Global Orchestration Lock Active</p>
+                    <p className="text-[11px] opacity-90">Preventing race conditions with Karpenter native consolidation. Our system has high-priority control of the cluster scaling lifecycle.</p>
+                  </div>
+                  <Badge variant="blue" className="bg-white/20 text-white border-white/30 font-mono">LOCKED</Badge>
+                </div>
+              )}
 
               {/* Plan completeness banner */}
               {planCompleteness === 'loading' && (
@@ -518,13 +783,39 @@ export default function NodeSelector() {
                   <span className="text-sm">No engine plan available for this cluster.</span>
                 </div>
               )}
-              {planCompleteness === 'no_action' && (
-                <div className="flex flex-col items-center justify-center h-48 gap-3 text-gray-500">
-                  <FiCheckCircle className="w-8 h-8 text-green-400" />
-                  <span className="text-sm font-semibold">Cluster is already at target state — no node changes needed.</span>
-                  <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-green-50 text-green-700 border border-green-200">At Target</span>
-                </div>
-              )}
+              {planCompleteness === 'no_action' && (() => {
+                const _smd = clusterPlan?.spot_migration_decision || {};
+                const _wc  = clusterPlan?.summary?.workloads_processed ?? 0;
+                const _REASON_EXPLAIN = {
+                  spot_target_not_set_by_orchestrator:
+                    'No spot target is wired for any workload. Check that Placement Policies with spot_target > 0 exist, or that the WIE has finished classification.',
+                  confidence_provisional_conservative_od_preferred:
+                    `Workload confidence is ${_smd.confidence_gate ?? 'PROVISIONAL / DRAFT'} — spot migration requires CONFIRMED. Once the agent observes enough pod restarts/rollouts, confidence will upgrade.`,
+                  disruption_safety_blocked_all_spot_pods:
+                    'No pods passed disruption-safety checks for spot at this cycle. PDB margins or cooldown windows are blocking moves.',
+                  existing_od_capacity_absorbed_spot_pods:
+                    'Existing on-demand nodes already have enough capacity; spot migration would not reduce cost further.',
+                  spot_migration_not_needed:
+                    'All pods are already on the correct capacity type. Current placement matches the desired distribution.',
+                };
+                const _explain = _smd.reason ? (_REASON_EXPLAIN[_smd.reason] || _smd.reason) : 'All pods are already placed at their desired target distribution.';
+                return (
+                  <div className="rounded-xl border border-green-200 bg-green-50 px-5 py-4 space-y-2">
+                    <div className="flex items-center gap-2">
+                      <FiCheckCircle className="w-5 h-5 text-green-500 flex-shrink-0" />
+                      <span className="text-sm font-bold text-green-800">Cluster is already at target state</span>
+                      <span className="ml-auto px-2 py-0.5 rounded text-[9px] font-bold bg-green-100 text-green-700 border border-green-200">At Target</span>
+                    </div>
+                    <p className="text-xs text-green-700 leading-relaxed">{_explain}</p>
+                    <div className="flex flex-wrap gap-2 pt-1">
+                      {_wc > 0 && <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-white border border-green-200 text-green-700">{_wc} workload{_wc !== 1 ? 's' : ''} analysed</span>}
+                      {_smd.reason && <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-white border border-green-200 text-green-600">{_smd.reason}</span>}
+                      {_smd.confidence_gate && <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-amber-50 border border-amber-200 text-amber-700">confidence: {_smd.confidence_gate}</span>}
+                      {_smd.wie_eligible_spot > 0 && <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-indigo-50 border border-indigo-200 text-indigo-700">WIE spot-eligible: {_smd.wie_eligible_spot}</span>}
+                    </div>
+                  </div>
+                );
+              })()}
               {planCompleteness === 'consolidation' && (() => {
                 const _smd = clusterPlan?.spot_migration_decision || {};
                 const _wieSpot = _smd.wie_eligible_spot ?? 0;
@@ -565,7 +856,7 @@ export default function NodeSelector() {
               )}
 
               {/* ── Optimization Summary Header ── */}
-              {planCompleteness !== 'loading' && planCompleteness !== 'none' && planCompleteness !== 'az_spread' && (drainSet.size > 0 || provisionList.length > 0) && (
+              {planCompleteness !== 'loading' && planCompleteness !== 'none' && (drainSet.size > 0 || provisionList.length > 0) && (
                 <div className="border border-gray-200 rounded-xl overflow-hidden shadow-sm">
                   {/* Stat bar */}
                   <div className="px-5 py-4 bg-white grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4 border-b border-gray-100">
@@ -583,6 +874,20 @@ export default function NodeSelector() {
                       </div>
                     ))}
                   </div>
+                  {/* Pod routing summary row */}
+                  {planSummary?.total_pods_in_plan != null && (
+                    <div className="px-5 py-2 bg-indigo-50 border-b border-indigo-100 flex flex-wrap items-center gap-x-6 gap-y-1 text-xs">
+                      <span className="font-bold text-indigo-800 uppercase tracking-wider text-[10px]">Pod Routing</span>
+                      <span className="text-gray-700"><span className="font-bold text-gray-900">{planSummary.total_pods_in_plan}</span> total in plan</span>
+                      <span className="text-blue-700"><span className="font-bold">{planSummary.pods_moving ?? _rt.filter(p => p.from_node !== p.to_node).length}</span> moving</span>
+                      <span className="text-green-700"><span className="font-bold">{planSummary.pods_staying ?? _rt.filter(p => p.from_node === p.to_node).length}</span> staying</span>
+                      <span className="text-indigo-700"><span className="font-bold">{planSummary.pods_to_spot ?? _rt.filter(p => (p.to_capacity_type||'').toLowerCase()==='spot').length}</span> → spot</span>
+                      <span className="text-orange-700"><span className="font-bold">{planSummary.pods_to_od ?? _rt.filter(p => ['on-demand','on_demand','ondemand'].includes((p.to_capacity_type||'').toLowerCase())).length}</span> → OD</span>
+                      {_rt.filter(p => !p.to_node).length > 0 && (
+                        <span className="text-amber-700 font-semibold">{_rt.filter(p => !p.to_node).length} unrouted ⚠</span>
+                      )}
+                    </div>
+                  )}
                   {/* Strategy checklist */}
                   <div className="px-5 py-3 bg-gray-50 flex flex-wrap items-center gap-x-5 gap-y-2">
                     <span className="text-[10px] font-bold text-gray-500 uppercase tracking-wider flex-shrink-0">Active Strategies</span>
@@ -853,9 +1158,12 @@ export default function NodeSelector() {
                         : 'bg-orange-50 text-orange-700 border-orange-200';
                       const reason = km.retention_reason;
                       const REASON_LABEL = {
-                        od_anchor:   { label: 'OD Anchor', cls: 'bg-orange-100 text-orange-700 border-orange-200', detail: 'On-demand node kept as a cost anchor; spot pods are placed around it.' },
-                        fits_pods:   { label: 'Fits Pods',  cls: 'bg-green-100 text-green-700 border-green-200',   detail: 'Existing node has sufficient spare capacity to absorb relocating pods — no replacement needed.' },
-                        drain_reuse: { label: 'Drain Reuse', cls: 'bg-blue-100 text-blue-700 border-blue-200',    detail: 'Node will be emptied by outgoing moves and repurposed to receive incoming pods, avoiding a new provision.' },
+                        od_anchor:        { label: 'OD Anchor',     cls: 'bg-orange-100 text-orange-700 border-orange-200', detail: 'On-demand node kept as a cost anchor; spot pods are placed around it.' },
+                        fits_pods:        { label: 'Fits Pods',     cls: 'bg-green-100 text-green-700 border-green-200',   detail: 'Existing node has sufficient spare capacity to absorb relocating pods — no replacement needed.' },
+                        drain_reuse:      { label: 'Drain Reuse',   cls: 'bg-blue-100 text-blue-700 border-blue-200',     detail: 'Node will be emptied by outgoing moves and repurposed to receive incoming pods, avoiding a new provision.' },
+                        az_spread:        { label: 'AZ Anchor',     cls: 'bg-teal-100 text-teal-700 border-teal-200',     detail: 'Node is kept to satisfy the minimum AZ-spread policy (do-not-disrupt).' },
+                        anchor_node:      { label: 'Anchor Node',   cls: 'bg-purple-100 text-purple-700 border-purple-200', detail: 'Explicitly designated anchor — never drained. Provides scheduling stability.' },
+                        already_optimal:  { label: 'Already Optimal', cls: 'bg-gray-100 text-gray-600 border-gray-200',  detail: 'All pods are already on the correct capacity type. No moves needed.' },
                       };
                       const rl = reason ? (REASON_LABEL[reason] || { label: reason, cls: 'bg-gray-100 text-gray-600 border-gray-200', detail: '' }) : null;
                       return (
@@ -1069,23 +1377,27 @@ export default function NodeSelector() {
                   const capCls = (node.capacity_type || '').toLowerCase() === 'spot'
                     ? 'bg-indigo-50 text-indigo-700 border-indigo-200'
                     : 'bg-gray-100 text-gray-600 border-gray-200';
-                  const isEngineDrain = drainSet.has(id);
-                  const isEngineKeep  = keepSet.has(id);
+                  const isEngineDrain  = drainSet.has(id);
+                  const isEngineKeep   = keepSet.has(id);
+                  const isRebalancing  = isActivelyManaged(id);
                   const txType = transitionType[id]; // 'REPLACE' | 'TERMINATE' | undefined
                   const repSpec = replacementSpec[id];
-                  // Derive engine intent for this node — used by deriveOptTarget to avoid misleading labels
-                  const engineIntent = isEngineKeep ? 'keep'
-                    : txType === 'REPLACE' ? 'replace'
+                  // Derive engine intent — rebalancing wins over all: prevents KEEP/TERMINATE
+                  // dual-display for nodes currently mid-flight in an active operation.
+                  const engineIntent = isRebalancing ? 'rebalancing'
+                    : isEngineKeep   ? 'keep'
+                    : txType === 'REPLACE'   ? 'replace'
                     : txType === 'TERMINATE' ? 'drain'
                     : null;
                   return (
                     <React.Fragment key={id}>
                       <tr onClick={() => toggleRow(id)}
                         className={`cursor-pointer transition-colors ${
-                          txType === 'REPLACE'  ? 'bg-orange-50/60 hover:bg-orange-50'
+                          isRebalancing    ? 'bg-blue-50/50 hover:bg-blue-50'
+                          : txType === 'REPLACE'   ? 'bg-orange-50/60 hover:bg-orange-50'
                           : txType === 'TERMINATE' ? 'bg-gray-100/80 opacity-70 hover:opacity-90'
-                          : isEngineKeep       ? 'bg-green-50/40 hover:bg-green-50'
-                          : isExpanded         ? 'bg-indigo-50/40' : 'hover:bg-gray-50'
+                          : isEngineKeep   ? 'bg-green-50/40 hover:bg-green-50'
+                          : isExpanded     ? 'bg-indigo-50/40' : 'hover:bg-gray-50'
                         }`}
                       >
                         <td className="px-4 py-3">
@@ -1133,6 +1445,11 @@ export default function NodeSelector() {
                         <td className="px-4 py-3">
                           {clusterPlanLoading ? (
                             <div className="h-4 w-20 bg-gray-200 rounded animate-pulse" />
+                          ) : isRebalancing ? (
+                            <span className="px-1.5 py-0.5 text-[9px] font-bold bg-blue-100 text-blue-700 border border-blue-300 rounded uppercase whitespace-nowrap inline-flex items-center gap-1">
+                              <FiRefreshCw className="w-2.5 h-2.5 animate-spin" />
+                              Rebalancing
+                            </span>
                           ) : txType === 'REPLACE' ? (
                             <span className="px-1.5 py-0.5 text-[9px] font-bold bg-orange-600 text-white rounded uppercase whitespace-nowrap">
                               REPLACE → {repSpec?.instance_type || repSpec?.capacity_type?.toUpperCase() || 'SPOT'}
@@ -1151,8 +1468,18 @@ export default function NodeSelector() {
                             <span className={`px-2 py-0.5 text-[9px] font-bold border rounded uppercase tracking-wider ${lc.cls}`}>
                               {lc.label}
                             </span>
+                            {node.pending_rebalance && (
+                              <span className="px-1.5 py-0.5 text-[9px] font-bold bg-blue-50 text-blue-700 border border-blue-200 rounded uppercase" title={node.rebalancing_state || ''}>
+                                Waiting → {node.rebalancing_target_pool || 'replacement'}
+                              </span>
+                            )}
                             {node.is_overloaded && (
                               <span className="px-1.5 py-0.5 text-[9px] font-bold bg-red-50 text-red-600 border border-red-200 rounded uppercase">⚠ Hot</span>
+                            )}
+                            {node.has_pdb_pods && (
+                              <span className="px-1.5 py-0.5 text-[9px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200 rounded uppercase flex items-center gap-1">
+                                <FiShield className="w-2.5 h-2.5" /> PDB Active
+                              </span>
                             )}
                           </div>
                         </td>
@@ -1249,7 +1576,7 @@ export default function NodeSelector() {
                                   moves.forEach(mv => {
                                     const toNodeId = mv.to_node
                                       ? (mv.is_new_node ? `prov:${mv.to_node}` : `node:${mv.to_node}`)
-                                      : '__unknown__';
+                                      : mv.is_compliant_drain ? '__compliant_drain__' : mv.is_unclassified ? '__unclassified__' : '__unknown__';
                                     if (!destMap[toNodeId]) destMap[toNodeId] = { to_node_id: toNodeId, to_node: mv.to_node, is_new_node: !!mv.is_new_node, to_instance_type: mv.to_instance_type, to_capacity_type: mv.to_capacity_type, pods: [] };
                                     destMap[toNodeId].pods.push(mv);
                                   });
@@ -1267,7 +1594,9 @@ export default function NodeSelector() {
                                         _unresolved: false,
                                       };
                                     }
-                                    return { ...g, instance_type: null, capacity_type: g.to_capacity_type, price: null, az: null, _unresolved: g.to_node_id !== '__unknown__' };
+                                    const _isUnclassified = g.to_node_id === '__unknown__' || g.to_node_id === '__unclassified__';
+                                    const _isCompliantDrain = g.to_node_id === '__compliant_drain__';
+                                    return { ...g, instance_type: null, capacity_type: g.to_capacity_type, price: null, az: null, _unresolved: !_isUnclassified && !_isCompliantDrain, _is_unclassified: _isUnclassified, _is_compliant_drain: _isCompliantDrain };
                                   }).sort((a, b) => Number(a.is_new_node) - Number(b.is_new_node));
 
                                   // Workload class + execution strategy badges
@@ -1314,6 +1643,65 @@ export default function NodeSelector() {
                                             {clusterPlanLoading ? 'Computing cluster plan…' : 'No pod movements computed yet.'}
                                           </div>
                                         ) : destGroups.map((grp, gi) => {
+                                          void gi;
+                                          if (grp._is_compliant_drain) {
+                                            return (
+                                              <div key={gi} className="border border-blue-200 rounded-lg overflow-hidden shadow-sm">
+                                                <div className="px-3 py-2 bg-blue-50 flex items-center justify-between gap-2">
+                                                  <div className="flex items-center gap-2">
+                                                    <FiCheckCircle className="w-3 h-3 text-blue-600 flex-shrink-0" />
+                                                    <span className="text-[11px] font-bold text-blue-800">Classified — Kubernetes will reschedule ({grp.pods.length} pod{grp.pods.length !== 1 ? 's' : ''})</span>
+                                                  </div>
+                                                  <span className="text-[10px] text-blue-600">WIE classified · no keep nodes available for explicit routing · Kubernetes drain will reschedule</span>
+                                                </div>
+                                                <table className="w-full text-[11px] bg-white">
+                                                  <thead className="bg-gray-50 border-b border-gray-100">
+                                                    <tr>
+                                                      <th className="px-3 py-1 text-left font-bold text-gray-400 text-[9px] uppercase tracking-wider">Pod</th>
+                                                      <th className="px-3 py-1 text-right font-bold text-gray-400 text-[9px] uppercase tracking-wider">Status</th>
+                                                    </tr>
+                                                  </thead>
+                                                  <tbody className="divide-y divide-gray-50">
+                                                    {grp.pods.map((mv, pi) => (
+                                                      <tr key={pi} className="hover:bg-blue-50/40">
+                                                        <td className="px-3 py-1.5 font-mono text-gray-800 truncate max-w-[200px]" title={mv.pod_name}>{mv.pod_name || '—'}</td>
+                                                        <td className="px-3 py-1.5 text-right"><span className="px-1.5 py-0.5 text-[9px] font-bold bg-blue-100 text-blue-700 border border-blue-200 rounded">DRAIN → RESCHEDULE</span></td>
+                                                      </tr>
+                                                    ))}
+                                                  </tbody>
+                                                </table>
+                                              </div>
+                                            );
+                                          }
+                                          if (grp._is_unclassified) {
+                                            return (
+                                              <div key={gi} className="border border-amber-300 rounded-lg overflow-hidden shadow-sm">
+                                                <div className="px-3 py-2 bg-amber-50 flex items-center justify-between gap-2">
+                                                  <div className="flex items-center gap-2">
+                                                    <FiAlertCircle className="w-3 h-3 text-amber-600 flex-shrink-0" />
+                                                    <span className="text-[11px] font-bold text-amber-800">Needs Classification ({grp.pods.length} pod{grp.pods.length !== 1 ? 's' : ''})</span>
+                                                  </div>
+                                                  <span className="text-[10px] text-amber-600">WIE hasn't classified these workloads and no keep nodes available — requires WIE classification</span>
+                                                </div>
+                                                <table className="w-full text-[11px] bg-white">
+                                                  <thead className="bg-gray-50 border-b border-gray-100">
+                                                    <tr>
+                                                      <th className="px-3 py-1 text-left font-bold text-gray-400 text-[9px] uppercase tracking-wider">Pod</th>
+                                                      <th className="px-3 py-1 text-right font-bold text-gray-400 text-[9px] uppercase tracking-wider">Status</th>
+                                                    </tr>
+                                                  </thead>
+                                                  <tbody className="divide-y divide-gray-50">
+                                                    {grp.pods.map((mv, pi) => (
+                                                      <tr key={pi} className="hover:bg-amber-50/40">
+                                                        <td className="px-3 py-1.5 font-mono text-gray-800 truncate max-w-[200px]" title={mv.pod_name}>{mv.pod_name || '—'}</td>
+                                                        <td className="px-3 py-1.5 text-right"><span className="px-1.5 py-0.5 text-[9px] font-bold bg-amber-100 text-amber-700 border border-amber-200 rounded">PENDING CLASSIFICATION</span></td>
+                                                      </tr>
+                                                    ))}
+                                                  </tbody>
+                                                </table>
+                                              </div>
+                                            );
+                                          }
                                           const isSpot = (grp.capacity_type || '').toLowerCase() === 'spot';
                                           const isNew = !!grp.is_new_node;
                                           const grpCpu = grp.pods.reduce((s, mv) => s + (podRes[mv.pod_name]?.cpu || 0), 0);
@@ -1374,7 +1762,11 @@ export default function NodeSelector() {
                                                     const r = podRes[mv.pod_name] || {};
                                                     return (
                                                       <tr key={pi} className="hover:bg-gray-50">
-                                                        <td className="px-3 py-1.5 font-mono text-gray-800 truncate max-w-[150px]" title={mv.pod_name}>{mv.pod_name || '—'}</td>
+                                                        <td className="px-3 py-1.5 font-mono text-gray-800 truncate max-w-[130px]" title={mv.pod_name}>
+                                                          <span>{mv.pod_name || '—'}</span>
+                                                          {mv.is_unclassified && <span className="ml-1 px-1 py-0.5 text-[8px] font-bold bg-amber-100 text-amber-700 border border-amber-200 rounded align-middle">?WIE</span>}
+                                                          {mv.is_compliant_drain && <span className="ml-1 px-1 py-0.5 text-[8px] font-bold bg-blue-100 text-blue-700 border border-blue-200 rounded align-middle">✓</span>}
+                                                        </td>
                                                         <td className="px-3 py-1.5 text-right font-mono text-gray-600">{r.cpu != null ? `${r.cpu}m` : <span className="text-gray-300">—</span>}</td>
                                                         <td className="px-3 py-1.5 text-right font-mono text-gray-600">{r.mem != null ? fmtMem(r.mem) : <span className="text-gray-300">—</span>}</td>
                                                       </tr>
@@ -1398,7 +1790,18 @@ export default function NodeSelector() {
                                 }
 
                                 // Keep node: pods stay here — node is NOT being terminated or replaced
-                                const opt = plan?.optimization_target || null;
+                                //
+                                // Priority rules for the optimization target badge:
+                                //   1. engineIntent === 'keep' or 'rebalancing'  → cluster plan wins;
+                                //      the per-node API heuristic is plan-unaware (it just sees free
+                                //      capacity and returns "Consolidate → Spot" without knowing this
+                                //      node is a protected OD anchor in the cluster plan).
+                                //   2. engineIntent is null (no cluster plan) → use API heuristic.
+                                //   3. API not loaded yet or returned null → use deriveOptTarget.
+                                const planKnowsBest = engineIntent === 'keep' || engineIntent === 'rebalancing';
+                                const apiHeuristicOpt = plan?.optimization_target || null;
+                                // When cluster plan has classified this node, ignore the API heuristic.
+                                const opt = planKnowsBest ? null : apiHeuristicOpt;
                                 const apiOpt = opt || deriveOptTarget(node, engineIntent, keepReasonMap[id]);
                                 const COLOR_MAP = {
                                   red: 'text-red-700 bg-red-50 border-red-200',
@@ -1458,22 +1861,72 @@ export default function NodeSelector() {
                                           </div>
                                         ))}
                                       </div>
-                                      {plan?.current_pods?.length > 0 && (
-                                        <div>
-                                          <p className="text-[10px] font-bold uppercase tracking-wider text-gray-500 mb-1.5">Pods staying on this node ({plan.current_pods.length}) <span className="text-[9px] font-semibold text-amber-600">KEPT</span></p>
-                                          <div className="space-y-1">
-                                            {plan.current_pods.map(p => (
-                                              <div key={p.pod_name} className="flex items-center justify-between bg-white border border-amber-100 rounded px-3 py-1.5 text-[11px]">
-                                                <span className="font-mono text-gray-800 truncate">{p.pod_name}</span>
-                                                <div className="flex items-center gap-1.5 shrink-0 ml-2">
-                                                  <span className="text-gray-400">{p.cpu_request_millicores ?? '—'}m</span>
-                                                  <span className="text-[9px] font-bold px-1 py-0.5 bg-amber-50 text-amber-600 border border-amber-200 rounded">KEPT</span>
+                                      {(() => {
+                                        const stayingPodsRaw = podsStayingMap[id];
+                                        const stayingPods = (stayingPodsRaw && stayingPodsRaw.length > 0) ? stayingPodsRaw : (plan?.current_pods || []);
+                                        const incomingPods = podsIncomingMap[id] || [];
+                                        const totalAfter = stayingPods.length + incomingPods.length;
+                                        return (
+                                          <>
+                                            {totalAfter > 0 && (
+                                              <div className="bg-white border border-gray-200 rounded-lg p-3">
+                                                <div className="flex items-center justify-between mb-2">
+                                                  <p className="text-[10px] font-bold uppercase tracking-wider text-gray-500">
+                                                    Pod Placement After Consolidation
+                                                  </p>
+                                                  <span className="text-[10px] font-bold text-gray-600">{totalAfter} total</span>
+                                                </div>
+                                                <div className="flex gap-3 mb-3 text-[11px]">
+                                                  <span className="px-2 py-1 bg-amber-50 border border-amber-200 rounded text-amber-700 font-bold">{stayingPods.length} staying</span>
+                                                  <span className="px-2 py-1 bg-green-50 border border-green-200 rounded text-green-700 font-bold">{incomingPods.length} incoming</span>
                                                 </div>
                                               </div>
-                                            ))}
-                                          </div>
-                                        </div>
-                                      )}
+                                            )}
+                                            {stayingPods.length > 0 && (
+                                              <div>
+                                                <p className="text-[10px] font-bold uppercase tracking-wider text-gray-500 mb-1.5">
+                                                  Pods staying on this node ({stayingPods.length})
+                                                  <span className="ml-1 text-[9px] font-semibold text-amber-600">KEPT</span>
+                                                </p>
+                                                <div className="space-y-1 max-h-48 overflow-y-auto pr-1">
+                                                  {stayingPods.map(p => (
+                                                    <div key={p.pod_name} className="flex items-center justify-between bg-white border border-amber-100 rounded px-3 py-1.5 text-[11px]">
+                                                      <span className="font-mono text-gray-800 truncate">{p.pod_name}</span>
+                                                      <div className="flex items-center gap-1.5 shrink-0 ml-2">
+                                                        <span className="text-gray-400">{p.cpu_request_millicores ?? '—'}m</span>
+                                                        <span className="text-gray-400">{p.memory_request_mb != null ? `${p.memory_request_mb}Mi` : ''}</span>
+                                                        <span className="text-[9px] font-bold px-1 py-0.5 bg-amber-50 text-amber-600 border border-amber-200 rounded">KEPT</span>
+                                                      </div>
+                                                    </div>
+                                                  ))}
+                                                </div>
+                                              </div>
+                                            )}
+                                            {incomingPods.length > 0 && (
+                                              <div>
+                                                <p className="text-[10px] font-bold uppercase tracking-wider text-gray-500 mb-1.5">
+                                                  Pods incoming from drained nodes ({incomingPods.length})
+                                                  <span className="ml-1 text-[9px] font-semibold text-green-600">INCOMING</span>
+                                                </p>
+                                                <div className="space-y-1 max-h-48 overflow-y-auto pr-1">
+                                                  {incomingPods.map((p, idx) => (
+                                                    <div key={p.pod_name + '-' + idx} className="flex items-center justify-between bg-white border border-green-100 rounded px-3 py-1.5 text-[11px]">
+                                                      <div className="flex items-center gap-1.5 truncate">
+                                                        <FiArrowRight className="w-3 h-3 text-green-500 flex-shrink-0" />
+                                                        <span className="font-mono text-gray-800 truncate">{p.pod_name}</span>
+                                                      </div>
+                                                      <div className="flex items-center gap-1.5 shrink-0 ml-2">
+                                                        <span className="text-[10px] text-gray-400 font-mono truncate max-w-[100px]" title={p.from_node}>{(p.from_node || '').split('.')[0]}</span>
+                                                        <span className="text-[9px] font-bold px-1 py-0.5 bg-green-50 text-green-600 border border-green-200 rounded">INCOMING</span>
+                                                      </div>
+                                                    </div>
+                                                  ))}
+                                                </div>
+                                              </div>
+                                            )}
+                                          </>
+                                        );
+                                      })()}
                                     </>
                                     )}
                                   </div>

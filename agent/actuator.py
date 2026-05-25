@@ -526,6 +526,13 @@ class ActionActuator:
                 )
                 eviction_results.append(result)
 
+                if result['success'] and not force:
+                    # Wait for replacement pod to become ready
+                    try:
+                        self._wait_for_controller_ready(pod.metadata.namespace, pod.metadata.name)
+                    except Exception as wait_err:
+                        logger.warning(f"Error waiting for pod controller readiness: {wait_err}")
+
                 if not result['success']:
                     failed_evictions.append(result['message'])
 
@@ -596,6 +603,64 @@ class ActionActuator:
                 'message': error_msg,
                 'error': str(e)
             }
+
+    def _wait_for_controller_ready(self, namespace: str, pod_name: str, max_wait_seconds: int = 90) -> None:
+        """
+        Look up the controller for a given pod and poll its readiness status.
+        Blocks until status.readyReplicas == spec.replicas or timeout.
+        """
+        try:
+            pod = self.core_v1.read_namespaced_pod(name=pod_name, namespace=namespace)
+        except ApiException as e:
+            if e.status == 404:
+                return  # Pod is already gone
+            logger.warning(f"Could not read pod {namespace}/{pod_name}: {e}")
+            return
+
+        owner = None
+        if pod.metadata.owner_references:
+            owner = pod.metadata.owner_references[0]
+
+        if not owner:
+            return  # Naked pod, no controller to wait for
+
+        kind = owner.kind
+        name = owner.name
+
+        import time
+        start_time = time.time()
+        
+        while time.time() - start_time < max_wait_seconds:
+            try:
+                ready_replicas = 0
+                replicas = 0
+
+                if kind == 'ReplicaSet':
+                    rs = self.apps_v1.read_namespaced_replica_set(name=name, namespace=namespace)
+                    replicas = rs.spec.replicas or 0
+                    ready_replicas = rs.status.ready_replicas or 0
+                elif kind == 'StatefulSet':
+                    sts = self.apps_v1.read_namespaced_stateful_set(name=name, namespace=namespace)
+                    replicas = sts.spec.replicas or 0
+                    ready_replicas = sts.status.ready_replicas or 0
+                elif kind == 'DaemonSet':
+                    ds = self.apps_v1.read_namespaced_daemon_set(name=name, namespace=namespace)
+                    replicas = ds.status.desired_number_scheduled or 0
+                    ready_replicas = ds.status.number_ready or 0
+                else:
+                    return # Unknown controller, skip wait
+
+                if ready_replicas >= replicas:
+                    logger.info(f"[{namespace}/{pod_name}] Controller {kind}/{name} is fully ready ({ready_replicas}/{replicas})")
+                    return
+                else:
+                    logger.debug(f"[{namespace}/{pod_name}] Waiting for {kind}/{name} to be ready ({ready_replicas}/{replicas})")
+                    time.sleep(5)
+            except Exception as e:
+                logger.debug(f"Error checking {kind}/{name} readiness: {e}")
+                time.sleep(5)
+
+        logger.warning(f"[{namespace}/{pod_name}] Timeout waiting for {kind}/{name} to become fully ready after {max_wait_seconds}s")
 
     def label_node(self, node_name: str, labels: Dict[str, str],
                    remove: bool = False) -> Dict[str, Any]:
@@ -1641,9 +1706,6 @@ class ActionActuator:
                                         AutoScalingGroupName=asg_name, MinSize=_new_min,
                                     )
                                     logger.info(f"Lowered ASG '{asg_name}' MinSize {_cur_min}→{_new_min} for scaledown")
-                                asg_client.update_auto_scaling_group(
-                                    AutoScalingGroupName=asg_name, DesiredCapacity=_new_desired,
-                                )
                             except Exception as _pre_err:
                                 logger.warning(f"ASG pre-decrement check failed: {_pre_err}")
 
@@ -1679,15 +1741,14 @@ class ActionActuator:
                 }
             except Exception as ec2_err:
                 logger.error(f"EC2 terminate failed for {instance_id}: {ec2_err}")
-                # Fall through to K8s node delete as backup
+                return {"success": False, "error": f"EC2 terminate failed: {ec2_err}"}
 
-        # Fallback path: delete the K8s node object
-        # Cloud controller manager will clean up the underlying EC2 instance
-        if node_name:
+        # Fallback path: delete the K8s node object (only if explicitly requested or no AWS instance)
+        if node_name and (termination_mode == "k8s_only" or not instance_id):
             try:
                 v1 = client.CoreV1Api()
                 v1.delete_node(name=node_name)
-                logger.info(f"Deleted K8s node object {node_name} (EC2 terminate unavailable)")
+                logger.info(f"Deleted K8s node object {node_name}")
                 return {
                     "success":   True,
                     "method":    "k8s_node_delete",
@@ -1695,8 +1756,11 @@ class ActionActuator:
                     "instance_id": instance_id or "",
                 }
             except Exception as k8s_err:
-                logger.error(f"K8s node delete also failed for {node_name}: {k8s_err}")
-                return {"success": False, "error": f"Both EC2 terminate and K8s delete failed: {k8s_err}"}
+                logger.error(f"K8s node delete failed for {node_name}: {k8s_err}")
+                return {"success": False, "error": f"K8s delete failed: {k8s_err}"}
+        elif instance_id:
+            # We had an instance ID but none of the AWS termination paths succeeded/matched
+            return {"success": False, "error": f"No valid AWS termination path executed for {instance_id}"}
 
         return {"success": False, "error": "No valid instance_id or node_name to terminate"}
 

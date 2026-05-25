@@ -10,7 +10,20 @@ from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError
 
 from backend.core.config import settings
-from backend.redis_keys import placement_stability_key, placement_policy_key
+from backend.redis_keys import (
+    placement_stability_key, 
+    placement_policy_key, 
+    placement_metrics_key,
+    placement_cluster_state_key,
+    agent_data_pod_metrics_key,
+    agent_data_cluster_spot_summary_key,
+    agent_data_hpa_pdb_key,
+    subnet_ips_key,
+    placement_spot_availability_key,
+    placement_spot_availability_az_key,
+    placement_scheduling_success_key,
+    placement_provision_p90_key
+)
 from backend.models.placement_policy import PlacementPolicyRecord
 
 logger = logging.getLogger(__name__)

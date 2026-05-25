@@ -154,7 +154,13 @@ export default function NodeSelector() {
   const drainingCnt  = rawNodes.filter(n => n.lifecycle_state === 'draining').length;
   const cordonedCnt  = rawNodes.filter(n => n.lifecycle_state === 'cordoned').length;
   const overloadCnt  = rawNodes.filter(n => n.is_overloaded).length;
-  const terminatingNodes = rawNodes.filter(n => n.lifecycle_state === 'draining' || n.lifecycle_state === 'cordoned');
+  // Include nodes the engine is actively draining (drainSet) even before K8s cordons them.
+  // This prevents the "plan says TERMINATE but Termination Queue is empty" contradiction.
+  const terminatingNodes = rawNodes.filter(n =>
+    n.lifecycle_state === 'draining' ||
+    n.lifecycle_state === 'cordoned' ||
+    drainSet.has(n.node_name)
+  );
 
   const engineDrainCnt = drainSet.size;
   const engineReplaceCnt = (clusterPlan?.drain_nodes ?? []).filter(d => d.transition_type === 'REPLACE').length;
@@ -360,18 +366,45 @@ export default function NodeSelector() {
             <div className="flex flex-wrap gap-3">
               {terminatingNodes.map(n => {
                 const lc = lcMeta(n.lifecycle_state);
+                const planDrain = drainMeta[n.node_name];
+                const totalPods = planDrain?.total_pods_on_node ?? n.pod_count ?? 0;
+                const remainingPods = n.pod_count ?? 0;
+                const movedPods = Math.max(0, totalPods - remainingPods);
+                const progressPct = totalPods > 0 ? Math.round((movedPods / totalPods) * 100) : 0;
+                const isDraining = n.lifecycle_state === 'draining';
+                const isCordoned = n.lifecycle_state === 'cordoned';
+                const isPlanDrain = drainSet.has(n.node_name) && !isDraining && !isCordoned;
                 return (
-                  <div key={n.node_name} className="bg-white border border-red-200 rounded-lg px-4 py-3 shadow-sm min-w-[220px]">
+                  <div key={n.node_name} className="bg-white border border-red-200 rounded-lg px-4 py-3 shadow-sm min-w-[240px]">
                     <div className="flex items-center justify-between mb-1">
-                      <span className="font-mono text-[12px] font-bold text-gray-900 truncate max-w-[140px]">{n.node_name}</span>
-                      <span className={`px-2 py-0.5 text-[9px] font-bold border rounded uppercase ${lc.cls}`}>{lc.label}</span>
+                      <span className="font-mono text-[12px] font-bold text-gray-900 truncate max-w-[150px]">{n.node_name}</span>
+                      <span className={`px-2 py-0.5 text-[9px] font-bold border rounded uppercase ${isPlanDrain ? 'bg-amber-50 text-amber-700 border-amber-200' : lc.cls}`}>
+                        {isPlanDrain ? 'Scheduled' : lc.label}
+                      </span>
                     </div>
                     <div className="text-[11px] text-gray-500 space-y-0.5">
                       <div>{n.instance_type || '—'} · <span className="font-semibold">{n.capacity_type || '—'}</span></div>
-                      <div>{n.az || '—'} · {n.pod_count ?? '?'} pods remaining</div>
-                      <div className="text-red-600 font-medium">
-                        {n.lifecycle_state === 'draining' ? 'Drain in progress — pods migrating away' : 'Cordoned — no new scheduling'}
+                      <div>{n.az || '—'} · {remainingPods} pods remaining</div>
+                    </div>
+                    {/* Pod migration progress bar */}
+                    {(isDraining || isCordoned) && totalPods > 0 && (
+                      <div className="mt-2">
+                        <div className="flex justify-between text-[10px] text-gray-500 mb-1">
+                          <span className="text-emerald-600 font-medium">{movedPods} pods migrated</span>
+                          <span>{progressPct}%</span>
+                        </div>
+                        <div className="w-full h-1.5 bg-red-100 rounded-full overflow-hidden">
+                          <div
+                            className="h-full bg-emerald-500 rounded-full transition-all duration-500"
+                            style={{ width: `${progressPct}%` }}
+                          />
+                        </div>
                       </div>
+                    )}
+                    <div className="mt-1.5 text-[10px] font-medium text-red-600">
+                      {isDraining ? 'Drain in progress — pods migrating away'
+                        : isCordoned ? 'Cordoned — no new scheduling'
+                        : 'Engine consolidation plan — awaiting execution'}
                     </div>
                   </div>
                 );
@@ -578,8 +611,8 @@ export default function NodeSelector() {
                       </div>
                       <div className="space-y-1 max-h-48 overflow-y-auto">
                         {rawNodes.map((n, i) => {
-                          const isD = drainSet.has(n.node_name);
                           const isK = keepSet.has(n.node_name);
+                          const isD = !isK && drainSet.has(n.node_name); // keep always overrides drain
                           return (
                             <div key={i} className={`flex items-center gap-1.5 px-2 py-1 rounded text-[11px] ${isD ? 'opacity-50' : ''}`}>
                               <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${isD ? 'bg-red-400' : isK ? 'bg-amber-400' : 'bg-gray-300'}`} />

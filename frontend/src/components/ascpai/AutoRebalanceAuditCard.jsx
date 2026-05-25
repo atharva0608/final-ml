@@ -241,20 +241,38 @@ const AutoRebalanceAuditCard = ({ clusterId, initialEnabled = false, karpenterMo
                         <div key={action.id || idx} className={`bg-white p-3 rounded-lg border shadow-sm hover:shadow-md transition-shadow ${action.status === 'failed' ? 'border-red-200' : 'border-gray-100'}`}>
                             <div className="flex justify-between items-start mb-1">
                                 <span className="text-xs font-bold text-gray-700 font-mono flex items-center gap-1 flex-wrap">
-                                    {/* Source → Target display */}
-                                    {action.source_pool && (
-                                        <span className="text-gray-400">{action.source_pool.split(':')[0]}</span>
-                                    )}
-                                    {action.source_pool && <span className="text-gray-300">→</span>}
-                                    {action.original_target_pool ? (
-                                        <>
-                                            <span className="line-through text-gray-400">{action.original_target_pool.split(':')[0]}</span>
-                                            <span className="text-gray-300">→</span>
-                                            <span>{action.target_pool ? action.target_pool.split(':')[0] : 'Unknown'}</span>
-                                        </>
-                                    ) : (
-                                        action.target_pool ? action.target_pool.split(':')[0] : 'Unknown'
-                                    )}
+                                    {/* Source → Target display — detect same-pool OD→OD actions */}
+                                    {(() => {
+                                        const src = action.source_pool || '';
+                                        const tgt = action.original_target_pool || action.target_pool || '';
+                                        const final = action.target_pool || '';
+                                        const isSamePool = src && final && src === final;
+                                        if (isSamePool) {
+                                            return (
+                                                <>
+                                                    <span className="text-gray-500">{src.split(':')[0]}</span>
+                                                    <span className="px-1.5 py-0.5 bg-gray-100 text-gray-500 text-[9px] rounded border border-gray-200">OD Consolidation</span>
+                                                </>
+                                            );
+                                        }
+                                        return (
+                                            <>
+                                                {src && (
+                                                    <span className="text-gray-400">{src.split(':')[0]}</span>
+                                                )}
+                                                {src && <span className="text-gray-300">→</span>}
+                                                {action.original_target_pool ? (
+                                                    <>
+                                                        <span className="line-through text-gray-400">{action.original_target_pool.split(':')[0]}</span>
+                                                        <span className="text-gray-300">→</span>
+                                                        <span>{final ? final.split(':')[0] : 'Unknown'}</span>
+                                                    </>
+                                                ) : (
+                                                    final ? final.split(':')[0] : 'Unknown'
+                                                )}
+                                            </>
+                                        );
+                                    })()}
                                 </span>
                                 <span className="text-[10px] text-gray-400 ml-2 shrink-0">
                                     {timeAgo(action.started_at)}

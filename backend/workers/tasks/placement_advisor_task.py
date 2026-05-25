@@ -59,11 +59,21 @@ def run_placement_cycle_task(self, cluster_id: str):
             classification = next(w for w in workloads if w.workload_id == workload_id)
             return advisor._collect_workload_state(classification, cluster_id, db)
             
+        _cluster_env = getattr(cluster, 'env', None) or "prod"
+        
+        # Select correct ratio from settings based on environment
+        if _cluster_env == "prod":
+            max_ratio = settings.CLUSTER_MAX_SPOT_RATIO_PROD
+        elif _cluster_env == "staging":
+            max_ratio = settings.CLUSTER_MAX_SPOT_RATIO_STAGING
+        else:
+            max_ratio = settings.CLUSTER_MAX_SPOT_RATIO_DEV
+
         policies = advisor.run_placement_cycle(
             cluster_id=cluster_id,
             db=db,
-            env=cluster.env or "prod",
-            max_ratio=settings.CLUSTER_MAX_SPOT_RATIO.get(cluster.env or "prod", 0.50),
+            env=_cluster_env,
+            max_ratio=max_ratio,
             workloads=workloads,
             get_success_rate_fn=advisor.get_spot_scheduling_success_rate_blended,
             cluster_state=cluster_state,

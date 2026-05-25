@@ -141,7 +141,7 @@ function mapRow(w) {
 }
 
 export default function WorkloadPlacement() {
-  const { clusters, selectedId: clusterId, setSelectedId: setClusterId } = useClusters();
+  const { clusters, selectedId: clusterId, setSelectedId: setClusterId, clusterPlan, planCompleteness } = useClusters();
   const [workloads, setWorkloads] = useState([]);
   const [totalCount, setTotalCount] = useState(0);
   const [selected, setSelected] = useState(null);
@@ -255,7 +255,25 @@ export default function WorkloadPlacement() {
           </div>
         </div>
 
-        {error && <div className="mx-3 my-2 bg-red-50 border border-red-200 rounded-lg px-3 py-2 text-xs text-red-700">{error}</div>}
+        {/* ── Bug 1 fix: Reconciliation banner — shown when consolidation plan contradicts spot targets ── */}
+        {planCompleteness === 'consolidation' && (
+          <div className="mx-3 mb-2 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2.5">
+            <div className="flex items-start gap-2">
+              <span className="text-amber-500 mt-0.5 flex-shrink-0">⚠</span>
+              <div>
+                <p className="text-xs font-bold text-amber-800 mb-0.5">Spot targets shown below are advisory — active plan is Consolidation</p>
+                <p className="text-[10px] text-amber-700 leading-relaxed">
+                  The Placement Advisor calculated spot targets for these workloads, but the Node Engine's
+                  current execution plan is <strong>Consolidation-only</strong> (reducing OD node count,
+                  no new spot nodes).
+                  <br />
+                  Karpenter will <strong>not</strong> provision new spot instances during a consolidation run.
+                  Spot migration will be re-evaluated after consolidation completes and the cluster re-scans.
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* list */}
         <div className="flex-1 overflow-y-auto p-3 flex flex-col gap-2">

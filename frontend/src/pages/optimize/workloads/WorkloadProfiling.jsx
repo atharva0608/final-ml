@@ -92,6 +92,7 @@ export default function WorkloadProfiling() {
     const [detail, setDetail]         = useState(null);
     const [search, setSearch]         = useState('');
     const [confFilter, setConfFilter] = useState('all');
+    const [showOptOnly, setShowOptOnly]       = useState(false);
     const [loading, setLoading]       = useState(false);
     const [detailLoading, setDetailLoading] = useState(false);
     const [error, setError]           = useState(null);
@@ -184,7 +185,8 @@ export default function WorkloadProfiling() {
         .filter(x => {
             const s = x.name.toLowerCase().includes(search.toLowerCase()) || x.ns.toLowerCase().includes(search.toLowerCase());
             const c = confFilter === 'all' || x.confLabel.toLowerCase() === confFilter.toLowerCase();
-            return s && c;
+            const optOnly = !showOptOnly || (x.savings > 0);
+            return s && c && optOnly;
         })
         .sort((a, b) => {
             if (b.spotFriendly !== a.spotFriendly) return b.spotFriendly ? 1 : -1;
@@ -316,6 +318,10 @@ export default function WorkloadProfiling() {
                         className={`px-2.5 py-1 rounded font-medium transition-colors ${confFilter === v ? 'bg-gray-800 text-white' : 'bg-white border border-gray-200 text-gray-600 hover:bg-gray-50'}`}
                     >{l}</button>
                 ))}
+                <div className="h-4 w-px bg-gray-200" />
+                <button onClick={() => setShowOptOnly(v => !v)}
+                    className={`px-2.5 py-1 rounded font-medium transition-colors text-xs ${showOptOnly ? 'bg-amber-600 text-white' : 'bg-white border border-gray-200 text-gray-600 hover:bg-gray-50'}`}
+                >{showOptOnly ? '✓ Opt. Candidates' : 'Opt. Candidates'}</button>
             </div>
 
             {/* Split Panel */}
@@ -516,6 +522,104 @@ export default function WorkloadProfiling() {
                             </div>
                         )}
                     </div>
+
+                    {/* Resource Utilization Card — Phase 2B / Phase 4 */}
+                    {detail?.proposal && (
+                        <div className="bg-white rounded-xl border border-gray-200 p-5 shadow-sm space-y-4">
+                            <div className="flex items-center justify-between">
+                                <h3 className="text-xs font-bold text-gray-700 uppercase tracking-wider">Resource Utilization</h3>
+                                <div className="flex items-center gap-2 flex-wrap justify-end">
+                                    {detail.proposal.throttle_risk && (
+                                        <span className="px-2 py-0.5 text-[10px] font-bold rounded border bg-orange-50 text-orange-700 border-orange-200 uppercase tracking-wider">
+                                            ⚠ Throttle Risk
+                                        </span>
+                                    )}
+                                    {detail.proposal.workload_hint === 'JVM' && (
+                                        <span className="px-2 py-0.5 text-[10px] font-bold rounded border bg-purple-50 text-purple-700 border-purple-200 uppercase tracking-wider">
+                                            ☕ JVM
+                                        </span>
+                                    )}
+                                    {detail.proposal.currently_spiking && (
+                                        <span className="px-2 py-0.5 text-[10px] font-bold rounded border bg-red-50 text-red-700 border-red-200 uppercase tracking-wider animate-pulse">
+                                            ⚡ Spiking
+                                        </span>
+                                    )}
+                                </div>
+                            </div>
+                            {/* CPU mini-bar */}
+                            <div>
+                                <div className="flex justify-between text-[10px] font-bold uppercase tracking-wider text-gray-400 mb-1">
+                                    <span>CPU (millicores)</span>
+                                    <span className="font-mono text-gray-600">
+                                        req: {detail.proposal.current_cpu_request_millicores ?? '—'}m &nbsp;·&nbsp;
+                                        p95: {detail.proposal.cpu_p95_millicores ?? '—'}m &nbsp;·&nbsp;
+                                        p99: {detail.proposal.cpu_p99_millicores ?? '—'}m
+                                    </span>
+                                </div>
+                                {(() => {
+                                    const req = detail.proposal.current_cpu_request_millicores || 1;
+                                    const p95 = detail.proposal.cpu_p95_millicores || 0;
+                                    const p99 = detail.proposal.cpu_p99_millicores || 0;
+                                    const max = Math.max(req, p99) * 1.15;
+                                    return (
+                                        <div className="relative h-5 bg-gray-100 rounded-full overflow-hidden">
+                                            <div className="absolute h-full bg-blue-100 rounded-full" style={{ width: `${Math.min((req/max)*100,100)}%` }} title={`Request: ${req}m`} />
+                                            <div className="absolute h-full bg-blue-500 rounded-full opacity-70" style={{ width: `${Math.min((p95/max)*100,100)}%` }} title={`P95: ${p95}m`} />
+                                            <div className="absolute h-full bg-orange-500 rounded-full opacity-60" style={{ width: `${Math.min((p99/max)*100,100)}%` }} title={`P99: ${p99}m`} />
+                                            <div className="absolute left-1 top-0 h-full flex items-center text-[9px] font-bold text-gray-600 select-none pointer-events-none">
+                                                {Math.round((p95 / Math.max(req,1)) * 100)}% util
+                                            </div>
+                                        </div>
+                                    );
+                                })()}
+                                <div className="flex gap-3 mt-1 text-[9px] text-gray-400">
+                                    <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-blue-100 inline-block" /> Request</span>
+                                    <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-blue-500 inline-block" /> P95</span>
+                                    <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-orange-500 inline-block" /> P99</span>
+                                </div>
+                            </div>
+                            {/* Memory mini-bar */}
+                            <div>
+                                <div className="flex justify-between text-[10px] font-bold uppercase tracking-wider text-gray-400 mb-1">
+                                    <span>Memory (MB)</span>
+                                    <span className="font-mono text-gray-600">
+                                        req: {detail.proposal.current_memory_request_mb ?? '—'} MB &nbsp;·&nbsp;
+                                        p95: {detail.proposal.memory_p95_mb ?? '—'} MB
+                                    </span>
+                                </div>
+                                {(() => {
+                                    const req = detail.proposal.current_memory_request_mb || 1;
+                                    const p95 = detail.proposal.memory_p95_mb || 0;
+                                    const p99 = detail.proposal.memory_p99_mb || 0;
+                                    const max = Math.max(req, p99) * 1.15;
+                                    return (
+                                        <div className="relative h-5 bg-gray-100 rounded-full overflow-hidden">
+                                            <div className="absolute h-full bg-emerald-100 rounded-full" style={{ width: `${Math.min((req/max)*100,100)}%` }} />
+                                            <div className="absolute h-full bg-emerald-500 rounded-full opacity-70" style={{ width: `${Math.min((p95/max)*100,100)}%` }} />
+                                            <div className="absolute h-full bg-emerald-700 rounded-full opacity-60" style={{ width: `${Math.min((p99/max)*100,100)}%` }} />
+                                            <div className="absolute left-1 top-0 h-full flex items-center text-[9px] font-bold text-gray-600 select-none pointer-events-none">
+                                                {Math.round((p95 / Math.max(req,1)) * 100)}% util
+                                            </div>
+                                        </div>
+                                    );
+                                })()}
+                            </div>
+                            {/* Summary row */}
+                            <div className="grid grid-cols-4 gap-2 pt-2 border-t border-gray-100 text-center">
+                                {[
+                                    ['Action', detail.proposal.recommendation_action, detail.proposal.recommendation_action === 'REDUCE' ? 'text-amber-600' : detail.proposal.recommendation_action === 'INCREASE' ? 'text-red-600' : detail.proposal.recommendation_action === 'OBSERVE' ? 'text-blue-600' : 'text-gray-600'],
+                                    ['Burst Ratio', detail.proposal.burst_ratio != null ? `${detail.proposal.burst_ratio.toFixed(1)}×` : '—', 'text-gray-700'],
+                                    ['Confidence', detail.proposal.confidence, detail.proposal.confidence === 'HIGH' ? 'text-green-600' : detail.proposal.confidence === 'MEDIUM' ? 'text-amber-600' : 'text-red-500'],
+                                    ['Est. Saving', detail.proposal.savings_monthly > 0 ? `$${detail.proposal.savings_monthly.toFixed(0)}/mo` : detail.proposal.recommendation_action === 'OBSERVE' ? 'Protected' : '—', 'text-green-600'],
+                                ].map(([l, v, c]) => (
+                                    <div key={l}>
+                                        <div className="text-[9px] font-bold uppercase tracking-wider text-gray-400 mb-0.5">{l}</div>
+                                        <div className={`text-xs font-bold font-mono ${c}`}>{v}</div>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    )}
 
                     {/* WIE Score Cards */}
                     <div>

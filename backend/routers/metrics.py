@@ -456,21 +456,23 @@ async def receive_metrics_batch(
                 _nm_dedup = {r["node_name"]: r for r in _nm_rows}
                 _nm_rows = list(_nm_dedup.values())
                 if _nm_rows:
-                    _nm_stmt = _pg_insert(_NM).values(_nm_rows).on_conflict_do_update(
+                    _nm_stmt = _pg_insert(_NM).values(_nm_rows)
+                    _nm_stmt = _nm_stmt.on_conflict_do_update(
                         index_elements=["cluster_id", "node_name"],
                         set_={
-                            "az": _pg_insert(_NM).excluded.az,
-                            "capacity_type": _pg_insert(_NM).excluded.capacity_type,
-                            "nodepool_name": _pg_insert(_NM).excluded.nodepool_name,
-                            "instance_type": _pg_insert(_NM).excluded.instance_type,
-                            "do_not_disrupt": _pg_insert(_NM).excluded.do_not_disrupt,
-                            "is_ready": _pg_insert(_NM).excluded.is_ready,
-                            "allocatable_cpu_millicores": _pg_insert(_NM).excluded.allocatable_cpu_millicores,
-                            "allocatable_memory_bytes": _pg_insert(_NM).excluded.allocatable_memory_bytes,
-                            "updated_at": _pg_insert(_NM).excluded.updated_at,
+                            "az": _nm_stmt.excluded.az,
+                            "capacity_type": _nm_stmt.excluded.capacity_type,
+                            "nodepool_name": _nm_stmt.excluded.nodepool_name,
+                            "instance_type": _nm_stmt.excluded.instance_type,
+                            "do_not_disrupt": _nm_stmt.excluded.do_not_disrupt,
+                            "is_ready": _nm_stmt.excluded.is_ready,
+                            "allocatable_cpu_millicores": _nm_stmt.excluded.allocatable_cpu_millicores,
+                            "allocatable_memory_bytes": _nm_stmt.excluded.allocatable_memory_bytes,
+                            "updated_at": _nm_stmt.excluded.updated_at,
                         },
                     )
                     db.execute(_nm_stmt)
+                    db.commit()
             except Exception as _nm_err:
                 logger.warning(f"[metrics] NodeMetadata upsert failed (non-fatal): {_nm_err}")
 

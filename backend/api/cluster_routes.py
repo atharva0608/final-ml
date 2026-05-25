@@ -910,6 +910,7 @@ def get_cluster_optimization_settings(
             "rebalance_batch_percent": automation.rebalance_batch_percent if automation else None,
             "karpenter_only_mode": automation.karpenter_only_mode if automation else False,
             "min_topology_spread": automation.min_topology_spread if automation else 1,
+            "plan_all_classified_workloads": automation.plan_all_classified_workloads if automation else False,
         },
         "optimization_strategy": {
             "strategy_type": strategy.strategy_type if strategy else "BALANCED",

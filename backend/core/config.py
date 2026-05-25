@@ -115,6 +115,8 @@ class Settings(BaseSettings):
     FEATURE_HPA_CONFIG_PUSH: bool = Field(default=True, description="Enable T-13 agent HPA config push")
     FEATURE_HEARTBEAT_EXTENDED_FIELDS: bool = Field(default=True, description="Enable T-05 extended Redis fields in heartbeat")
     FEATURE_CONSOLIDATION_ANALYSIS: bool = Field(default=True, description="Enable T-18 consolidation Celery task")
+    # Safety: when true, disallow ARM64 instance families (m6g/m7g/t4g/etc.) for rebalancing decisions
+    FORBID_ARM_INSTANCE_FAMILIES: bool = Field(default=False, description="When true, rebalancer will exclude ARM64 families from candidate lists")
     FEATURE_POOL_OPTIMIZATION_ACTIVE: bool = Field(default=False, description="Enable pool rotation execution in pool_optimization_worker")
     AGENT_MIN_VERSION: str = Field(default="2.0.0", description="Minimum supported agent version — older agents log a deprecation warning")
     CLUSTER_MAX_SPOT_RATIO_PROD: float = Field(default=0.50, description="Max spot ratio for prod clusters")
@@ -256,5 +258,24 @@ def get_cors_origins() -> List[str]:
     """
     cors = settings.CORS_ORIGINS
     if isinstance(cors, str):
-        return [origin.strip() for origin in cors.split(',') if origin.strip()]
-    return cors
+        origins = [origin.strip() for origin in cors.split(',') if origin.strip()]
+    else:
+        origins = list(cors)
+
+    if settings.is_development():
+        for origin in (
+            "http://localhost",
+            "http://localhost:80",
+            "http://localhost:3000",
+            "http://localhost:5173",
+            "http://localhost:8000",
+            "http://127.0.0.1",
+            "http://127.0.0.1:80",
+            "http://127.0.0.1:3000",
+            "http://127.0.0.1:5173",
+            "http://127.0.0.1:8000",
+        ):
+            if origin not in origins:
+                origins.append(origin)
+
+    return origins

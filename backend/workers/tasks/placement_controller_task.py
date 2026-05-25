@@ -67,7 +67,7 @@ def dispatch_placement_controller_cycles(self):
     try:
         clusters = (
             db.query(Cluster)
-            .filter(Cluster.agent_installed.is_(True))
+            .filter(Cluster.agent_installed == "Y")
             .all()
         )
         dispatched = 0
@@ -101,7 +101,7 @@ def dispatch_placement_controller_recovery(self):
     try:
         clusters = (
             db.query(Cluster)
-            .filter(Cluster.agent_installed.is_(True))
+            .filter(Cluster.agent_installed == "Y")
             .all()
         )
         for cluster in clusters:

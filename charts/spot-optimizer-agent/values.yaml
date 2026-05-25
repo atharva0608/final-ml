@@ -5,7 +5,7 @@ image:
 
 config:
   apiKey: ""
-  backendUrl: "https://edwards-aruba-des-gba.trycloudflare.com"
+  backendUrl: "https://differences-cdna-roger-upper.trycloudflare.com"
   clusterId: ""
 
 resources:

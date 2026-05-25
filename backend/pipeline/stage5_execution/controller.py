@@ -330,25 +330,69 @@ class ExecutionController:
     def _wait_substitute_ready(
         self, substitute_id: str, timeout_seconds: int = 300
     ) -> Tuple[bool, str]:
-        """Poll Instance table until the substitute node reaches READY status."""
+        """
+        Fix #6: Check Redis WIE node state first (authoritative, same source as all
+        cluster health checks: spot:wie:node_state:{cluster_id}:{node_name}).
+        Fall back to DB Instance table only when Redis has no data.
+        Closes the ~30s desync between DB writes and Redis WIE cache.
+        """
         import time as _time
+        import json as _json
         from backend.models.instance import Instance
         from backend.core.database import SessionLocal
         _db = self._session or SessionLocal()
         _close = self._session is None
         deadline = _time.monotonic() + timeout_seconds
         poll_interval = 10
+        _redis = self.redis
+        _cluster_id = self.cluster_id or ""
         try:
             while _time.monotonic() < deadline:
-                inst = _db.query(Instance).filter(
-                    Instance.instance_id == substitute_id
-                ).first()
-                if inst is None:
-                    _time.sleep(poll_interval)
-                    continue
-                if inst.status in ("READY", "running"):
-                    return True, f"substitute {substitute_id} is ready"
+                # Primary: Redis WIE node state (low-latency, same as health checks)
+                if _redis and _cluster_id:
+                    try:
+                        _rkey = f"spot:wie:node_state:{_cluster_id}:{substitute_id}"
+                        _raw = _redis.get(_rkey)
+                        if _raw:
+                            _st = _json.loads(_raw)
+                            if (_st.get("phase") or _st.get("status") or "").lower() in ("ready", "running"):
+                                return True, f"substitute {substitute_id} ready (redis_wie)"
+                    except Exception as _re:
+                        logger.debug("[ExecCtrl] Redis WIE check error for %s: %s", substitute_id, _re)
+
+                # Secondary: DB Instance table (eventual consistency ~30s lag)
+                try:
+                    inst = _db.query(Instance).filter(
+                        Instance.instance_id == substitute_id
+                    ).first()
+                    if inst is None:
+                        inst = _db.query(Instance).filter(
+                            Instance.node_name == substitute_id
+                        ).first()
+                    if inst is not None and inst.status in ("READY", "running"):
+                        # DB says ready — also check Redis to confirm (fix #6)
+                        if _redis and _cluster_id:
+                            try:
+                                _rkey2 = f"spot:wie:node_state:{_cluster_id}:{inst.node_name or substitute_id}"
+                                _raw2 = _redis.get(_rkey2)
+                                if _raw2:
+                                    _st2 = _json.loads(_raw2)
+                                    if (_st2.get("phase") or _st2.get("status") or "").lower() in ("ready", "running"):
+                                        return True, f"substitute {substitute_id} ready (db+redis_wie)"
+                                else:
+                                    # Redis has no record yet; trust DB alone after half the timeout
+                                    elapsed = timeout_seconds - max(0, deadline - _time.monotonic())
+                                    if elapsed > timeout_seconds / 2:
+                                        return True, f"substitute {substitute_id} ready (db_fallback)"
+                            except Exception:
+                                pass
+                        else:
+                            return True, f"substitute {substitute_id} ready (db_no_redis)"
+                except Exception as _de:
+                    logger.warning("[ExecCtrl] DB Instance check for %s: %s", substitute_id, _de)
+
                 _time.sleep(poll_interval)
+
             return False, f"timeout after {timeout_seconds}s waiting for substitute {substitute_id}"
         except Exception as exc:
             logger.error(f"[ExecCtrl] _wait_substitute_ready error: {exc}")

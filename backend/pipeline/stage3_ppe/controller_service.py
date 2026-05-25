@@ -216,7 +216,7 @@ class PlacementController:
                     _AA.cluster_id == cluster_id,
                     _AA.status == _AAS.FAILED,
                     _AA.action_type == _AAT.EVICT_POD,
-                    _AA.updated_at > datetime.utcnow() - timedelta(seconds=PC_CB_WINDOW_SECS),
+                    _AA.created_at > datetime.utcnow() - timedelta(seconds=PC_CB_WINDOW_SECS),
                 )
                 .scalar() or 0
             )
@@ -280,6 +280,32 @@ class PlacementController:
                 return
         except Exception as _rl_exc:
             logger.debug("placement_controller_rebalance_lock_check_error cluster=%s: %s", cluster_id, _rl_exc)
+
+        # § Fix #4: Acquire rebalance:lock before evictions.
+        # ExecutionEngine and auto_rebalancer both hold this lock during node drain.
+        # If either is active, PC must wait — evicting pods from a node being drained
+        # creates a race where the pod lands on the draining node and gets killed again.
+        try:
+            from backend.core.redis_client import key_rebalance_lock as _key_pc_rl
+            _pc_rl_key = _key_pc_rl(cluster_id)
+            # Try to acquire with a 5-minute TTL (length of one PC cycle).
+            # nx=True means we only set it if it doesn't already exist.
+            _pc_lock_acquired = self.redis.set(
+                _pc_rl_key, "placement_controller", nx=True, ex=300
+            )
+            if not _pc_lock_acquired:
+                # Lock held by EE or auto_rebalancer — skip this cycle entirely.
+                _lock_owner = self.redis.get(_pc_rl_key)
+                _lock_owner_str = _lock_owner.decode() if isinstance(_lock_owner, bytes) else str(_lock_owner or "unknown")
+                logger.info(
+                    "placement_controller_rebalance_lock_held_by_ee cluster=%s owner=%s",
+                    cluster_id, _lock_owner_str,
+                )
+                self._emit_cycle_metrics(cluster_id, metrics, skipped_reason="rebalance_lock_held_by_ee")
+                return
+        except Exception as _pc_rl_exc:
+            logger.debug("placement_controller_rebalance_lock_check_error cluster=%s: %s", cluster_id, _pc_rl_exc)
+            # Fail open — if Redis is down, don't block PC indefinitely.
 
         # § 4.3 — Cluster-level scaling guard (cheapest check first)
         if self._scaling_guard_active(cluster_id):
@@ -396,6 +422,21 @@ class PlacementController:
                     )
 
             self._emit_cycle_metrics(cluster_id, metrics)
+
+            # Fix #4: Release rebalance:lock so EE is not blocked after PC finishes.
+            # Only delete if we are still the owner to avoid racing with EE re-acquisition.
+            try:
+                from backend.core.redis_client import key_rebalance_lock as _key_pc_rel
+                _pc_rel_key = _key_pc_rel(cluster_id)
+                _cur = self.redis.get(_pc_rel_key)
+                _cur_s = _cur.decode() if isinstance(_cur, bytes) else str(_cur or "")
+                if _cur_s == "placement_controller":
+                    self.redis.delete(_pc_rel_key)
+            except Exception as _rel_exc:
+                logger.debug(
+                    "placement_controller_rebalance_lock_release_error cluster=%s: %s",
+                    cluster_id, _rel_exc,
+                )
 
     # ------------------------------------------------------------------
     # Per-workload logic
@@ -1211,6 +1252,11 @@ class PlacementController:
             started_at=datetime.utcnow(),
         )
         self.db.add(rebalancing_action)
+        self.db.flush()
+        agent_action.payload = {
+            **(agent_action.payload or {}),
+            "rebalancing_action_id": str(rebalancing_action.id),
+        }
         self.db.commit()
 
         # WP-4: Optimistic state update so next cycle sees the correct count immediately

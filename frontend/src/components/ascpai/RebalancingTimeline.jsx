@@ -157,9 +157,10 @@ const RebalancingTimeline = ({ clusterId, actions: externalActions }) => {
     const now = Date.now();
     const visible = (displayActions || []).filter(a => {
         if (['in_progress', 'waiting_agent'].includes(a.status)) return true;
-        // Show completed migrations for 2 seconds after completion, then vanish
+        // Show completed migrations for 10 minutes after completion so users
+        // can verify step_5_verified and other post-completion states
         if (a.status === 'completed' && a.completed_at) {
-            return (now - new Date(a.completed_at).getTime()) < 2000;
+            return (now - new Date(a.completed_at).getTime()) < 600000;
         }
         // Show failed migrations from the last 24 hours
         if (a.status === 'failed' && a.completed_at) {

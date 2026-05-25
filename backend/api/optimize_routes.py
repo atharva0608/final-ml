@@ -22,7 +22,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import func
+from sqlalchemy import cast, func
+from sqlalchemy import String as SAString
 from sqlalchemy.orm import Session
 
 from backend.core.config import settings
@@ -569,241 +570,23 @@ async def get_node_bin_packing(
     assert_cluster_access(cluster_id, db)
 
     from backend.core.redis_client import get_redis_client as _rl_rc
+    from backend.services.bin_packing_service import BinPackingService
+    
     _rl_redis = _safe_fetch(_rl_rc, None, "rate_limit_redis_bin_packing")
     check_rate_limit(_rl_redis, f"spot:ratelimit:bin_packing:{cluster_id}", 10, 60)
 
-    from backend.models.pod_metric import PodMetric
-    from backend.models.node_metadata import NodeMetadata
-    from sqlalchemy import func, text
-
-    # P-01: freshness anchor — MAX(node_metadata.updated_at) for this cluster
-    max_updated_at = (
-        db.query(func.max(NodeMetadata.updated_at))
-        .filter(NodeMetadata.cluster_id == cluster_id)
-        .scalar()
-    )
-
-    if max_updated_at is None:
+    # Permanent Fix: Use BinPackingService which handles cache + on-demand fallback
+    service = BinPackingService(db, _rl_redis)
+    data = service.get_bin_packing_data(cluster_id)
+    
+    if not data.get("nodes"):
         return not_ready(
             "node_allocatable_data_pending",
             partial_data={"cluster_id": cluster_id, "nodes": [], "stale_nodes_excluded": 0, "consolidation_candidates": None},
         )
+        
+    return ok(data)
 
-    # Only consider pods seen in the last 30 minutes to exclude terminated pods.
-    # Terminated pods stop sending metrics; without a cutoff their last known
-    # CPU would still be summed against current node allocatable, giving a
-    # false over-estimate of usage (or, if usage was 0, a false under-estimate).
-    from datetime import timedelta as _td
-    _pod_cutoff = datetime.utcnow() - _td(minutes=30)
-
-    # Track actual freshness: when was the last pod metric received?
-    _last_pod_metric_at = (
-        db.query(func.max(PodMetric.timestamp))
-        .filter(PodMetric.cluster_id == cluster_id)
-        .scalar()
-    )
-
-    latest_subq = (
-        db.query(
-            PodMetric.pod_name,
-            PodMetric.node_name,
-            PodMetric.cpu_request_millicores,
-            PodMetric.memory_request_bytes,
-            PodMetric.cpu_usage_millicores,
-            PodMetric.memory_usage_bytes,
-        )
-        .filter(
-            PodMetric.cluster_id == cluster_id,
-            PodMetric.timestamp >= _pod_cutoff,   # exclude terminated/stale pods
-        )
-        .distinct(PodMetric.pod_name)
-        .order_by(PodMetric.pod_name, PodMetric.timestamp.desc())
-        .subquery()
-    )
-
-    rows = (
-        db.query(
-            latest_subq.c.node_name,
-            func.sum(latest_subq.c.cpu_request_millicores).label("total_cpu_request"),
-            func.sum(latest_subq.c.memory_request_bytes).label("total_mem_request"),
-            func.sum(latest_subq.c.cpu_usage_millicores).label("total_cpu_usage"),
-            func.sum(latest_subq.c.memory_usage_bytes).label("total_mem_usage"),
-            func.count(func.distinct(latest_subq.c.pod_name)).label("pod_count"),
-            NodeMetadata.allocatable_cpu_millicores,
-            NodeMetadata.allocatable_memory_bytes,
-            NodeMetadata.az,
-            NodeMetadata.capacity_type,
-            NodeMetadata.instance_type,
-            NodeMetadata.is_ready,
-            NodeMetadata.do_not_disrupt,
-            NodeMetadata.updated_at.label("node_updated_at"),
-        )
-        .join(
-            NodeMetadata,
-            (NodeMetadata.cluster_id == cluster_id)
-            & (NodeMetadata.node_name == latest_subq.c.node_name),
-            isouter=True,
-        )
-        .group_by(
-            latest_subq.c.node_name,
-            NodeMetadata.allocatable_cpu_millicores,
-            NodeMetadata.allocatable_memory_bytes,
-            NodeMetadata.az,
-            NodeMetadata.capacity_type,
-            NodeMetadata.instance_type,
-            NodeMetadata.is_ready,
-            NodeMetadata.do_not_disrupt,
-            NodeMetadata.updated_at,
-        )
-        .all()
-    )
-
-    from backend.pipeline.stage3_ppe.engine import NodeOverheadProfiler
-    nodes_with_ts = []
-    for r in rows:
-        alloc_cpu = float(r.allocatable_cpu_millicores or 1)
-        alloc_mem = float(r.allocatable_memory_bytes or 1)
-
-        cpu_requested_pct = min(100.0, round(float(r.total_cpu_request or 0) / alloc_cpu * 100, 1))
-        cpu_actual_pct = min(100.0, round(float(r.total_cpu_usage or 0) / alloc_cpu * 100, 1))
-        cpu_buffer_pct = round(100.0 - cpu_actual_pct, 1)
-        mem_requested_pct = min(100.0, round(float(r.total_mem_request or 0) / alloc_mem * 100, 1))
-        mem_actual_pct = min(100.0, round(float(r.total_mem_usage or 0) / alloc_mem * 100, 1))
-        mem_buffer_pct = round(100.0 - mem_actual_pct, 1)
-
-        is_overloaded = cpu_actual_pct > _OVERLOAD_THRESHOLD or mem_actual_pct > _OVERLOAD_THRESHOLD
-
-        overhead = NodeOverheadProfiler.profile(
-            allocatable_cpu_mc=alloc_cpu,
-            allocatable_mem_bytes=alloc_mem,
-        )
-        nodes_with_ts.append({
-            "node_name": r.node_name,
-            "az": r.az,
-            "capacity_type": r.capacity_type,
-            "instance_type": r.instance_type,
-            "pod_count": r.pod_count,
-            "cpu_requested_pct": cpu_requested_pct,
-            "cpu_actual_pct": cpu_actual_pct,
-            "cpu_buffer_pct": cpu_buffer_pct,
-            "mem_requested_pct": mem_requested_pct,
-            "mem_actual_pct": mem_actual_pct,
-            "mem_buffer_pct": mem_buffer_pct,
-            "is_overloaded": is_overloaded,
-            "is_ready": r.is_ready,
-            "do_not_disrupt": r.do_not_disrupt,
-            "node_updated_at": r.node_updated_at,
-            "allocatable_cpu_millicores": r.allocatable_cpu_millicores,
-            "allocatable_memory_bytes": r.allocatable_memory_bytes,
-            "effective_cpu_mc": overhead["effective_cpu_mc"],
-            "effective_mem_bytes": overhead["effective_mem_bytes"],
-            "overhead_detail": overhead["overhead_detail"],
-        })
-
-    # P-10: batch query for DRAIN_NODE actions in flight
-    draining_nodes: set = set()
-    try:
-        drain_rows = (
-            db.query(AgentAction.payload["node_name"].astext)
-            .filter(
-                AgentAction.cluster_id == cluster_id,
-                AgentAction.action_type == AgentActionType.DRAIN_NODE,
-                AgentAction.status.in_([AgentActionStatus.PENDING, AgentActionStatus.PICKED_UP]),
-            )
-            .all()
-        )
-        draining_nodes = {r[0] for r in drain_rows if r[0]}
-    except Exception:
-        pass
-
-    # P-01: filter stale nodes before computing response
-    fresh_nodes, stale_count = stale_node_filter(nodes_with_ts, "node_updated_at")
-
-    # Pricing look-up — one query per cluster (keyed by instance_type + capacity_type)
-    from backend.models.pricing import OnDemandPricing, SpotPriceHistory
-    from backend.models.cluster import Cluster as _ClusterModel
-    _cluster_obj = db.query(_ClusterModel).filter(_ClusterModel.id == cluster_id).first()
-    _cluster_region = (_cluster_obj.region if _cluster_obj else None) or "us-east-1"
-
-    _instance_types = {n["instance_type"] for n in fresh_nodes if n.get("instance_type")}
-
-    _od_prices: dict = {}
-    _spot_prices: dict = {}
-    if _instance_types:
-        from sqlalchemy import desc as _desc
-        _od_rows = (
-            db.query(OnDemandPricing.instance_type, OnDemandPricing.price)
-            .filter(
-                OnDemandPricing.instance_type.in_(_instance_types),
-                OnDemandPricing.region == _cluster_region,
-            )
-            .all()
-        )
-        _od_prices = {r.instance_type: float(r.price) for r in _od_rows}
-
-        _spot_rows = (
-            db.query(SpotPriceHistory.instance_type, SpotPriceHistory.price)
-            .filter(
-                SpotPriceHistory.instance_type.in_(_instance_types),
-                SpotPriceHistory.region == _cluster_region,
-            )
-            .order_by(SpotPriceHistory.instance_type, _desc(SpotPriceHistory.timestamp))
-            .distinct(SpotPriceHistory.instance_type)
-            .all()
-        )
-        _spot_prices = {r.instance_type: float(r.price) for r in _spot_rows}
-
-    _GiB = 1024 ** 3
-    _exclude = {"node_updated_at", "is_ready", "do_not_disrupt"}
-    nodes_out = []
-    for n in fresh_nodes:
-        _itype = n.get("instance_type")
-        _cap = (n.get("capacity_type") or "").lower()
-        if _cap == "spot":
-            _price = _spot_prices.get(_itype) or _od_prices.get(_itype)
-        else:
-            _price = _od_prices.get(_itype)
-        _alloc_cpu_m = n.pop("allocatable_cpu_millicores", None) or None
-        _alloc_mem_b = n.pop("allocatable_memory_bytes", None) or None
-        nodes_out.append({
-            **{k: v for k, v in n.items() if k not in _exclude},
-            "lifecycle_state": compute_node_lifecycle(
-                is_ready=n.get("is_ready", True),
-                do_not_disrupt=n.get("do_not_disrupt", False),
-                has_pending_drain=n["node_name"] in draining_nodes,
-            ).value,
-            "vcpu_count": round((_alloc_cpu_m or 0) / 1000) if _alloc_cpu_m else None,
-            "memory_gib": round((_alloc_mem_b or 0) / _GiB, 1) if _alloc_mem_b else None,
-            "hourly_price_usd": round(_price, 4) if _price else None,
-        })
-
-    from backend.core.redis_client import get_redis_client as _get_rc
-    redis_client = _safe_fetch(_get_rc, None, "redis_client_bin_packing")
-    consolidation_key = f"spot:consolidation:candidates:{cluster_id}"
-    consolidation_candidates = safe_get_json(redis_client, consolidation_key) if redis_client else None
-
-    freshness = compute_freshness(max_updated_at)
-    pod_freshness = compute_freshness(_last_pod_metric_at)
-    data_ready = (consolidation_candidates is not None) and not freshness["is_stale"]
-    reason = "" if data_ready else ("stale_data" if freshness["is_stale"] else "pricing_data_pending")
-
-    _pod_age_seconds = None
-    if _last_pod_metric_at:
-        _pod_age_seconds = round((datetime.utcnow() - _last_pod_metric_at).total_seconds())
-
-    return ok(
-        {
-            "cluster_id": cluster_id,
-            "nodes": nodes_out,
-            "stale_nodes_excluded": stale_count,
-            "consolidation_candidates": consolidation_candidates,
-            "last_pod_metric_at": _last_pod_metric_at.isoformat() if _last_pod_metric_at else None,
-            "pod_data_age_seconds": _pod_age_seconds,   # seconds since last agent push
-            **freshness,
-        },
-        data_ready=data_ready,
-        data_ready_reason=reason,
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -978,6 +761,7 @@ async def get_workloads_scaling(
     from backend.models.pod_metric import PodMetric
     from sqlalchemy import func
     from datetime import datetime as _dt, timedelta as _td
+    import math
 
     now = _dt.utcnow()
     cutoff_30m = now - _td(minutes=30)
@@ -1176,6 +960,7 @@ async def get_node_bin_packing_detail(
             PodMetric.cluster_id == cluster_id,
             PodMetric.node_name == node_name,
             PodMetric.timestamp > cutoff,
+            (PodMetric.phase == "Running") | (PodMetric.phase.is_(None)),
         )
         .distinct(PodMetric.pod_name)
         .order_by(PodMetric.pod_name, PodMetric.timestamp.desc())
@@ -1239,10 +1024,171 @@ async def get_cluster_execution_plan(
     from backend.core.redis_client import get_redis_client as _rl_rc
     from datetime import datetime as _dt, timedelta as _td
 
+    _PLAN_CACHE_TTL = 25  # seconds — slightly under the 30s frontend poll interval
+    _plan_cache_key = f"spot:cep:{cluster_id}"
+    _plan_redis = None
+    try:
+        _plan_redis = _rl_rc()
+        _cached = _plan_redis.get(_plan_cache_key)
+        if _cached:
+            return ok(json.loads(_cached))
+    except Exception:
+        _plan_redis = None
+
     _cutoff = _dt.utcnow() - _td(minutes=30)
 
-    # ── Node metadata shared across all workloads ─────────────────────────────
-    _node_rows = db.query(NodeMetadata).filter(NodeMetadata.cluster_id == cluster_id).all()
+    draining_nodes: set = set()
+    try:
+        from backend.models.agent_action import AgentAction, AgentActionType, AgentActionStatus
+        drain_rows = (
+            db.query(AgentAction.payload["node_name"].astext)
+            .filter(
+                AgentAction.cluster_id == cluster_id,
+                AgentAction.action_type == AgentActionType.DRAIN_NODE,
+                AgentAction.status.in_([AgentActionStatus.PENDING, AgentActionStatus.PICKED_UP]),
+            )
+            .all()
+        )
+        draining_nodes = {r[0] for r in drain_rows if r[0]}
+    except Exception:
+        pass
+
+    active_rebalancing_nodes: set = set()
+    try:
+        from backend.models.rebalancing_action import RebalancingAction
+        from backend.models.instance import Instance
+        rebalance_rows = (
+            db.query(Instance.node_name)
+            .join(
+                RebalancingAction,
+                (RebalancingAction.cluster_id == Instance.cluster_id)
+                & (RebalancingAction.source_instance_id == Instance.instance_id),
+            )
+            .filter(
+                RebalancingAction.cluster_id == cluster_id,
+                RebalancingAction.status.in_(["pending", "in_progress", "waiting_agent", "pending_approval"]),
+                Instance.node_name.isnot(None),
+            )
+            .all()
+        )
+        active_rebalancing_nodes = {r.node_name for r in rebalance_rows if r.node_name}
+    except Exception:
+        pass
+
+    # Exclude instances whose EC2/cloud state is terminated/terminating.
+    # NodeMetadata rows persist long after the instance is gone, so without this
+    # the plan oscillates every cycle as terminated nodes cycle in/out of
+    # draining_nodes (only excluded while DRAIN_NODE is PICKED_UP, re-included
+    # after the action completes).
+    _terminated_instance_nodes: set = set()
+    try:
+        from backend.models.instance import Instance as _InstPlan
+        _term_rows = (
+            db.query(_InstPlan.node_name)
+            .filter(
+                _InstPlan.cluster_id == cluster_id,
+                _InstPlan.state.in_(["terminated", "terminating", "stopped"]),
+                _InstPlan.node_name.isnot(None),
+            )
+            .all()
+        )
+        _terminated_instance_nodes = {r[0] for r in _term_rows if r[0]}
+    except Exception:
+        pass
+
+    # Belt-and-suspenders: also exclude nodes whose consolidation TERMINATE_NODE
+    # action completed in the last 4 h (handles the race where the instance row
+    # hasn't been refreshed yet by the metrics agent).
+    _recently_terminated_nodes: set = set()
+    try:
+        from backend.models.agent_action import AgentAction as _AATerm, AgentActionType as _AATType
+        _term_cutoff = _dt.utcnow() - _td(hours=4)
+        _rterm_rows = (
+            db.query(_AATerm.payload["node_name"].astext)
+            .filter(
+                _AATerm.cluster_id == cluster_id,
+                _AATerm.action_type == _AATType.TERMINATE_NODE,
+                _AATerm.payload["consolidation_drain"].astext == "true",
+                _AATerm.status == "COMPLETED",
+                _AATerm.created_at > _term_cutoff,
+            )
+            .all()
+        )
+        _recently_terminated_nodes = {r[0] for r in _rterm_rows if r[0]}
+    except Exception:
+        pass
+
+    _nodes_to_ignore = (
+        draining_nodes
+        | active_rebalancing_nodes
+        | _terminated_instance_nodes
+        | _recently_terminated_nodes
+    )
+
+    from backend.models.instance import Instance
+    from sqlalchemy import func
+    
+    _node_rows_raw = (
+        db.query(
+            NodeMetadata.node_name,
+            NodeMetadata.updated_at,
+            NodeMetadata.allocatable_cpu_millicores,
+            NodeMetadata.allocatable_memory_bytes,
+            func.coalesce(NodeMetadata.capacity_type, cast(Instance.lifecycle, SAString)).label("capacity_type"),
+            func.coalesce(NodeMetadata.az, Instance.az).label("az"),
+            func.coalesce(NodeMetadata.instance_type, Instance.instance_type).label("instance_type"),
+        )
+        .outerjoin(
+            Instance,
+            (Instance.cluster_id == NodeMetadata.cluster_id)
+            & (Instance.node_name == NodeMetadata.node_name)
+        )
+        .filter(NodeMetadata.cluster_id == cluster_id)
+        .all()
+    )
+    
+    # Also fetch active instances that might have lost their NodeMetadata completely,
+    # but still exist in the cluster and might have pods on them.
+    _active_instances = (
+        db.query(Instance)
+        .filter(Instance.cluster_id == cluster_id, Instance.state == "running")
+        .all()
+    )
+    _instance_map = {i.node_name: i for i in _active_instances if i.node_name}
+    
+    _node_rows = []
+    _seen_nodes = set()
+    _now = _dt.utcnow()
+    from backend.utils.data_freshness import STALE_THRESHOLD_SECONDS
+    for n in _node_rows_raw:
+        if n.node_name:
+            _seen_nodes.add(n.node_name)
+        if n.updated_at is None or (_now - n.updated_at).total_seconds() > STALE_THRESHOLD_SECONDS:
+            _nodes_to_ignore.add(n.node_name)
+            # Even if ignored for new placements, we MUST keep its metadata in _node_meta_map 
+            # so the UI can render its details if it has straggler pods.
+            _node_rows.append(n)
+        else:
+            _node_rows.append(n)
+            
+    # Add any running instances missing from NodeMetadata entirely
+    class _MockNode:
+        def __init__(self, node_name, capacity_type, az, instance_type):
+            self.node_name = node_name
+            self.capacity_type = capacity_type
+            self.az = az
+            self.instance_type = instance_type
+            self.allocatable_cpu_millicores = None
+            self.allocatable_memory_bytes = None
+            
+    for node_name, inst in _instance_map.items():
+        if node_name not in _seen_nodes:
+            _node_rows.append(_MockNode(
+                node_name=node_name,
+                capacity_type=inst.lifecycle,
+                az=inst.az,
+                instance_type=inst.instance_type,
+            ))
     _latest_nm = (
         db.query(NodeMetric.node_name, NodeMetric.cpu_usage_millicores, NodeMetric.memory_usage_bytes)
         .filter(NodeMetric.cluster_id == cluster_id)
@@ -1251,27 +1197,6 @@ async def get_cluster_execution_plan(
         .all()
     )
     _node_usage = {r.node_name: (r.cpu_usage_millicores or 0, r.memory_usage_bytes or 0) for r in _latest_nm}
-    _node_meta_map = {}  # node_name → {instance_type, capacity_type, az}
-    nodes_input = []
-    for n in _node_rows:
-        uc, um = _node_usage.get(n.node_name, (0, 0))
-        _node_meta_map[n.node_name] = {
-            "instance_type": n.instance_type,
-            "capacity_type": n.capacity_type,
-            "az": n.az,
-        }
-        nodes_input.append({
-            "node_name": n.node_name,
-            "az": n.az,
-            "capacity_type": n.capacity_type,
-            "instance_type": n.instance_type,
-            "allocatable_cpu_millicores": n.allocatable_cpu_millicores,
-            "allocatable_memory_bytes": n.allocatable_memory_bytes,
-            "used_cpu_millicores": uc,
-            "used_memory_bytes": um,
-            "pod_count": 0,
-        })
-
     # ── Per-node all-pod count (for UI display — excludes nothing) ─────────
     _SYSTEM_NS = frozenset(["kube-system", "kube-public", "kube-node-lease"])
     _pod_count_rows = (
@@ -1282,6 +1207,7 @@ async def get_cluster_execution_plan(
             PodMetric.timestamp > _cutoff,
         )
         .distinct(PodMetric.pod_name)
+        .order_by(PodMetric.pod_name, PodMetric.timestamp.desc())
         .all()
     )
     _node_total_pods: dict = {}      # node_name → total pod count
@@ -1292,14 +1218,112 @@ async def get_cluster_execution_plan(
         if (_pr.controller_kind == "DaemonSet") or ((_pr.namespace or "") in _SYSTEM_NS):
             _node_system_pods[nn] = _node_system_pods.get(nn, 0) + 1
 
+    _node_meta_map = {}  # node_name → {instance_type, capacity_type, az}
+    nodes_input = []
+    for n in _node_rows:
+        uc, um = _node_usage.get(n.node_name, (0, 0))
+        _node_meta_map[n.node_name] = {
+            "instance_type": n.instance_type,
+            "capacity_type": n.capacity_type,
+            "az": n.az,
+        }
+        
+        if n.node_name in _nodes_to_ignore:
+            continue
+            
+        nodes_input.append({
+            "node_name": n.node_name,
+            "az": n.az,
+            "capacity_type": n.capacity_type,
+            "instance_type": n.instance_type,
+            "allocatable_cpu_millicores": n.allocatable_cpu_millicores,
+            "allocatable_memory_bytes": n.allocatable_memory_bytes,
+            "used_cpu_millicores": uc,
+            "used_memory_bytes": um,
+            # Provide real pod_count so AnchorPlanner scoring works correctly.
+            "pod_count": _node_total_pods.get(n.node_name, 0),
+        })
+
+    # Freshness check: use the NEWEST NodeMetadata updated_at (minimum age) to
+    # determine whether the agent is actively reporting.  Previously this used
+    # max() which returned the age of the oldest/stalest record — one replaced
+    # node left in the table caused StateGuard to abort every plan with a false
+    # "stale state" warning even though the agent was running fine for all other nodes.
+    import time as _time_s1
+    _nodes_fetched_at = _time_s1.time()
+    _node_ages = [
+        (_now - _nr.updated_at).total_seconds()
+        for _nr in _node_rows if _nr.updated_at
+    ]
+    # Freshest record = smallest age.  If even the freshest is > threshold the
+    # agent is genuinely not reporting; otherwise data is current enough to plan.
+    _node_max_age: float = min(_node_ages) if _node_ages else 0.0
+
+
+
+    # ── Cluster planning settings ───────────────────────────────────────────
+    _cluster_opt = (
+        db.query(_ClusterOptSettings)
+        .filter(_ClusterOptSettings.cluster_id == cluster_id)
+        .first()
+    )
+    _plan_all_classified = bool(getattr(_cluster_opt, 'plan_all_classified_workloads', False))
+
     # ── Workload list ─────────────────────────────────────────────────────────
     wc_rows = (
         db.query(WorkloadClassificationRecord)
         .filter(WorkloadClassificationRecord.cluster_id == cluster_id)
         .order_by(WorkloadClassificationRecord.max_spot_replicas.desc().nullslast())
-        .limit(25)
+        .limit(500)
         .all()
     )
+
+    # ── Batch prefetch: pod metrics + policies for ALL workloads (2 queries) ───
+    # Without this, the PPE loop issues 2 queries × N workloads (N×2 round-trips).
+    # We fetch all rows in one shot and group in Python.
+    _wc_ctrl_names: set = {
+        (wc.workload_id.split("/")[-1] if "/" in wc.workload_id else wc.workload_id)
+        for wc in wc_rows
+    }
+    _batch_pod_rows = (
+        db.query(
+            PodMetric.pod_name,
+            PodMetric.namespace,
+            PodMetric.node_name,
+            PodMetric.controller_name,
+            PodMetric.controller_kind,
+            PodMetric.cpu_request_millicores,
+            PodMetric.memory_request_bytes,
+            PodMetric.cpu_usage_millicores,
+            PodMetric.memory_usage_bytes,
+        )
+        .filter(
+            PodMetric.cluster_id == cluster_id,
+            PodMetric.controller_name.in_(list(_wc_ctrl_names)),
+            PodMetric.controller_kind != "DaemonSet",
+            ~PodMetric.namespace.in_(list(_SYSTEM_NS)),
+            (PodMetric.phase == "Running") | (PodMetric.phase.is_(None)),
+            PodMetric.timestamp > _cutoff,
+        )
+        .distinct(PodMetric.pod_name)
+        .order_by(PodMetric.pod_name, PodMetric.timestamp.desc())
+        .all()
+    ) if _wc_ctrl_names else []
+    _pods_by_ctrl: dict = {}
+    for _bpr in _batch_pod_rows:
+        _ctrl_key = (_bpr.controller_name or "").split("/")[-1]
+        _pods_by_ctrl.setdefault(_ctrl_key, []).append(_bpr)
+
+    _wc_wids = [wc.workload_id for wc in wc_rows]
+    _pp_map: dict = {
+        _pp.workload_id: _pp
+        for _pp in db.query(PlacementPolicyRecord)
+        .filter(
+            PlacementPolicyRecord.cluster_id == cluster_id,
+            PlacementPolicyRecord.workload_id.in_(_wc_wids),
+        )
+        .all()
+    } if _wc_wids else {}
 
     # ── Per-node transition accumulator ──────────────────────────────────────
     # node_name → {"type": KEEP|TERMINATE|REPLACE, "replacement_spec": {...}|None,
@@ -1317,29 +1341,7 @@ async def get_cluster_execution_plan(
         workload_id = wc.workload_id
         controller_name = workload_id.split("/")[-1] if "/" in workload_id else workload_id
         try:
-            pod_rows_w = (
-                db.query(
-                    PodMetric.pod_name,
-                    PodMetric.namespace,
-                    PodMetric.node_name,
-                    PodMetric.controller_kind,
-                    PodMetric.cpu_request_millicores,
-                    PodMetric.memory_request_bytes,
-                    PodMetric.cpu_usage_millicores,
-                    PodMetric.memory_usage_bytes,
-                )
-                .filter(
-                    PodMetric.cluster_id == cluster_id,
-                    PodMetric.controller_name == controller_name,
-                    PodMetric.controller_kind != "DaemonSet",
-                    ~PodMetric.namespace.in_(list(_SYSTEM_NS)),
-                    (PodMetric.phase == "Running") | (PodMetric.phase.is_(None)),
-                    PodMetric.timestamp > _cutoff,
-                )
-                .distinct(PodMetric.pod_name)
-                .order_by(PodMetric.pod_name, PodMetric.timestamp.desc())
-                .all()
-            )
+            pod_rows_w = _pods_by_ctrl.get(controller_name, [])
             if not pod_rows_w:
                 continue
 
@@ -1365,23 +1367,20 @@ async def get_cluster_execution_plan(
                 "spot_friendly": wc.spot_friendly,
                 "spot_score": wc.spot_score,
                 "role": wc.role,
+                "confidence_state": "CONFIRMED" if _plan_all_classified else wc.confidence_state,
+                "confidence_override": bool(_plan_all_classified),
                 "min_on_demand_replicas": wc.min_on_demand_replicas,
                 "max_spot_replicas": wc.max_spot_replicas,
                 "workload_class": getattr(wc, "workload_class", "stateless") or "stateless",
                 "disruption_safe": True,
             }
 
-            pp = (
-                db.query(PlacementPolicyRecord)
-                .filter(
-                    PlacementPolicyRecord.cluster_id == cluster_id,
-                    PlacementPolicyRecord.workload_id == workload_id,
-                )
-                .first()
-            )
+            pp = _pp_map.get(workload_id)
             total_pods = len(pods_w)
 
             # ── Target Builder gate: skip workloads already at desired distribution ──
+            # When plan_all_classified_workloads is True, this gate is bypassed so that
+            # ALL classified workloads get explicit pod routing (no silent k8s-drain reliance).
             _targets = _build_targets(
                 classifications=[{
                     "namespace": wc.namespace,
@@ -1395,7 +1394,7 @@ async def get_cluster_execution_plan(
                 live_pods=pods_w,
                 live_nodes=nodes_input,
             )
-            if _targets and not _targets[0].action_required:
+            if _targets and not _targets[0].action_required and not _plan_all_classified:
                 continue
 
             if pp and pp.ondemand_target is not None and pp.spot_target is not None:
@@ -1415,6 +1414,8 @@ async def get_cluster_execution_plan(
                 targets={"ondemand_target": _od_t, "spot_target": _sp_t, "observed_replicas": total_pods},
                 cooldown_pods=set(),
                 cluster_id=cluster_id,
+                # Fix 1: pass node data age so StateGuard aborts on stale data
+                data_age_seconds=_node_max_age,
             )
             _pd = _plan_w.to_dict()
             if _pd.get("spot_migration_decision"):
@@ -1464,7 +1465,11 @@ async def get_cluster_execution_plan(
                 if not nname or action == "provision":
                     continue
                 if action == "drain":
-                    if node_transitions.get(nname, {}).get("type") not in ("TERMINATE", "REPLACE"):
+                    # KEEP nodes are anchor nodes — they must never become drain targets.
+                    # If PPE wants to drain a node already locked as KEEP by a previous
+                    # workload, skip the drain: the out-of-place pod will be picked up by
+                    # Step 5 and routed to the correct capacity-type keep node.
+                    if node_transitions.get(nname, {}).get("type") not in ("TERMINATE", "REPLACE", "KEEP"):
                         node_transitions[nname] = {"type": "TERMINATE", "replacement_spec": None, "pods_leaving": []}
                     # Track workload_class + execution_strategy for this drain node
                     _wclass = _wie_w.get("workload_class", "stateless")
@@ -1489,8 +1494,9 @@ async def get_cluster_execution_plan(
                             "instance_type": np_entry.get("instance_type"),
                             "pod_count": np_entry.get("pod_count", 0),
                             "retention_reason": (
-                                "drain_reuse" if _ppr == "drain_reuse"
-                                else "od_anchor" if _is_od
+                                "drain_reuse"     if _ppr == "drain_reuse"
+                                else "already_optimal" if _ppr == "already_optimal"
+                                else "od_anchor"  if _is_od
                                 else "fits_pods"
                             ),
                         }
@@ -1569,51 +1575,106 @@ async def get_cluster_execution_plan(
             _az = _ni.get('az') or 'unknown'
             _az_to_nodes.setdefault(_az, []).append(_ni)
 
-        # Collect AZs already represented by existing keep entries
-        _az_already_kept: dict = {}  # az → node_name
-        for _nname, _trans in node_transitions.items():
-            if _trans['type'] == 'KEEP':
-                for _ni in nodes_input:
-                    if _ni['node_name'] == _nname:
-                        _az_already_kept[_ni.get('az') or 'unknown'] = _nname
-                        break
+        # Strategy: min_topology_spread is a FLOOR — keep at least that many OD
+        # nodes in distinct AZs.  If those nodes can absorb all cluster pods,
+        # mark the rest as TERMINATE.  If not, keep adding nodes until capacity
+        # is met (or suggest spot for overflow).
 
-        # Fill remaining AZs up to min_topology_spread, picking the most-loaded node
-        _sorted_azs = sorted(
-            _az_to_nodes.keys(),
-            key=lambda a: sum(_node_total_pods.get(n['node_name'], 0) for n in _az_to_nodes[a]),
+        # Compute total user pods across all nodes
+        _total_user_pods_cluster = sum(
+            _node_total_pods.get(ni['node_name'], 0) - _node_system_pods.get(ni['node_name'], 0)
+            for ni in nodes_input
+        )
+
+        # Compute allocatable CPU per node (from raw node rows)
+        _node_alloc_cpu: dict = {}
+        for _nr in _node_rows:
+            _node_alloc_cpu[_nr.node_name] = int((_nr.allocatable_cpu_millicores or 4000) * 0.85)
+
+        # Total CPU demand (sum of all DISTINCT user pod requests across cluster)
+        _total_cpu_demand = 0
+        try:
+            from sqlalchemy import literal_column
+            _distinct_pods_sub = (
+                db.query(
+                    PodMetric.pod_name,
+                    PodMetric.cpu_request_millicores,
+                )
+                .filter(
+                    PodMetric.cluster_id == cluster_id,
+                    PodMetric.controller_kind != "DaemonSet",
+                    ~PodMetric.namespace.in_(list(_SYSTEM_NS)),
+                    (PodMetric.phase == "Running") | (PodMetric.phase.is_(None)),
+                    PodMetric.timestamp > _cutoff,
+                )
+                .distinct(PodMetric.pod_name)
+                .order_by(PodMetric.pod_name, PodMetric.timestamp.desc())
+                .subquery()
+            )
+            _cpu_demand_rows = (
+                db.query(func.sum(_distinct_pods_sub.c.cpu_request_millicores))
+                .scalar()
+            )
+            _total_cpu_demand = int(_cpu_demand_rows or 0)
+        except Exception:
+            _total_cpu_demand = _total_user_pods_cluster * 100  # fallback ~100m per pod
+
+        # Rank all nodes by allocatable CPU descending (biggest first = best anchors)
+        _all_nodes_ranked = sorted(
+            nodes_input,
+            key=lambda n: _node_alloc_cpu.get(n['node_name'], 0),
             reverse=True,
         )
-        for _az in _sorted_azs:
-            if len(_az_already_kept) >= _min_az_spread:
-                break
-            if _az in _az_already_kept:
-                continue
-            # Pick most-loaded node in this AZ as the anchor
-            _az_nodes_sorted = sorted(
-                _az_to_nodes[_az],
-                key=lambda n: _node_total_pods.get(n['node_name'], 0),
-                reverse=True,
-            )
-            _chosen = _az_nodes_sorted[0]['node_name']
-            _az_already_kept[_az] = _chosen
 
-        _spread_keep_names = set(_az_already_kept.values())
+        # Phase 1: Greedily pick nodes from distinct AZs until min_topology_spread
+        _chosen_azs: set = set()
+        _spread_keep_names: set = set()
+        _spread_keep_cpu: int = 0
+        for _ni in _all_nodes_ranked:
+            _az = _ni.get('az') or 'unknown'
+            if _az in _chosen_azs:
+                continue  # already have a node from this AZ
+            _spread_keep_names.add(_ni['node_name'])
+            _chosen_azs.add(_az)
+            _spread_keep_cpu += _node_alloc_cpu.get(_ni['node_name'], 0)
+            if len(_chosen_azs) >= _min_az_spread:
+                break
+
+        # Phase 2: If selected nodes can't absorb all CPU demand, add more nodes.
+        # ONLY add nodes from AZs NOT already covered by Phase 1 (_chosen_azs).
+        # Same-AZ redundant nodes are NEVER added here — the Phase-1 node for
+        # that AZ already provides sufficient capacity; adding a twin would
+        # permanently block consolidation for the entire cluster.
+        _remaining = [n for n in _all_nodes_ranked if n['node_name'] not in _spread_keep_names]
+        for _ni in _remaining:
+            if _spread_keep_cpu >= _total_cpu_demand:
+                break  # enough capacity already
+            _this_az_p2 = _ni.get('az') or 'unknown'
+            if _this_az_p2 in _chosen_azs:
+                continue  # skip same-AZ duplicate — consolidation candidate
+            _spread_keep_names.add(_ni['node_name'])
+            _chosen_azs.add(_this_az_p2)
+            _spread_keep_cpu += _node_alloc_cpu.get(_ni['node_name'], 0)
+
+        # Clear ALL existing pods_leaving from node_transitions.  The PPE
+        # workload loop may have routed pods to nodes that AZ-spread will now
+        # TERMINATE; keeping those stale entries would corrupt the routing table.
+        # The AZ-spread round-robin + Step 5 rebuild correct routing below.
+        for _trans in node_transitions.values():
+            _trans['pods_leaving'] = []
 
         # Force-keep the selected nodes
         for _nname in _spread_keep_names:
-            if _nname not in node_transitions:
-                _nmeta = next((n for n in nodes_input if n['node_name'] == _nname), {})
-                _cap = _nmeta.get('capacity_type', '') or ''
-                _is_od = _cap.lower() in ('on-demand', 'on_demand', 'ondemand')
-                node_transitions[_nname] = {'type': 'KEEP', 'replacement_spec': None, 'pods_leaving': []}
-                node_keep_meta[_nname] = {
-                    'capacity_type': _cap,
-                    'az': _nmeta.get('az'),
-                    'instance_type': _nmeta.get('instance_type'),
-                    'pod_count': _node_total_pods.get(_nname, 0),
-                    'retention_reason': 'az_spread',
-                }
+            _nmeta = next((n for n in nodes_input if n['node_name'] == _nname), {})
+            _cap = _nmeta.get('capacity_type', '') or ''
+            node_transitions[_nname] = {'type': 'KEEP', 'replacement_spec': None, 'pods_leaving': []}
+            node_keep_meta[_nname] = {
+                'capacity_type': _cap,
+                'az': _nmeta.get('az'),
+                'instance_type': _nmeta.get('instance_type'),
+                'pod_count': _node_total_pods.get(_nname, 0),
+                'retention_reason': 'az_spread',
+            }
 
         # Nodes NOT in the kept set → TERMINATE (consolidation candidates)
         # Build round-robin bin-pack: assign their user pods to kept nodes
@@ -1633,9 +1694,38 @@ async def get_cluster_execution_plan(
             _user_p  = _total_p - _sys_p
             if _user_p <= 0:
                 continue
-            if _nname not in node_transitions:
+            # Override KEEP → TERMINATE for nodes not in the spread set
+            # (PPE may have marked them KEEP because "already optimal", but
+            # consolidation requires moving pods off excess nodes)
+            _existing = node_transitions.get(_nname)
+            if _existing is None or _existing.get('type') == 'KEEP':
+                # Never terminate a node that has active/in-progress agent ops
+                # (drain, terminate) — those are handled by the actuator already.
+                # But od_anchor retention is only a soft PPE hint, NOT a hard
+                # exclusion. In a pure OD cluster every node gets od_anchor, which
+                # would permanently block all consolidation. Only preserve od_anchor
+                # nodes when they are the SOLE representative of their AZ and we
+                # don't yet have min_az_spread coverage.
+                _existing_reason = node_keep_meta.get(_nname, {}).get('retention_reason')
+                if _existing_reason == 'od_anchor':
+                    # Check if removing this node would violate AZ spread
+                    _this_az = _node_meta_map.get(_nname, {}).get('az') or 'unknown'
+                    _azs_covered = set(
+                        _node_meta_map.get(k, {}).get('az')
+                        for k in _spread_keep_names
+                    )
+                    if _this_az not in _azs_covered:
+                        # Only AZ representative — keep it to honour spread
+                        _spread_keep_names.add(_nname)
+                        logger.debug(
+                            "az_spread_anchor_protected cluster=%s node=%s reason=sole_az_rep",
+                            cluster_id, _nname,
+                        )
+                        continue
+                    # AZ already covered → safe to terminate this od_anchor node
                 node_transitions[_nname] = {'type': 'TERMINATE', 'replacement_spec': None, 'pods_leaving': []}
                 node_workload_meta[_nname] = {'workload_class': 'stateless', 'execution_strategy': 'ROLLING'}
+                node_keep_meta.pop(_nname, None)
                 _az_spread_applied = True
 
             # Fetch the actual user pod names for this drain node (last 30 min, non-system, non-DS)
@@ -1667,6 +1757,214 @@ async def get_cluster_execution_plan(
                     'is_new_node': False,
                 })
 
+    # ── Step 5: Ensure every app pod on a drain node has an explicit destination ──
+    # ALL running non-DaemonSet non-system pods on TERMINATE/REPLACE nodes that are
+    # not yet in pods_leaving must receive a destination node.  Two label categories
+    # (kept for UI display) but the routing logic is identical for both:
+    #   - is_compliant_drain=True  : WIE classified this workload (in wc_rows) but
+    #     Target Builder skipped it (already at desired OD/Spot ratio).
+    #   - is_unclassified=True     : no WCR entry — WIE has never classified it.
+    # Assignment uses capacity-aware least-loaded-first:
+    #   projected_load(n) = current_pods(n) + incoming_from_plan(n) + step5_assigned(n)
+    # This ensures the plan is self-consistent — we can consolidate 4 nodes → 2 nodes
+    # only when every pod has an explicit destination.
+    _drain_node_names = [n for n, t in node_transitions.items() if t["type"] in ("TERMINATE", "REPLACE")]
+    if _drain_node_names:
+        # Build controller set from the FULL WCR table — not the limit(500) subset of wc_rows —
+        # so workloads beyond the processing limit are still marked as WIE-known in Step 5.
+        _wie_known_controllers: set = set(
+            row[0]
+            for row in db.query(WorkloadClassificationRecord.name)
+            .filter(WorkloadClassificationRecord.cluster_id == cluster_id)
+            .all()
+        )
+
+        # ── Keep-node capacity tracker ───────────────────────────────────────
+        _keep_node_names = [n for n, t in node_transitions.items() if t["type"] == "KEEP"]
+
+        # Count pods already incoming to each keep node from Steps 1-4 PPE plan
+        _keep_incoming: dict = {n: 0 for n in _keep_node_names}
+        for _dn, _dtr in node_transitions.items():
+            if _dtr["type"] not in ("TERMINATE", "REPLACE"):
+                continue
+            for _pl in _dtr.get("pods_leaving", []):
+                _dest = _pl.get("to_node")
+                if _dest and _dest in _keep_incoming:
+                    _keep_incoming[_dest] = _keep_incoming[_dest] + 1
+
+        # Track CPU millicores assigned in Step 5 per keep node
+        _keep_step5_cpu: dict = {n: 0 for n in _keep_node_names}
+        # Rough CPU capacity per keep node (allocatable minus DaemonSet/system headroom)
+        _keep_cpu_cap: dict = {}
+        for _nm_row in _node_rows:
+            if _nm_row.node_name in _keep_node_names:
+                _alloc = _nm_row.allocatable_cpu_millicores or 4000
+                _keep_cpu_cap[_nm_row.node_name] = int(_alloc * 0.85)  # 15% headroom
+
+        def _pick_dest(pod_cpu_m: int):
+            """Return (node_name, itype, cap_type) for the keep node with most remaining capacity."""
+            if not _keep_node_names:
+                return None, None, None
+            _best = min(
+                _keep_node_names,
+                key=lambda n: (
+                    _node_total_pods.get(n, 0)
+                    + _keep_incoming.get(n, 0)
+                    + _keep_step5_cpu.get(n, 0) // max(pod_cpu_m, 50)
+                ),
+            )
+            _keep_step5_cpu[_best] = _keep_step5_cpu.get(_best, 0) + max(pod_cpu_m, 50)
+            return (
+                _best,
+                _node_meta_map.get(_best, {}).get("instance_type"),
+                _node_meta_map.get(_best, {}).get("capacity_type"),
+            )
+
+        _already_planned: dict = {
+            n: {p["pod_name"] for p in node_transitions[n].get("pods_leaving", [])}
+            for n in _drain_node_names
+        }
+        try:
+            _aug_rows = (
+                db.query(
+                    PodMetric.pod_name,
+                    PodMetric.node_name,
+                    PodMetric.controller_name,
+                    PodMetric.cpu_request_millicores,
+                )
+                .filter(
+                    PodMetric.cluster_id == cluster_id,
+                    PodMetric.node_name.in_(_drain_node_names),
+                    PodMetric.controller_kind != "DaemonSet",
+                    ~PodMetric.namespace.in_(list(_SYSTEM_NS)),
+                    (PodMetric.phase == "Running") | (PodMetric.phase.is_(None)),
+                    PodMetric.timestamp > _cutoff,
+                )
+                .distinct(PodMetric.pod_name)
+                .order_by(PodMetric.pod_name, PodMetric.timestamp.desc())
+                .all()
+            )
+            for _ur in _aug_rows:
+                _nn = _ur.node_name or ""
+                if _nn not in _already_planned:
+                    continue
+                if _ur.pod_name in _already_planned[_nn]:
+                    continue
+                _ctrl = (_ur.controller_name or "").split("/")[-1]
+                _is_wie_known = _ctrl in _wie_known_controllers
+                _pod_cpu = int(_ur.cpu_request_millicores or 50)
+                _dest_node, _dest_itype, _dest_cap = _pick_dest(_pod_cpu)
+                node_transitions[_nn]["pods_leaving"].append({
+                    "pod_name": _ur.pod_name,
+                    "to_node": _dest_node,
+                    "to_instance_type": _dest_itype,
+                    "to_capacity_type": _dest_cap,
+                    "is_new_node": False,
+                    "is_unclassified": not _is_wie_known,
+                    "is_compliant_drain": _is_wie_known,
+                })
+        except Exception as _ue:
+            logger.warning("step5_augment_error cluster=%s err=%s", cluster_id, _ue)
+
+    # ── Step 6: Final mutual-exclusivity reconciliation ───────────────────────
+    # After all PPE runs, a node can still appear in both KEEP and TERMINATE
+    # if two separate workloads gave conflicting signals (e.g. workload A wants
+    # to drain it, workload B keeps it as an OD anchor).  Rule: KEEP always wins
+    # — a node kept for any workload must not be simultaneously drained.
+    # Step 6a: Drop terminated nodes from node_transitions entirely.
+    # They were excluded from nodes_input but PPE may have still classified
+    # their pods as needing to move, adding the node as TERMINATE. We do NOT
+    # want them in keep_nodes OR drain_nodes — their pods are already gone.
+    _dead_nodes = _terminated_instance_nodes | _recently_terminated_nodes
+    for _dn in list(node_transitions.keys()):
+        if _dn in _dead_nodes:
+            del node_transitions[_dn]
+
+    # Step 6b: Force-KEEP nodes that are ACTIVELY draining or mid-rebalance.
+    # This is intentionally limited to live in-flight operations only — NOT
+    # terminated nodes (handled above).
+    _active_live_nodes = draining_nodes | active_rebalancing_nodes
+    _collision_nodes = []
+    for _nname, _trans in list(node_transitions.items()):
+        _is_actively_managed = _nname in _active_live_nodes
+        if _is_actively_managed:
+            # Node is under active rebalancing/drain — lock it as KEEP so UI
+            # shows "Rebalancing in Progress" and PPE cannot schedule further drains.
+            if _trans["type"] in ("TERMINATE", "REPLACE"):
+                _collision_nodes.append(_nname)
+                node_transitions[_nname] = {
+                    "type": "KEEP",
+                    "replacement_spec": None,
+                    "pods_leaving": [],
+                    "_active_rebalancing": True,
+                }
+    if _collision_nodes:
+        logger.warning(
+            "cluster_plan_collision_resolved cluster=%s nodes=%s reason=active_rebalancing_forced_keep",
+            cluster_id, _collision_nodes,
+        )
+
+    # Step 6c: Honour do_not_disrupt flag — Karpenter anchor nodes and any node
+    # the user has annotated with karpenter.sh/do-not-disrupt=true must NEVER
+    # appear as drain/terminate candidates in the consolidation plan.
+    _dnd_nodes = {n.node_name for n in _node_rows if getattr(n, "do_not_disrupt", False)}
+    _dnd_forced_keep = []
+    for _dnd in _dnd_nodes:
+        if _dnd in node_transitions and node_transitions[_dnd].get("type") in ("TERMINATE", "REPLACE"):
+            _dnd_forced_keep.append(_dnd)
+            node_transitions[_dnd] = {
+                "type": "KEEP",
+                "replacement_spec": None,
+                "pods_leaving": [],
+                "_do_not_disrupt": True,
+            }
+    if _dnd_forced_keep:
+        logger.info(
+            "cluster_plan_dnd_forced_keep cluster=%s nodes=%s",
+            cluster_id, _dnd_forced_keep,
+        )
+
+    # ── Log nodes skipped entirely due to active operations ──────────────────
+    if _nodes_to_ignore:
+        logger.info(
+            "cluster_plan_nodes_ignored cluster=%s count=%d draining=%s rebalancing=%s terminated=%s",
+            cluster_id,
+            len(_nodes_to_ignore),
+            sorted(draining_nodes),
+            sorted(active_rebalancing_nodes),
+            sorted(_dead_nodes),
+        )
+
+    # ── Batch prefetch pods_staying for ALL keep nodes (1 query vs N) ─────────
+    _keep_nnames_batch = [n for n, t in node_transitions.items() if t["type"] == "KEEP"]
+    _pods_staying_cutoff = _dt.utcnow() - _td(minutes=5)
+    _pods_staying_by_node: dict = {}
+    if _keep_nnames_batch:
+        try:
+            _batch_ks = (
+                db.query(
+                    PodMetric.pod_name,
+                    PodMetric.node_name,
+                    PodMetric.cpu_request_millicores,
+                    PodMetric.memory_request_bytes,
+                )
+                .filter(
+                    PodMetric.cluster_id == cluster_id,
+                    PodMetric.node_name.in_(_keep_nnames_batch),
+                    PodMetric.controller_kind != "DaemonSet",
+                    ~PodMetric.namespace.in_(list(_SYSTEM_NS)),
+                    PodMetric.phase.notin_(["Succeeded", "Failed", "Unknown"]),
+                    PodMetric.timestamp > _pods_staying_cutoff,
+                )
+                .distinct(PodMetric.pod_name)
+                .order_by(PodMetric.pod_name, PodMetric.timestamp.desc())
+                .all()
+            )
+            for _ksr in _batch_ks:
+                _pods_staying_by_node.setdefault(_ksr.node_name, []).append(_ksr)
+        except Exception:
+            pass
+
     # ── Format output ─────────────────────────────────────────────────────────
     drain_nodes = []
     keep_nodes  = []
@@ -1692,17 +1990,51 @@ async def get_cluster_execution_plan(
             kmeta = node_keep_meta.get(nname, {})
             _cap_nm = nm.get("capacity_type") or kmeta.get("capacity_type", "")
             _is_od  = (_cap_nm or "").lower() in ("on-demand", "on_demand", "ondemand")
+            # Build pods_staying: pods currently running on this keep node that are NOT moving.
+            # Use a 5-min freshness window (not the 30-min _cutoff) so that recently-terminated
+            # pods (e.g. old ReplicaSet pod after a rolling restart) don't appear alongside the
+            # new replacement pod. The agent reports pod metrics every ~1 min so 5 min gives
+            # 5 missed-report tolerance for live pods.
+            _keep_pods_staying = [
+                {
+                    "pod_name": r.pod_name,
+                    "cpu_request_millicores": r.cpu_request_millicores,
+                    "memory_request_mb": round((r.memory_request_bytes or 0) / (1024 * 1024), 1),
+                    "routing_source": "staying",
+                }
+                for r in _pods_staying_by_node.get(nname, [])
+            ]
             keep_nodes.append({
                 "node_name":        nname,
                 "instance_type":    nm.get("instance_type") or kmeta.get("instance_type"),
                 "capacity_type":    _cap_nm,
-                "az":               nm.get("az") or kmeta.get("az"),
+                "az":               nm.get("az") or (None if kmeta.get("az") == "unknown" else kmeta.get("az")),
                 "pod_count":        kmeta.get("pod_count") or nm.get("pod_count"),
                 "retention_reason": kmeta.get("retention_reason") or (
                     "od_anchor" if _is_od else "fits_pods"
                 ),
-                "retained_workload_classes": [],  # populated when PPE tracks per-keep workload classes
+                "retained_workload_classes": [],
+                "pods_staying": _keep_pods_staying,
             })
+
+    # ── Compute pods_incoming for each keep node from drain_nodes.pods_leaving ──
+    _keep_incoming_pods: dict = {kn["node_name"]: [] for kn in keep_nodes}
+    for _dn in drain_nodes:
+        for _pl in _dn.get("pods_leaving", []):
+            _dest = _pl.get("to_node")
+            if _dest and _dest in _keep_incoming_pods:
+                _keep_incoming_pods[_dest].append({
+                    "pod_name": _pl["pod_name"],
+                    "from_node": _dn["node_name"],
+                    "from_instance_type": _dn.get("current_instance_type"),
+                    "routing_source": (
+                        "ppe_migration" if not _pl.get("is_compliant_drain") and not _pl.get("is_unclassified")
+                        else "step5_classified" if _pl.get("is_compliant_drain")
+                        else "step5_unclassified"
+                    ),
+                })
+    for kn in keep_nodes:
+        kn["pods_incoming"] = _keep_incoming_pods.get(kn["node_name"], [])
 
     # Deduplicate provision nodes, attach stable plan_node_id
     seen_prov = set()
@@ -1719,7 +2051,10 @@ async def get_cluster_execution_plan(
     # plan_status — authoritative completeness signal consumed by frontend planCompleteness
     _resolved_cnt = sum(1 for p in deduped_provisions if p.get("instance_type"))
     if not deduped_provisions and not drain_nodes:
-        plan_status = "no_action"
+        # Distinguish: no WC data yet (new cluster, never scanned) vs genuinely optimal.
+        # Empty wc_rows means the analysis engine hasn't run yet — surface as 'none'
+        # so the frontend prompts the user to scan rather than showing "at target state".
+        plan_status = "no_action" if wc_rows else "none"
     elif not deduped_provisions and _az_spread_applied:
         plan_status = "az_spread"   # consolidation driven by min AZ spread setting
     elif not deduped_provisions and drain_nodes:
@@ -1757,15 +2092,78 @@ async def get_cluster_execution_plan(
             key=lambda d: _REASON_PRIORITY.get(d.get("reason", ""), 0),
         )
 
-    return ok({
+    # ── Flat pod routing table — all app pods, one row each ──────────────────────────
+    # Consolidates drain_nodes.pods_leaving + keep_nodes.pods_staying into a
+    # single lookup for full end-to-end pod routing visibility.
+    _pod_routing_table: list = []
+    for _dn in drain_nodes:
+        _from_node = _dn["node_name"]
+        for _pm in _dn["pods_leaving"]:
+            _to = _pm.get("to_node")
+            _routing_src = (
+                "ppe_migration" if not _pm.get("is_compliant_drain") and not _pm.get("is_unclassified")
+                else "step5_classified" if _pm.get("is_compliant_drain")
+                else "step5_unclassified"
+            )
+            _pod_routing_table.append({
+                "pod_name": _pm["pod_name"],
+                "from_node": _from_node,
+                "from_capacity_type": _dn.get("current_capacity_type"),
+                "to_node": _to,
+                "to_capacity_type": _pm.get("to_capacity_type"),
+                "to_instance_type": _pm.get("to_instance_type"),
+                "is_new_node": _pm.get("is_new_node", False),
+                "routing_source": _routing_src,
+            })
+    for _kn in keep_nodes:
+        for _ks in _kn.get("pods_staying", []):
+            _pod_routing_table.append({
+                "pod_name": _ks["pod_name"],
+                "from_node": _kn["node_name"],
+                "from_capacity_type": _kn.get("capacity_type"),
+                "to_node": _kn["node_name"],
+                "to_capacity_type": _kn.get("capacity_type"),
+                "to_instance_type": _kn.get("instance_type"),
+                "is_new_node": False,
+                "routing_source": "staying",
+            })
+
+    # ── Orchestration Context ───────────────────────────────────────
+    # Check if a global lock is held (Karpenter race mitigation)
+    _lock_active = False
+    _lock_key = f"rebalance:lock:{cluster_id}"
+    if _plan_redis and _plan_redis.exists(_lock_key):
+        _lock_active = True
+
+    _plan_payload = {
         "cluster_id":             cluster_id,
         "plan_status":            plan_status,
         "drain_nodes":            drain_nodes,
         "keep_nodes":             keep_nodes,
         "provision_nodes":        deduped_provisions,
-        "summary":                summary,
+        "draining_nodes":         sorted(draining_nodes),
+        "rebalancing_nodes":      sorted(active_rebalancing_nodes),
+        "karpenter_lock_active":   _lock_active, # UI indicator for Blocker 2
+        "global_orchestration_lock": _lock_active,
+        "summary":                {
+            **summary,
+            "total_pods_in_plan": len(_pod_routing_table),
+            "pods_moving":   sum(1 for p in _pod_routing_table if p["from_node"] != p["to_node"]),
+            "pods_staying":  sum(1 for p in _pod_routing_table if p["from_node"] == p["to_node"]),
+            "pods_to_spot":  sum(1 for p in _pod_routing_table if (p.get("to_capacity_type") or "").lower() == "spot"),
+            "pods_to_od":    sum(1 for p in _pod_routing_table if (p.get("to_capacity_type") or "").lower() in ("on-demand", "on_demand", "ondemand")),
+            "nodes_skipped_active_ops": len(_nodes_to_ignore),
+        },
+        "pod_routing_table":      _pod_routing_table,
         "spot_migration_decision": _agg_spot_decision,
-    })
+    }
+    if _plan_redis:
+        try:
+            _plan_redis.setex(_plan_cache_key, _PLAN_CACHE_TTL, json.dumps(_plan_payload, default=str))
+        except Exception:
+            pass
+    return ok(_plan_payload)
+
 
 
 # ---------------------------------------------------------------------------
@@ -1812,6 +2210,7 @@ async def get_node_execution_plan(
             PodMetric.cluster_id == cluster_id,
             PodMetric.node_name == node_name,
             PodMetric.timestamp > cutoff,
+            (PodMetric.phase == "Running") | (PodMetric.phase.is_(None)),
         )
         .distinct(PodMetric.pod_name)
         .order_by(PodMetric.pod_name, PodMetric.timestamp.desc())
@@ -1928,10 +2327,39 @@ async def get_node_execution_plan(
     mem_buf_pct  = round(max(0.0, 100.0 - (used_mem_bytes / alloc_mem * 100)), 1)
     is_overloaded = (used_cpu / alloc_cpu * 100) > 85 or (used_mem_bytes / alloc_mem * 100) > 85
 
-    has_drain = any(a["action_type"] in ("DRAIN_NODE", "TERMINATE_NODE", "FORCE_DELETE_NODE") for a in pending_node_actions)
+    has_drain  = any(a["action_type"] in ("DRAIN_NODE", "TERMINATE_NODE", "FORCE_DELETE_NODE") for a in pending_node_actions)
     has_cordon = any(a["action_type"] == "CORDON_NODE" for a in pending_node_actions)
     cap_type = (node_meta_row.capacity_type or "").lower() if node_meta_row else ""
     is_od = cap_type in ("on_demand", "on-demand", "ondemand")
+
+    # ── Cluster-plan state: check whether this node is actively managed ───────
+    # The heuristic below has no access to the cluster plan context.  Without
+    # this check, a KEEP node with low utilisation returns "Consolidate → Spot"
+    # (because it looks idle) even though the plan explicitly protects it as an
+    # OD anchor.  We check AgentAction DRAIN + RebalancingAction to detect this.
+    _is_actively_draining_plan = False
+    _is_actively_rebalancing_plan = False
+    try:
+        from backend.models.rebalancing_action import RebalancingAction as _RA
+        from backend.models.instance import Instance as _Inst
+        _ra_row = (
+            db.query(_RA)
+            .join(
+                _Inst,
+                (_RA.cluster_id == _Inst.cluster_id)
+                & (_RA.source_instance_id == _Inst.instance_id),
+            )
+            .filter(
+                _RA.cluster_id == cluster_id,
+                _RA.status.in_(["pending", "in_progress", "waiting_agent", "pending_approval"]),
+                _Inst.node_name == node_name,
+            )
+            .first()
+        )
+        if _ra_row:
+            _is_actively_rebalancing_plan = True
+    except Exception:
+        pass
 
     if has_drain:
         opt_action = "Terminating"
@@ -1941,6 +2369,16 @@ async def get_node_execution_plan(
         opt_action = "Cordoned"
         opt_detail = "Cordon action queued — no new pods will be scheduled here."
         opt_color  = "amber"
+    elif _is_actively_rebalancing_plan:
+        # Node is mid-flight in a RebalancingAction — cluster plan controls it.
+        # Do not return heuristic guidance that contradicts the plan state.
+        opt_action = "Rebalancing in Progress"
+        opt_detail = (
+            "This node is currently under an active rebalancing operation. "
+            "The optimizer will resume normal analysis once the operation completes."
+        )
+        opt_color  = "blue"
+        # Surface buffer pct for informational display only (not decision basis)
     elif is_overloaded:
         opt_action = "Scale Up / Redistribute"
         opt_detail = f"Node is overloaded — redistribute pods or add capacity."
@@ -1969,6 +2407,9 @@ async def get_node_execution_plan(
         "cpu_buffer_pct": cpu_buf_pct,
         "mem_buffer_pct": mem_buf_pct,
         "is_overloaded": is_overloaded,
+        # Surface rebalancing flag so frontend can display plan-aware label even
+        # when the cluster plan data hasn't loaded yet in the session.
+        "is_actively_rebalancing": _is_actively_rebalancing_plan,
     }
 
     max_pod_ts = _safe_fetch(
@@ -2010,6 +2451,7 @@ async def get_workload_profiling_detail(
     from backend.models.placement_policy import PlacementPolicyRecord
     from sqlalchemy import func
     from datetime import datetime as _dt, timedelta as _td
+    import math
 
     workload_name = workload_id.split("/")[-1] if "/" in workload_id else workload_id
     cutoff_14d = _dt.utcnow() - _td(days=14)
@@ -2078,6 +2520,117 @@ async def get_workload_profiling_detail(
         (pp.traffic_skew_detected if pp and pp.traffic_skew_detected is not None else None)
         or (wc.traffic_skew_detected if wc else None)
     )
+
+    # ── RIGHTSIZING PROPOSAL for this workload (Phase 3) ─────────────────
+    # Compute on-the-fly from pod_metrics so the Resource Utilization card
+    # in the frontend has real P95/burst_ratio/throttle_risk data.
+    proposal_dict = None
+    if max_pm_ts is not None:
+        try:
+            from backend.services.rightsizing_service import RightSizingService as _RSS
+            _rss = _RSS(db)
+            _namespace = wc.namespace if wc else workload_id.split("/")[0] if "/" in workload_id else None
+            _proposals = _rss.generate_recommendations(
+                cluster_id=cluster_id,
+                namespace=_namespace,
+                analysis_window_hours=168,
+                min_data_points=50,
+            )
+            for _p in _proposals:
+                if _p.controller_name == workload_name:
+                    proposal_dict = _p.model_dump() if hasattr(_p, "model_dump") else _p.dict()
+                    break
+        except Exception as _pe:
+            logger.warning(f"[profiling-detail] proposal lookup failed for {workload_name}: {_pe}")
+
+        # If the recommendation engine skipped this workload because of confidence,
+        # freshness, draft state, or sample count gates, still return a read-only
+        # utilization snapshot so the frontend can show Resource Utilization for
+        # every workload with pod metrics.
+        if proposal_dict is None:
+            try:
+                metric_rows = (
+                    db.query(PodMetric)
+                    .filter(
+                        PodMetric.cluster_id == cluster_id,
+                        PodMetric.controller_name == workload_name,
+                        PodMetric.timestamp > _dt.utcnow() - _td(hours=168),
+                    )
+                    .order_by(PodMetric.timestamp)
+                    .all()
+                )
+
+                def _percentile(values, pct):
+                    if not values:
+                        return 0
+                    sorted_values = sorted(values)
+                    idx = int((pct / 100) * (len(sorted_values) - 1))
+                    return sorted_values[min(idx, len(sorted_values) - 1)]
+
+                if metric_rows:
+                    latest_metric = metric_rows[-1]
+                    cpu_values = [m.cpu_usage_millicores or 0 for m in metric_rows]
+                    mem_values = [m.memory_usage_bytes or 0 for m in metric_rows]
+                    cpu_avg = sum(cpu_values) / len(cpu_values) if cpu_values else 0
+                    mem_avg = sum(mem_values) / len(mem_values) if mem_values else 0
+                    cpu_p95 = _percentile(cpu_values, 95)
+                    cpu_p99 = _percentile(cpu_values, 99)
+                    mem_p95 = _percentile(mem_values, 95)
+                    mem_p99 = _percentile(mem_values, 99)
+                    current_cpu_request = latest_metric.cpu_request_millicores or None
+                    current_memory_request_bytes = latest_metric.memory_request_bytes or None
+                    current_memory_request_mb = (
+                        math.ceil(current_memory_request_bytes / (1024 * 1024))
+                        if current_memory_request_bytes else None
+                    )
+                    burst_ratio = cpu_p99 / max(cpu_avg, 1.0)
+
+                    jvm_signals = (
+                        "java", "spring", "jvm", "tomcat", "quarkus", "micronaut",
+                        "openjdk", "amazoncorretto", "adoptopenjdk",
+                    )
+                    is_jvm = any(signal in workload_name.lower() for signal in jvm_signals)
+                    if not is_jvm and mem_avg > 0 and (mem_p99 / max(mem_avg, 1.0)) > 1.8:
+                        is_jvm = True
+
+                    burst_threshold = 3.0 if is_jvm else 5.0
+                    proposal_dict = {
+                        "cluster_id": cluster_id,
+                        "namespace": wc.namespace if wc else (workload_id.split("/")[0] if "/" in workload_id else "default"),
+                        "controller_kind": wc.controller_kind if wc else None,
+                        "controller_name": workload_name,
+                        "current_cpu_request_millicores": current_cpu_request,
+                        "current_memory_request_mb": current_memory_request_mb,
+                        "current_replica_count": len({m.pod_name for m in metric_rows if m.pod_name}) or 1,
+                        "cpu_p95_millicores": int(cpu_p95),
+                        "cpu_p99_millicores": int(cpu_p99),
+                        "memory_p95_mb": math.ceil(mem_p95 / (1024 * 1024)),
+                        "memory_p99_mb": math.ceil(mem_p99 / (1024 * 1024)),
+                        "cpu_avg_millicores": int(cpu_avg),
+                        "memory_avg_mb": math.ceil(mem_avg / (1024 * 1024)),
+                        "recommended_cpu_request_millicores": None,
+                        "recommended_memory_request_mb": None,
+                        "current_cost_monthly": 0,
+                        "recommended_cost_monthly": 0,
+                        "savings_monthly": 0,
+                        "savings_pct": 0,
+                        "data_points": len(metric_rows),
+                        "analysis_window_hours": 168,
+                        "confidence": "LOW" if len(metric_rows) < 50 else "MEDIUM",
+                        "is_oversized": False,
+                        "is_undersized": False,
+                        "recommendation_action": "NO_CHANGE",
+                        "burst_ratio": round(burst_ratio, 2),
+                        "throttle_risk": burst_ratio > burst_threshold,
+                        "workload_hint": "JVM" if is_jvm else "NORMAL",
+                        "currently_spiking": False,
+                        "is_actionable": False,
+                        "best_pool": None,
+                        "utilization_only": True,
+                    }
+            except Exception as _ue:
+                logger.warning(f"[profiling-detail] utilization fallback failed for {workload_name}: {_ue}")
+
     return ok(
         {
             "workload_id": workload_id,
@@ -2098,6 +2651,7 @@ async def get_workload_profiling_detail(
             "rollout_eligible": pp.rollout_eligible if pp else None,
             "rollout_blocked_reason": pp.rollout_blocked_reason if pp else None,
             "cpu_timeseries": cpu_timeseries,
+            "proposal": proposal_dict,
             **freshness,
         },
         data_ready=data_ready,
@@ -2386,6 +2940,11 @@ def _get_placement_workload_rows(cluster_id: str, db, redis_client):
             "spot_target": spot_target,        # WP-8
             "estimated_monthly_saving_usd": savings,
             "pdb_active": has_pdb,
+            # v4.6 workload class fields — used by frontend status bar and badges
+            "workload_class": getattr(wc, "workload_class", "stateless"),
+            "wie_role": getattr(wc, "role", None),
+            "min_on_demand_replicas": getattr(wc, "min_on_demand_replicas", None),
+            "max_spot_replicas": getattr(wc, "max_spot_replicas", None),
         })
 
     # WP-7: Append unclassified workloads as PENDING
@@ -2499,7 +3058,9 @@ async def get_workload_placement_detail(
     workload_name = _wid_parts[-1]
     workload_ns   = _wid_parts[0] if len(_wid_parts) == 2 else None
     from datetime import timedelta as _pd_td
-    _pd_cutoff = _dt.utcnow() - _pd_td(hours=6)
+    # 10 minutes: short enough to exclude terminated/restarted pod entries, long
+    # enough that a running pod whose metrics tick every 30-60 s is always included.
+    _pd_cutoff = _dt.utcnow() - _pd_td(minutes=10)
     _pod_filters = [
         PodMetric.cluster_id == cluster_id,
         PodMetric.controller_name == workload_name,
@@ -2521,10 +3082,28 @@ async def get_workload_placement_detail(
             PodMetric.cpu_usage_millicores,
         )
         .filter(*_pod_filters)
+        .filter((PodMetric.phase == "Running") | (PodMetric.phase.is_(None)))
         .distinct(PodMetric.pod_name)
         .order_by(PodMetric.pod_name, PodMetric.timestamp.desc())
         .subquery()
     )
+    # ── Bug fix: pre-build node→{az, capacity_type} lookup map from ALL NodeMetadata
+    # rows for this cluster in ONE query. This replaces the outer-join approach which
+    # returned NULL az when a NodeMetadata row didn't exist for a given node yet.
+    # Multiple pods on the same node (very common — AZ repeats per node) all get the
+    # correct AZ without any join ambiguity.
+    _nm_rows_all = (
+        db.query(NodeMetadata.node_name, NodeMetadata.az, NodeMetadata.capacity_type)
+        .filter(NodeMetadata.cluster_id == cluster_id)
+        .all()
+    )
+    _node_meta_cache: dict = {
+        r.node_name: {"az": r.az, "capacity_type": r.capacity_type}
+        for r in _nm_rows_all
+        if r.node_name
+    }
+
+    # Simple pod query — no join needed since we resolve from _node_meta_cache
     pod_rows = (
         db.query(
             latest_subq.c.pod_name,
@@ -2536,24 +3115,45 @@ async def get_workload_placement_detail(
             latest_subq.c.cpu_request_millicores,
             latest_subq.c.memory_request_bytes,
             latest_subq.c.cpu_usage_millicores,
-            NodeMetadata.az,
-            NodeMetadata.capacity_type,
         )
-        .join(
-            NodeMetadata,
-            (NodeMetadata.cluster_id == cluster_id)
-            & (NodeMetadata.node_name == latest_subq.c.node_name),
-            isouter=True,
-        )
+        .filter(latest_subq.c.node_name.isnot(None))
         .all()
     )
     now = _dt.utcnow()
+
+    # Redis WIE node state key — fallback when NodeMetadata is missing for a node
+    # Written by agent heartbeat: spot:wie:node_state:{cluster_id}:{node_name}
+    import json as _pd_json
+
+    def _resolve_node_meta(node_name: str) -> dict:
+        """Return {az, capacity_type} for a node, with Redis WIE fallback."""
+        if not node_name:
+            return {"az": "Unscheduled", "capacity_type": None}
+
+        cached = _node_meta_cache.get(node_name)
+        if cached and cached.get("az"):
+            return cached
+        # Fallback: Redis WIE node state
+        try:
+            _raw = redis_client.get(f"spot:wie:node_state:{cluster_id}:{node_name}")
+            if _raw:
+                _st = _pd_json.loads(_raw)
+                _az = _st.get("az") or _st.get("availability_zone")
+                _ct = _st.get("capacity_type") or _st.get("instance_lifecycle")
+                if _az or _ct:
+                    # Populate cache so subsequent pods on same node don't re-hit Redis
+                    _node_meta_cache[node_name] = {"az": _az, "capacity_type": _ct}
+                    return _node_meta_cache[node_name]
+        except Exception:
+            pass
+        return cached or {"az": None, "capacity_type": None}
+
     pods = [
         {
             "pod_name": r.pod_name,
             "node_name": r.node_name,
-            "az": r.az,
-            "capacity_type": r.capacity_type,
+            "az": _resolve_node_meta(r.node_name).get("az"),
+            "capacity_type": _resolve_node_meta(r.node_name).get("capacity_type"),
             "phase": r.phase,
             "age_seconds": int((now - r.start_time).total_seconds()) if r.start_time else None,
             "namespace": r.namespace,
@@ -2564,6 +3164,7 @@ async def get_workload_placement_detail(
         }
         for r in pod_rows
     ]
+    _pod_node_names = {p.get("node_name") for p in pods if p.get("node_name")}
 
     # --- Policy lookup (must precede pod plan which uses spot_tgt) ---
     od_target = None
@@ -2722,9 +3323,24 @@ async def get_workload_placement_detail(
     _target_basis = "unknown"
     try:
         from backend.pipeline.stage3_ppe.engine import PodPlacementEngine
+        from backend.models.instance import Instance
+        from sqlalchemy import func
         # Gather nodes from the cluster (only nodes that currently host workload pods + free nodes)
         _node_rows = (
-            db.query(NodeMetadata)
+            db.query(
+                NodeMetadata.node_name,
+                NodeMetadata.updated_at,
+                func.coalesce(NodeMetadata.capacity_type, cast(Instance.lifecycle, SAString)).label("capacity_type"),
+                func.coalesce(NodeMetadata.az, Instance.az).label("az"),
+                func.coalesce(NodeMetadata.instance_type, Instance.instance_type).label("instance_type"),
+                NodeMetadata.allocatable_cpu_millicores,
+                NodeMetadata.allocatable_memory_bytes,
+            )
+            .outerjoin(
+                Instance,
+                (Instance.cluster_id == NodeMetadata.cluster_id)
+                & (Instance.node_name == NodeMetadata.node_name)
+            )
             .filter(NodeMetadata.cluster_id == cluster_id)
             .all()
         )
@@ -2735,6 +3351,7 @@ async def get_workload_placement_detail(
                 NodeMetric.node_name,
                 NodeMetric.cpu_usage_millicores,
                 NodeMetric.memory_usage_bytes,
+                NodeMetric.timestamp,
             )
             .filter(NodeMetric.cluster_id == cluster_id)
             .distinct(NodeMetric.node_name)
@@ -2742,9 +3359,27 @@ async def get_workload_placement_detail(
             .all()
         )
         _node_usage = {r.node_name: (r.cpu_usage_millicores or 0, r.memory_usage_bytes or 0) for r in _latest_node_subq}
+        _node_metric_ts = {r.node_name: r.timestamp for r in _latest_node_subq if r.node_name and r.timestamp}
+        _now_detail = _dt.utcnow()
         nodes_input = []
+        _node_freshness_ages: list[float] = []
         for n in _node_rows:
+            _meta_age = (_now_detail - n.updated_at).total_seconds() if n.updated_at else None
+            _metric_ts = _node_metric_ts.get(n.node_name)
+            _metric_age = (_now_detail - _metric_ts).total_seconds() if _metric_ts else None
+            _is_pod_host = n.node_name in _pod_node_names
+            _is_fresh_candidate = (
+                (_metric_age is not None and _metric_age <= 300)
+                or (_meta_age is not None and _meta_age <= 300)
+            )
+            if not _is_pod_host and not _is_fresh_candidate:
+                continue
+
             used_cpu, used_mem = _node_usage.get(n.node_name, (0, 0))
+            if _metric_age is not None:
+                _node_freshness_ages.append(_metric_age)
+            elif _meta_age is not None and _is_pod_host:
+                _node_freshness_ages.append(_meta_age)
             nodes_input.append({
                 "node_name": n.node_name,
                 "az": n.az,
@@ -2754,7 +3389,9 @@ async def get_workload_placement_detail(
                 "allocatable_memory_bytes": n.allocatable_memory_bytes,
                 "used_cpu_millicores": used_cpu,
                 "used_memory_bytes": used_mem,
-                "pod_count": 0,  # not tracked at node-meta level; engine treats 0 as "unknown"
+                # Fix 2 (detail): pod_count=0 here; workload-detail PPE runs per-workload
+                # so BinPacker uses pod list directly — node-level count not needed.
+                "pod_count": 0,
             })
 
         if od_target is not None and spot_tgt is not None:
@@ -2786,6 +3423,13 @@ async def get_workload_placement_detail(
             "spot_target":     _eng_spot_tgt,
             "observed_replicas": obs_reps if obs_reps is not None else len(pods),
         }
+        _state_age_candidates = []
+        if pd_max_ts:
+            _state_age_candidates.append((_now_detail - pd_max_ts).total_seconds())
+        if _node_freshness_ages:
+            _state_age_candidates.append(max(_node_freshness_ages))
+        _detail_state_age = max(_state_age_candidates) if _state_age_candidates else None
+
         # Fetch cooldown set for this workload
         _cooldown_pods = set()
         try:
@@ -2804,6 +3448,7 @@ async def get_workload_placement_detail(
             targets=_engine_targets,
             cooldown_pods=_cooldown_pods,
             cluster_id=cluster_id,
+            data_age_seconds=_detail_state_age,
         )
         placement_plan = _plan.to_dict()
         # Persist anchor_nodes to Redis so PlacementController can read them (TTL 5 min)

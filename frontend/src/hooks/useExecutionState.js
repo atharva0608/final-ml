@@ -29,7 +29,7 @@ const useExecutionState = (clusterId) => {
         || rbRes.data?.rebalancing_actions
         || (Array.isArray(rbRes.data) ? rbRes.data : []);
       setRawRebalancing(rb);
-      const ac = acRes.data?.actions || (Array.isArray(acRes.data) ? acRes.data : []);
+      const ac = acRes.data?.actions || acRes.data?.items || (Array.isArray(acRes.data) ? acRes.data : []);
       setRawActions(ac);
     }).catch(err => setError(err?.message || 'Failed to load execution state'))
       .finally(() => setLoading(false));

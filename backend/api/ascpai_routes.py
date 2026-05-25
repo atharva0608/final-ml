@@ -103,6 +103,8 @@ class RebalancingStatusResponse(BaseModel):
     step_4_new_node_joined: Optional[str]     # ISO timestamp when new SPOT node detected
     step_5_old_node_terminated: Optional[str] # ISO timestamp when old OD node terminated
     step_6_optimization_complete: Optional[str]  # ISO timestamp when fully done
+    step_7_pods_rescheduled: Optional[str]       # ISO timestamp when evicted pods confirmed rescheduled
+    node_name: Optional[str]                  # K8s node name of the source node
     instance_id: Optional[str]               # EC2 instance ID being migrated
     provisioner_type: Optional[str]          # 'karpenter' or 'agent' (direct EC2)
     original_target_pool: Optional[str]      # Planned pool before capacity fallback
@@ -120,6 +122,10 @@ class RebalancingStatusResponse(BaseModel):
     step_3_verified: Optional[bool]
     step_4_verified: Optional[bool]
     step_5_verified: Optional[bool]
+    step_7_verified: Optional[bool]
+    # Engine that created this action: 'karpenter' | 'agent' | 'consolidation'
+    # Used by the UI to label groups as "Node Rebalancing" vs "Node Consolidation"
+    engine_source: Optional[str]
 
 
 # Endpoints
@@ -597,6 +603,12 @@ async def get_rebalancing_status(
                 step_4_new_node_joined=_meta.get("step_4_new_node_joined"),
                 step_5_old_node_terminated=_meta.get("step_5_old_node_terminated"),
                 step_6_optimization_complete=_meta.get("step_6_optimization_complete"),
+                step_7_pods_rescheduled=_meta.get("step_7_pods_rescheduled"),
+                node_name=(
+                    _meta.get("node_name")
+                    or _meta.get("target_node_name")
+                    or _meta.get("source_node_name")
+                ),
                 instance_id=_meta.get("instance_id"),
                 provisioner_type=_meta.get("provisioner_type"),
                 original_target_pool=_meta.get("original_target_pool"),
@@ -611,6 +623,11 @@ async def get_rebalancing_status(
                 step_3_verified=_meta.get("step_3_draining_pods_verified"),
                 step_4_verified=_meta.get("step_4_verified", True if _meta.get("step_4_new_node_joined") else None),
                 step_5_verified=_meta.get("step_5_verified"),
+                step_7_verified=_meta.get("step_7_verified"),
+                engine_source=(
+                    "consolidation" if getattr(action, "source", "auto_rebalancer") == "placement_controller"
+                    else _meta.get("provisioner_type") or "karpenter"
+                ),
             ))
 
         return response
@@ -3805,7 +3822,7 @@ def get_pool_ema_status(
 class _NodeAssignment(BaseModel):
     """A single node migration assignment: move this node to a new pool."""
     node_id: str
-    target_lifecycle: str = "spot"        # "spot" or "on-demand"
+    target_lifecycle: str = "spot"        # "spot", "on-demand", or "terminate" (pure consolidation)
     target_instance_type: str = ""
     target_az: str = ""
 
@@ -3996,7 +4013,7 @@ def apply_recommended_config(
     migrations = []
     if body.node_assignments:
         for assignment in body.node_assignments:
-            if assignment.target_lifecycle == "spot":
+            if assignment.target_lifecycle in ("spot", "terminate"):
                 migrations.append(assignment)
     else:
         # Auto-detect: pick all on-demand nodes up to the excess (current_od - requested_od)
@@ -4009,19 +4026,49 @@ def apply_recommended_config(
         od_instances.sort(key=lambda i: i.instance_type or "")
         current_od = len(od_instances)
         excess_od = max(0, current_od - body.od_node_count)
-        for inst in od_instances[:excess_od]:
+
+        # ── Consolidation vs Spot-replacement logic ──────────────────────
+        # Count current spot nodes to determine if user wants new spots.
+        spot_instances = db.query(Instance).filter(
+            Instance.cluster_id == cluster_id,
+            Instance.state == "running",
+            Instance.lifecycle == "spot",
+        ).count()
+        # How many NEW spot nodes are requested beyond what already exist?
+        new_spots_requested = max(0, body.spot_node_count - spot_instances)
+
+        # Assign excess OD: first N go to spot replacement, remainder are
+        # pure consolidation (drain to remaining OD → terminate, no spot launch).
+        od_to_spot      = min(excess_od, new_spots_requested)
+        od_to_terminate  = excess_od - od_to_spot
+
+        for idx, inst in enumerate(od_instances[:excess_od]):
             source_az = inst.az or f"{region}a"
+            if idx < od_to_spot:
+                # OD→Spot replacement: Karpenter will provision a spot node
+                _target_lifecycle = "spot"
+            else:
+                # Pure consolidation: drain pods to remaining OD nodes, terminate
+                _target_lifecycle = "terminate"
             migrations.append(_NodeAssignment(
                 node_id=inst.instance_id or inst.node_name or "",
-                target_lifecycle="spot",
+                target_lifecycle=_target_lifecycle,
                 target_instance_type=inst.instance_type or "",
                 target_az=source_az,
             ))
 
+        logger.info(
+            "apply_recommended_config: cluster=%s excess_od=%d od_to_spot=%d "
+            "od_to_terminate=%d current_od=%d current_spot=%d requested_od=%d "
+            "requested_spot=%d",
+            cluster_id, excess_od, od_to_spot, od_to_terminate,
+            current_od, spot_instances, body.od_node_count, body.spot_node_count,
+        )
+
     if not migrations:
         return {
             "action_ids": [],
-            "message": "No OD→Spot migrations required for the requested configuration.",
+            "message": "No migrations required for the requested configuration.",
             "estimated_timeline_seconds": 0,
         }
 
@@ -4055,10 +4102,23 @@ def apply_recommended_config(
         )
         source_pool = f"{source_type}:{source_az}"
 
-        # Target pool: same type in same AZ (spot version); caller may override via target_instance_type
+        # Target pool: spot version of the source; caller may override via target_instance_type.
+        # If target_lifecycle == "spot", annotate the target pool key so the rebalancer
+        # knows this is an OD→Spot migration (not an OD→OD noop).
         target_type = migration.target_instance_type or source_type
-        target_az = migration.target_az or source_az
+        target_az   = migration.target_az or source_az
         target_pool = f"{target_type}:{target_az}"
+
+        # Safety: skip actions where source_pool == target_pool with no lifecycle change.
+        # This prevents spurious "Graceful Rebalance / WAITING_AGENT" entries that show
+        # "t3.large:ap-south-1a → t3.large:ap-south-1a" when no actual migration is needed.
+        _is_noop = (source_pool == target_pool) and (migration.target_lifecycle not in ("spot", "terminate"))
+        if _is_noop:
+            logger.info(
+                "apply_recommended_config: skipping noop action source=%s target=%s lifecycle=%s",
+                source_pool, target_pool, migration.target_lifecycle,
+            )
+            continue
 
         action = RebalancingAction(
             cluster_id=cluster_id,
@@ -4075,6 +4135,7 @@ def apply_recommended_config(
                 "buffer_node_count": body.buffer_node_count,
                 "scheduled_start_at": scheduled_at.isoformat(),
                 "stagger_group": stagger_group,
+                "target_lifecycle": migration.target_lifecycle,
             },
         )
         db.add(action)

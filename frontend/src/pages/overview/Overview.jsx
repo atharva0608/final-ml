@@ -1,57 +1,111 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import { clusterAPI, workloadClassificationAPI, optimizationAPI } from '../../services/api';
 
-// API: GET /api/v1/overview/summary
-// TODO: Replace all mock data below with real API integration
-
-const STATS = [
-  { label: 'Monthly Spend',    value: '$18,420', sub: '$420 vs last mo',     subColor: 'text-red-600',  subIcon: '↑' },
-  { label: 'Spot Savings',     value: '$6,840',  sub: '+$1,200',             subColor: 'text-green-600',subIcon: '+' },
-  { label: 'Spot Coverage',    value: '64%',     sub: '+3%',                 subColor: 'text-green-600',subIcon: '↑' },
-  { label: 'Active Nodes',     value: '24',      sub: '2 terminating',       subColor: 'text-gray-500', subIcon: '' },
-  { label: 'Active Workloads', value: '312',     sub: 'pods, 14 namespaces', subColor: 'text-gray-500', subIcon: '' },
-  { label: 'Pending Actions',  value: '3',       sub: 'AMBER',               subColor: 'text-amber-600',subIcon: '' },
-];
-
-const CLUSTERS = [
-  { name: 'prod-us-east', nodes: 24, spot: 64, cpu: 34, mem: 51, spend: '$12,400', status: 'Healthy',    statusColor: 'bg-green-500' },
-  { name: 'prod-eu-west', nodes: 11, spot: 45, cpu: 28, mem: 62, spend: '$4,200',  status: 'Suboptimal', statusColor: 'bg-amber-500' },
-  { name: 'staging',      nodes: 3,  spot: 20, cpu: 12, mem: 18, spend: '$1,820',  status: 'Healthy',    statusColor: 'bg-green-500' },
-];
-
-const ACTIVITY = [
-  { dot: 'bg-green-500',  title: 'Terminated unattached EBS volume',                                     detail: 'Saved $42/mo • 10 mins ago • prod-us-east' },
-  { dot: 'bg-blue-600',   title: 'Replaced On-Demand with Spot c6g.4xlarge',                             detail: 'Saved $119/mo • 2 hours ago • prod-eu-west' },
-  { dot: 'bg-gray-300',   title: 'Scaled down underutilized deployment frontend-api',                     detail: 'Saved $28/mo • 5 hours ago • staging' },
-  { dot: 'bg-blue-600',   title: 'Right-sized container requests',                                        detail: 'Released 12 CPU, 32GB Mem • 1 day ago • prod-us-east' },
-  { dot: 'bg-green-500',  title: 'Terminated idle cluster',                                               detail: 'Saved $350/mo • 2 days ago • dev-sandbox' },
-];
-
-const COST_DRIVERS = [
-  { name: 'production',   pct: 45, spend: '$8,420' },
-  { name: 'kube-system',  pct: 17, spend: '$3,200' },
-  { name: 'data-pipeline',pct: 12, spend: '$2,210' },
-  { name: 'ml-training',  pct:  8, spend: '$1,450' },
-  { name: 'monitoring',   pct:  5, spend: '$940'   },
-];
-
-const CHART_BARS = [
-  { spend: 72, savings: 38 }, { spend: 68, savings: 34 }, { spend: 75, savings: 40 },
-  { spend: 65, savings: 35 }, { spend: 80, savings: 42 }, { spend: 70, savings: 38 },
-  { spend: 60, savings: 32 }, { spend: 78, savings: 44 }, { spend: 85, savings: 48 },
-  { spend: 72, savings: 40 }, { spend: 68, savings: 36 }, { spend: 74, savings: 42 },
-  { spend: 70, savings: 38 }, { spend: 76, savings: 44 }, { spend: 82, savings: 46 },
-  { spend: 66, savings: 34 }, { spend: 72, savings: 40 }, { spend: 78, savings: 44 },
-  { spend: 74, savings: 42 }, { spend: 80, savings: 46 }, { spend: 68, savings: 36 },
-  { spend: 64, savings: 32 }, { spend: 70, savings: 38 }, { spend: 76, savings: 43 },
-  { spend: 72, savings: 40 }, { spend: 78, savings: 45 }, { spend: 84, savings: 48 },
-  { spend: 70, savings: 39 }, { spend: 66, savings: 35 }, { spend: 72, savings: 40 },
-];
-
-const X_LABELS = ['Oct 1', 'Oct 8', 'Oct 15', 'Oct 22', 'Oct 29'];
 const Y_LABELS = ['$25k', '$20k', '$15k', '$10k', '$5k', '0'];
+
+function fmt$(n) { return n == null ? '—' : `$${Math.round(n).toLocaleString()}`; }
+function fmtPct(n) { return n == null ? '—' : `${Math.round(n)}%`; }
+function timeAgo(ts) {
+  if (!ts) return '';
+  const s = Math.floor((Date.now() - new Date(ts)) / 1000);
+  if (s < 60) return `${s}s ago`;
+  if (s < 3600) return `${Math.floor(s/60)}m ago`;
+  if (s < 86400) return `${Math.floor(s/3600)}h ago`;
+  return `${Math.floor(s/86400)}d ago`;
+}
+
+function useOverviewData() {
+  const [clusters, setClusters]     = useState([]);
+  const [activity, setActivity]     = useState([]);
+  const [wieStats, setWieStats]     = useState({});
+  const [proposals, setProposals]   = useState([]);
+  const [loading, setLoading]       = useState(true);
+
+  useEffect(() => {
+    Promise.allSettled([
+      clusterAPI.list(),
+      clusterAPI.getAgentActions('', 20),
+    ]).then(([clsRes, actRes]) => {
+      const clsList = clsRes.value?.data?.clusters || clsRes.value?.data || [];
+      setClusters(Array.isArray(clsList) ? clsList : []);
+
+      const actions = actRes.value?.data?.actions || actRes.value?.data || [];
+      setActivity(Array.isArray(actions) ? actions.slice(0, 8) : []);
+
+      // Per-cluster: fetch WIE summary + rightsizing proposals
+      const validClusters = Array.isArray(clsList) ? clsList.filter(c => c.id) : [];
+      if (validClusters.length === 0) { setLoading(false); return; }
+      const firstId = validClusters[0].id;
+      Promise.allSettled([
+        workloadClassificationAPI.getSummary(firstId),
+        optimizationAPI.getRightsizing(firstId, { analysis_window_hours: 168, min_data_points: 50 }),
+      ]).then(([wieRes, propRes]) => {
+        setWieStats(wieRes.value?.data || {});
+        const recs = propRes.value?.data || [];
+        setProposals(Array.isArray(recs) ? recs : []);
+      }).finally(() => setLoading(false));
+    }).catch(() => setLoading(false));
+  }, []);
+
+  return { clusters, activity, wieStats, proposals, loading };
+}
 
 export default function Overview() {
   const [costView, setCostView] = useState('Namespace');
+  const { clusters, activity, wieStats, proposals, loading } = useOverviewData();
+
+  // ── Derived stats from real data ──────────────────────────────────────
+  const totalNodes   = clusters.reduce((s, c) => s + (c.node_count ?? c.nodes ?? 0), 0);
+  const totalWl      = wieStats.total_workloads ?? wieStats.total ?? '—';
+  const confirmedWl  = wieStats.confirmed_count ?? wieStats.confidence_distribution?.CONFIRMED ?? '—';
+  const reduceCandidates = proposals.filter(p => p.recommendation_action === 'REDUCE').length;
+  const totalSavings = proposals.reduce((s, p) => s + (p.savings_monthly || 0), 0);
+  const pendingActs  = activity.filter(a => a.status === 'PENDING' || a.status === 'QUEUED').length;
+
+  const STATS = [
+    { label: 'Rightsizing Savings',  value: loading ? '…' : fmt$(totalSavings),     sub: `${proposals.length} workload${proposals.length !== 1 ? 's' : ''} analyzed`, subColor: 'text-green-600' },
+    { label: 'REDUCE Candidates',    value: loading ? '…' : String(reduceCandidates), sub: 'oversized workloads',  subColor: 'text-amber-600' },
+    { label: 'Active Clusters',      value: loading ? '…' : String(clusters.length), sub: `${totalNodes} total nodes`, subColor: 'text-gray-500' },
+    { label: 'Active Workloads',     value: loading ? '…' : String(totalWl),         sub: `${confirmedWl} CONFIRMED`, subColor: 'text-gray-500' },
+    { label: 'Pending Actions',      value: loading ? '…' : String(pendingActs),     sub: pendingActs > 0 ? 'AMBER' : 'CLEAR', subColor: pendingActs > 0 ? 'text-amber-600' : 'text-green-600', badge: pendingActs > 0 },
+    { label: 'Data Points',          value: loading ? '…' : String(proposals.reduce((s,p)=>s+(p.data_points||0),0).toLocaleString()), sub: 'pod metrics analyzed', subColor: 'text-gray-400' },
+  ];
+
+  // Cost drivers from proposals (by namespace)
+  const nsBySpend = {};
+  proposals.forEach(p => {
+    const ns = p.namespace || 'unknown';
+    nsBySpend[ns] = (nsBySpend[ns] || 0) + (p.current_cost_monthly || 0);
+  });
+  const totalSpend = Object.values(nsBySpend).reduce((s, v) => s + v, 0) || 1;
+  const COST_DRIVERS = Object.entries(nsBySpend)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5)
+    .map(([name, spend]) => ({
+      name,
+      pct: Math.round((spend / totalSpend) * 100),
+      spend: fmt$(spend),
+    }));
+
+  // Workload-level cost drivers
+  const wlBySpend = proposals
+    .sort((a, b) => (b.current_cost_monthly || 0) - (a.current_cost_monthly || 0))
+    .slice(0, 5)
+    .map(p => ({
+      name: p.controller_name,
+      pct: Math.round(((p.current_cost_monthly || 0) / totalSpend) * 100),
+      spend: fmt$(p.current_cost_monthly),
+    }));
+
+  const costDrivers = costView === 'Namespace' ? COST_DRIVERS : wlBySpend;
+
+  // Activity dot colours by action_type / status
+  function actDot(a) {
+    if (a.status === 'COMPLETED' || a.status === 'DONE') return 'bg-green-500';
+    if (a.status === 'FAILED')  return 'bg-red-400';
+    if (a.status === 'PENDING' || a.status === 'QUEUED') return 'bg-amber-400';
+    return 'bg-blue-600';
+  }
 
   return (
     <div className="flex flex-col bg-gray-50 min-h-full w-full">
@@ -64,8 +118,7 @@ export default function Overview() {
               <span className="text-[11px] uppercase tracking-widest text-gray-400 font-semibold">{s.label}</span>
               <span className="text-2xl font-bold text-gray-900 font-mono tracking-tight">{s.value}</span>
               <div className={`flex items-center text-[12px] font-medium ${s.subColor}`}>
-                {s.subIcon && <span className="mr-0.5">{s.subIcon}</span>}
-                {s.label === 'Pending Actions'
+                {s.badge
                   ? <span className="px-2 py-0.5 bg-amber-100 text-amber-700 text-[11px] font-semibold rounded-full uppercase tracking-wider">{s.sub}</span>
                   : <span>{s.sub}</span>
                 }
@@ -74,198 +127,66 @@ export default function Overview() {
           ))}
         </section>
 
-        {/* ── Row 2: Chart + Fleet ── */}
-        <section className="flex flex-col lg:flex-row gap-5">
-
-          {/* Spend vs Savings Chart */}
-          <div className="flex-[3] bg-white rounded-xl border border-gray-200 p-5 shadow-sm flex flex-col">
-            <div className="flex justify-between items-center mb-5">
-              <h2 className="text-sm font-semibold text-gray-900">Spend vs Savings (30 Days)</h2>
-              <div className="flex items-center gap-4 text-xs">
-                <div className="flex items-center gap-1.5">
-                  <div className="w-3 h-3 rounded-sm bg-blue-200 border border-blue-600" />
-                  <span className="text-gray-500">Spend</span>
-                </div>
-                <div className="flex items-center gap-1.5">
-                  <div className="w-3 h-3 rounded-sm bg-green-100 border border-green-500" />
-                  <span className="text-gray-500">Savings</span>
-                </div>
-              </div>
-            </div>
-
-            {/* SVG Area Chart */}
-            {(() => {
-              const W = 460, H = 200;
-              const PL = 44, PR = 10, PT = 8, PB = 28;
-              const CW = W - PL - PR, CH = H - PT - PB;
-              const n = CHART_BARS.length;
-
-              const pts = CHART_BARS.map((b, i) => ({
-                x:  PL + (i / (n - 1)) * CW,
-                sy: PT + CH * (1 - (5000 + ((b.spend   - 60) / 25) * 6500) / 25000),
-                vy: PT + CH * (1 - Math.max(0, 200 + ((b.savings - 32) / 16) * 3800) / 25000),
-              }));
-
-              const makeLine = key => {
-                let d = `M${pts[0].x},${pts[0][key]}`;
-                for (let i = 1; i < n; i++) {
-                  const a = pts[i - 1], b = pts[i];
-                  const cx = (a.x + b.x) / 2;
-                  d += ` C${cx},${a[key]} ${cx},${b[key]} ${b.x},${b[key]}`;
-                }
-                return d;
-              };
-
-              const baseY = PT + CH;
-              const close = line => `${line} L${pts[n-1].x},${baseY} L${PL},${baseY} Z`;
-              const spendLine   = makeLine('sy');
-              const savingsLine = makeLine('vy');
-
-              return (
-                <div className="flex-1 min-h-[220px] mt-1">
-                  <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-full" preserveAspectRatio="none">
-                    <defs>
-                      <linearGradient id="ov_spend" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="0%"   stopColor="#bfdbfe" stopOpacity="0.85"/>
-                        <stop offset="100%" stopColor="#bfdbfe" stopOpacity="0.04"/>
-                      </linearGradient>
-                      <linearGradient id="ov_savings" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="0%"   stopColor="#99f6e4" stopOpacity="0.75"/>
-                        <stop offset="100%" stopColor="#99f6e4" stopOpacity="0.04"/>
-                      </linearGradient>
-                    </defs>
-
-                    {/* Horizontal grid lines + Y labels */}
-                    {Y_LABELS.map((lbl, i) => {
-                      const y = PT + (i / (Y_LABELS.length - 1)) * CH;
-                      return (
-                        <g key={lbl}>
-                          <line x1={PL} y1={y} x2={W - PR} y2={y} stroke="#f3f4f6" strokeWidth="0.8"/>
-                          <text x={PL - 5} y={y + 3.5} textAnchor="end" fontSize="9" fill="#9ca3af" fontFamily="monospace">{lbl}</text>
-                        </g>
-                      );
-                    })}
-
-                    {/* Spend area + stroke */}
-                    <path d={close(spendLine)}   fill="url(#ov_spend)"/>
-                    <path d={spendLine}           fill="none" stroke="#93c5fd" strokeWidth="1.5" strokeLinejoin="round"/>
-
-                    {/* Savings area + stroke */}
-                    <path d={close(savingsLine)} fill="url(#ov_savings)"/>
-                    <path d={savingsLine}         fill="none" stroke="#5eead4" strokeWidth="1.5" strokeLinejoin="round"/>
-
-                    {/* X axis baseline */}
-                    <line x1={PL} y1={baseY} x2={W - PR} y2={baseY} stroke="#e5e7eb" strokeWidth="0.8"/>
-
-                    {/* X labels */}
-                    {[0, 7, 14, 21, 28].map((idx, i) => (
-                      <text key={i} x={PL + (idx / (n - 1)) * CW} y={H - 7}
-                        textAnchor="middle" fontSize="9" fill="#9ca3af" fontFamily="monospace">
-                        {X_LABELS[i]}
-                      </text>
-                    ))}
-                  </svg>
-                </div>
-              );
-            })()}
-          </div>
-
-          {/* Fleet Composition */}
-          <div className="flex-[2] bg-white rounded-xl border border-gray-200 p-5 shadow-sm flex flex-col items-center gap-6">
-            <h2 className="text-sm font-semibold text-gray-900 w-full">Fleet Composition</h2>
-
-            {/* Donut */}
-            <div className="relative w-36 h-36 flex items-center justify-center">
-              <svg className="w-full h-full -rotate-90" viewBox="0 0 36 36">
-                <path className="text-gray-200" fill="none" stroke="currentColor" strokeWidth="4"
-                  d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
-                <path className="text-blue-600" fill="none" stroke="currentColor" strokeWidth="4"
-                  strokeDasharray="64, 100"
-                  d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
-              </svg>
-              <div className="absolute flex flex-col items-center">
-                <span className="text-2xl font-bold text-gray-900 font-mono leading-none">64%</span>
-                <span className="text-[10px] uppercase tracking-widest text-gray-400 font-semibold mt-1">Spot</span>
-              </div>
-            </div>
-
-            {/* Gauges */}
-            <div className="flex w-full justify-around gap-4">
-              {[{ label: 'Avg CPU', pct: 34, dash: 17 }, { label: 'Avg Mem', pct: 51, dash: 25.5 }].map(g => (
-                <div key={g.label} className="flex flex-col items-center gap-2">
-                  <div className="relative w-20 h-10 overflow-hidden">
-                    <svg className="w-full h-full" viewBox="0 0 36 18">
-                      <path className="text-gray-200" fill="none" stroke="currentColor" strokeWidth="4"
-                        d="M2 18 A 16 16 0 0 1 34 18" />
-                      <path className="text-blue-600" fill="none" stroke="currentColor" strokeWidth="4"
-                        strokeDasharray={`${g.dash}, 100`}
-                        d="M2 18 A 16 16 0 0 1 34 18" />
-                    </svg>
-                    <span className="absolute bottom-0 w-full text-center text-[13px] font-bold font-mono text-gray-900">{g.pct}%</span>
-                  </div>
-                  <span className="text-[11px] text-gray-400 font-medium">{g.label}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        </section>
-
-        {/* ── Row 3: Cluster Health Table ── */}
+        {/* ── Row 2: Cluster Health Table ── */}
         <section className="w-full bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
           <div className="px-5 py-4 border-b border-gray-100 bg-white flex justify-between items-center">
             <h2 className="text-sm font-semibold text-gray-900">Cluster Health</h2>
+            {loading && <span className="text-[11px] text-gray-400 italic">Loading…</span>}
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs">
               <thead>
                 <tr className="border-b border-gray-100 text-[10px] uppercase tracking-widest text-gray-400 bg-gray-50">
-                  {['Cluster', 'Nodes', 'Spot %', 'CPU Util', 'Mem Util', 'Monthly Spend', 'Status'].map((h, i) => (
-                    <th key={h} className={`px-5 py-3 font-semibold ${i > 0 && i < 3 ? 'text-right' : ''}`}>{h}</th>
+                  {['Cluster', 'Region', 'Nodes', 'Provider', 'Status'].map(h => (
+                    <th key={h} className="px-5 py-3 font-semibold">{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-50 font-mono">
-                {CLUSTERS.map(c => (
-                  <tr key={c.name} className="hover:bg-gray-50 transition-colors">
-                    <td className="px-5 py-3.5 font-semibold text-gray-900">{c.name}</td>
-                    <td className="px-5 py-3.5 text-right text-gray-700">{c.nodes}</td>
-                    <td className="px-5 py-3.5 text-right text-gray-700">{c.spot}%</td>
-                    <td className="px-5 py-3.5">
-                      <div className="flex items-center gap-2">
-                        <div className="w-20 h-1.5 bg-gray-100 rounded-full overflow-hidden">
-                          <div className="h-full bg-green-500 rounded-full" style={{ width: `${c.cpu}%` }} />
+                {clusters.length === 0 && !loading && (
+                  <tr><td colSpan={5} className="px-5 py-4 text-gray-400 text-center italic text-xs">No clusters found</td></tr>
+                )}
+                {clusters.map(c => {
+                  const st = c.status || 'UNKNOWN';
+                  const stColor = st === 'ACTIVE' || st === 'HEALTHY' ? 'bg-green-500' : st === 'DEGRADED' ? 'bg-amber-500' : 'bg-gray-400';
+                  return (
+                    <tr key={c.id} className="hover:bg-gray-50 transition-colors">
+                      <td className="px-5 py-3.5 font-semibold text-gray-900">{c.name || c.id}</td>
+                      <td className="px-5 py-3.5 text-gray-500">{c.region || '—'}</td>
+                      <td className="px-5 py-3.5 text-gray-700">{c.node_count ?? c.nodes ?? '—'}</td>
+                      <td className="px-5 py-3.5 text-gray-500 uppercase text-[10px]">{c.cloud_provider || c.provider || 'aws'}</td>
+                      <td className="px-5 py-3.5">
+                        <div className="flex items-center gap-2 text-[12px] font-sans">
+                          <span className={`w-2 h-2 rounded-full ${stColor}`} />
+                          <span className="text-gray-700">{st}</span>
                         </div>
-                        <span className="text-gray-500 text-[11px]">{c.cpu}%</span>
-                      </div>
-                    </td>
-                    <td className="px-5 py-3.5 text-right text-gray-700">{c.mem}%</td>
-                    <td className="px-5 py-3.5 text-right text-gray-700">{c.spend}</td>
-                    <td className="px-5 py-3.5">
-                      <div className="flex items-center gap-2 text-[12px] font-sans">
-                        <span className={`w-2 h-2 rounded-full ${c.statusColor}`} />
-                        <span className="text-gray-700">{c.status}</span>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
         </section>
 
-        {/* ── Row 4: Activity + Cost Drivers ── */}
+        {/* ── Row 3: Activity + Cost Drivers ── */}
         <section className="flex flex-col lg:flex-row gap-5">
 
           {/* Optimization Activity Feed */}
           <div className="flex-1 bg-white rounded-xl border border-gray-200 p-5 shadow-sm flex flex-col">
             <h2 className="text-sm font-semibold text-gray-900 mb-5">Optimization Activity</h2>
+            {activity.length === 0 && !loading && (
+              <p className="text-xs text-gray-400 italic">No recent agent actions.</p>
+            )}
             <div className="flex flex-col relative pl-4 border-l border-gray-100 ml-2 gap-5">
-              {ACTIVITY.map((a, i) => (
-                <div key={i} className="relative">
-                  <div className={`absolute -left-[21px] top-1 w-2.5 h-2.5 rounded-full ${a.dot} ring-4 ring-white`} />
+              {activity.map((a, i) => (
+                <div key={a.id || i} className="relative">
+                  <div className={`absolute -left-[21px] top-1 w-2.5 h-2.5 rounded-full ${actDot(a)} ring-4 ring-white`} />
                   <div className="flex flex-col">
-                    <span className="text-xs text-gray-800 font-medium">{a.title}</span>
-                    <span className="text-[11px] text-gray-400 mt-0.5">{a.detail}</span>
+                    <span className="text-xs text-gray-800 font-medium">{a.action_type || a.type || 'Action'}</span>
+                    <span className="text-[11px] text-gray-400 mt-0.5">
+                      {a.status} {a.cluster_name ? `• ${a.cluster_name}` : ''} {a.created_at ? `• ${timeAgo(a.created_at)}` : ''}
+                    </span>
                   </div>
                 </div>
               ))}
@@ -285,11 +206,14 @@ export default function Overview() {
                 ))}
               </div>
             </div>
+            {costDrivers.length === 0 && !loading && (
+              <p className="text-xs text-gray-400 italic">No cost data available — run rightsizing analysis.</p>
+            )}
             <div className="flex flex-col gap-4">
-              {COST_DRIVERS.map((d, i) => (
+              {costDrivers.map((d, i) => (
                 <div key={d.name} className="flex flex-col gap-1">
                   <div className="flex justify-between text-xs font-mono">
-                    <span className="text-gray-800 font-semibold">{d.name}</span>
+                    <span className="text-gray-800 font-semibold truncate max-w-[140px]">{d.name}</span>
                     <div className="flex items-center gap-2">
                       <span className="text-gray-400">{d.pct}%</span>
                       <span className="text-gray-800">{d.spend}</span>
@@ -304,35 +228,35 @@ export default function Overview() {
           </div>
         </section>
 
-        {/* ── Row 5: What-If Strip ── */}
-        <section className="w-full bg-blue-50 border-l-4 border-blue-600 rounded-xl p-4 flex flex-col md:flex-row items-start md:items-center justify-between gap-4 border border-blue-100">
-          <div className="flex items-center gap-3">
-            <span className="text-blue-700 text-lg">🧠</span>
-            <span className="text-xs font-semibold text-blue-800 tracking-tight">Projected impact if all scheduled optimizations complete</span>
-          </div>
-          <div className="flex flex-wrap items-center gap-5 font-mono text-xs">
-            {[
-              { label: 'Spend', from: '$18,420', to: '$12,800', strike: true },
-              { label: 'Spot%', from: '64%',     to: '81%',     strike: false },
-              { label: 'Nodes', from: '24',       to: '17',      strike: false },
-            ].map((item, i) => (
-              <React.Fragment key={item.label}>
-                {i > 0 && <div className="w-px h-4 bg-blue-300 hidden md:block" />}
-                <div className="flex items-center gap-1.5">
-                  <span className="text-gray-500">{item.label}</span>
-                  <span className={`text-gray-800 ${item.strike ? 'line-through decoration-red-400 decoration-2' : ''}`}>{item.from}</span>
-                  <span className="text-gray-400">→</span>
-                  <span className="text-green-600 font-bold">{item.to}</span>
-                </div>
-              </React.Fragment>
-            ))}
-            <div className="w-px h-4 bg-blue-300 hidden md:block" />
-            <div className="flex items-center gap-1.5 bg-white px-2 py-0.5 rounded border border-blue-100 text-[11px] font-sans font-semibold text-gray-700 shadow-sm">
-              <span className="w-2 h-2 rounded-full bg-green-500" />
-              Low Risk
+        {/* ── Row 4: Rightsizing Summary Strip ── */}
+        {proposals.length > 0 && (
+          <section className="w-full bg-green-50 border-l-4 border-green-600 rounded-xl p-4 flex flex-col md:flex-row items-start md:items-center justify-between gap-4 border border-green-100">
+            <div className="flex items-center gap-3">
+              <span className="text-green-700 text-lg">📊</span>
+              <span className="text-xs font-semibold text-green-800 tracking-tight">Rightsizing analysis complete — real data from pod metrics</span>
             </div>
-          </div>
-        </section>
+            <div className="flex flex-wrap items-center gap-5 font-mono text-xs">
+              {[
+                { label: 'REDUCE', value: proposals.filter(p=>p.recommendation_action==='REDUCE').length, color: 'text-amber-700' },
+                { label: 'INCREASE', value: proposals.filter(p=>p.recommendation_action==='INCREASE').length, color: 'text-red-600' },
+                { label: 'OBSERVE', value: proposals.filter(p=>p.recommendation_action==='OBSERVE').length, color: 'text-blue-600' },
+                { label: 'Throttle Risk', value: proposals.filter(p=>p.throttle_risk).length, color: 'text-orange-600' },
+              ].map((item, i) => (
+                <React.Fragment key={item.label}>
+                  {i > 0 && <div className="w-px h-4 bg-green-300 hidden md:block" />}
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-gray-500">{item.label}</span>
+                    <span className={`font-bold ${item.color}`}>{item.value}</span>
+                  </div>
+                </React.Fragment>
+              ))}
+              <div className="w-px h-4 bg-green-300 hidden md:block" />
+              <div className="flex items-center gap-1.5 font-semibold text-green-700">
+                Total Savings: <span className="font-bold">{fmt$(totalSavings)}/mo</span>
+              </div>
+            </div>
+          </section>
+        )}
 
       </div>
     </div>

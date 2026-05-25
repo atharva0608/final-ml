@@ -40,7 +40,7 @@ def cache_warmer(self):
     try:
         # 1. Get active clusters
         clusters = db.query(Cluster).filter(
-            Cluster.status == "active"
+            Cluster.status == "ACTIVE"
         ).all()
 
         if not clusters:

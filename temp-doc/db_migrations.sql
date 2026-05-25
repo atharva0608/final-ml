@@ -22,20 +22,26 @@ CREATE INDEX IF NOT EXISTS idx_instances_node_owner_type
 -- (Change 5 in plan.md)
 -- ============================================================
 
+-- NOTE: Originally used DEFAULT 'shadow' which blocked ALL new clusters from
+-- executing rebalancing.  Fixed to DEFAULT 'managed' — new clusters are fully
+-- managed from creation.  Shadow mode should only be set explicitly by an
+-- operator, never as a default.
 ALTER TABLE clusters
-    ADD COLUMN IF NOT EXISTS onboarding_phase VARCHAR(32) NOT NULL DEFAULT 'shadow';
+    ADD COLUMN IF NOT EXISTS onboarding_phase VARCHAR(32) NOT NULL DEFAULT 'managed';
 
--- CRITICAL: Backfill existing active clusters to 'managed'.
--- Without this, ALL currently-running clusters will be gated to shadow mode
--- and stop optimizing immediately after deploy.
+-- ============================================================
+-- Migration 2b: Fix column default on DBs that already ran Migration 2
+-- with the old DEFAULT 'shadow'.
+-- ============================================================
+ALTER TABLE clusters
+    ALTER COLUMN onboarding_phase SET DEFAULT 'managed';
+
+-- Backfill ALL clusters stuck in 'shadow' to 'managed'.
+-- Shadow was never intentionally set by users — it was only the (incorrect)
+-- column default.  Any cluster in shadow should be graduated to managed.
 UPDATE clusters
 SET onboarding_phase = 'managed'
-WHERE status IN ('ACTIVE', 'active', 'CONNECTED', 'connected')
-  AND agent_installed = 'Y'
-  AND onboarding_phase = 'shadow';
-
--- New clusters start at 'shadow' (the column default is correct for new rows).
--- Clusters without an agent also default to shadow — correct behavior.
+WHERE onboarding_phase = 'shadow';
 
 -- Verify the backfill:
 -- SELECT onboarding_phase, count(*) FROM clusters GROUP BY onboarding_phase;

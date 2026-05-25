@@ -221,9 +221,11 @@ class WorkloadInspector:
 
     def _fetch_nodes_with_retry(self, cluster_id: str, max_retries: int = 3):
         """Fetch nodes with exponential backoff on API errors"""
+        from kubernetes import client as _k8s_c
         for attempt in range(max_retries):
             try:
-                return self.k8s.list_nodes(cluster_id)
+                v1 = _k8s_c.CoreV1Api(self.k8s)
+                return [n.to_dict() for n in v1.list_node().items]
             except Exception as e:
                 if attempt < max_retries - 1:
                     delay = 2 ** attempt  # 1s, 2s, 4s
@@ -236,9 +238,14 @@ class WorkloadInspector:
 
     def _fetch_pods_on_node_with_retry(self, cluster_id: str, node_name: str, max_retries: int = 3):
         """Fetch pods on node with exponential backoff"""
+        from kubernetes import client as _k8s_c
         for attempt in range(max_retries):
             try:
-                return self.k8s.list_pods_on_node(cluster_id, node_name)
+                v1 = _k8s_c.CoreV1Api(self.k8s)
+                pods = v1.list_pod_for_all_namespaces(
+                    field_selector=f"spec.nodeName={node_name}"
+                )
+                return [p.to_dict() for p in pods.items]
             except Exception as e:
                 if attempt < max_retries - 1:
                     delay = 2 ** attempt
